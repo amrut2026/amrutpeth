@@ -1,0 +1,13 @@
+{
+    "activities": 
+    [
+        "Purchase", 
+        "Sales", 
+        "Reports", 
+        "User Management", 
+        "Retailer Management", 
+        "Dealer Management", 
+        "Product Category Management",
+        "Product Management",
+    ]
+}

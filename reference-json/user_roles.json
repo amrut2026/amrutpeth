@@ -1,0 +1,9 @@
+{
+    "user_roles": 
+    [
+        "Super User", 
+        "Administrator", 
+        "Owner", 
+        "User"
+    ]
+}

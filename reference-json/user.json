@@ -1,0 +1,9 @@
+{
+    "user": 
+        {
+            "user_id": null,
+            "user_name": "",
+            "user_password": "",
+            "user_role": ["Super User", "Administrator", "Owner", "User"]
+        }
+}
