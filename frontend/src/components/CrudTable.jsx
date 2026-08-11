@@ -17,12 +17,40 @@ export default function CrudTable({ title, endpoint, fields, columns, transformS
 
   useEffect(() => { load(); }, [endpoint]);
 
+  const emptyBankRow = { accountNumber: '', ifsc: '', bankName: '' };
+
+  function bankRows(key) {
+    return form[key]?.length ? form[key] : [emptyBankRow];
+  }
+
+  function updateBankRow(key, i, field, val) {
+    const rows = bankRows(key).map((row, idx) => (idx === i ? { ...row, [field]: val } : row));
+    setForm({ ...form, [key]: rows });
+  }
+
+  function addBankRow(key) {
+    setForm({ ...form, [key]: [...bankRows(key), { ...emptyBankRow }] });
+  }
+
+  function removeBankRow(key, i) {
+    const rows = bankRows(key).filter((_, idx) => idx !== i);
+    setForm({ ...form, [key]: rows.length ? rows : [{ ...emptyBankRow }] });
+  }
+
   async function submit(e) {
     e.preventDefault();
     setLoading(true);
     setError('');
     try {
-      const payload = transformSubmit ? transformSubmit(form) : form;
+      const cleaned = { ...form };
+      fields.forEach((f) => {
+        if (f.type === 'bankAccounts' && cleaned[f.key]) {
+          cleaned[f.key] = cleaned[f.key].filter(
+            (row) => row.accountNumber || row.ifsc || row.bankName
+          );
+        }
+      });
+      const payload = transformSubmit ? transformSubmit(cleaned) : cleaned;
       await api.post(endpoint, payload);
       setForm({});
       await load();
@@ -39,29 +67,58 @@ export default function CrudTable({ title, endpoint, fields, columns, transformS
 
       {canWrite && (
         <form onSubmit={submit} className="bg-white p-4 rounded shadow mb-6 grid grid-cols-1 md:grid-cols-3 gap-3">
-          {fields.map((f) => (
-            <div key={f.key} className="flex flex-col">
-              <label className="text-xs text-gray-500 mb-1">{f.label}</label>
-              {f.type === 'select' ? (
-                <select
-                  className="border rounded px-2 py-1"
-                  value={form[f.key] ?? ''}
-                  onChange={(e) => setForm({ ...form, [f.key]: e.target.value })}
-                  required={f.required}>
-                  <option value="">Select...</option>
-                  {f.options?.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-                </select>
-              ) : (
-                <input
-                  className="border rounded px-2 py-1"
-                  type={f.type || 'text'}
-                  value={form[f.key] ?? ''}
-                  onChange={(e) => setForm({ ...form, [f.key]: e.target.value })}
-                  required={f.required}
-                />
-              )}
-            </div>
-          ))}
+          {fields.map((f) => {
+            if (f.type === 'bankAccounts') {
+              return (
+                <div key={f.key} className="md:col-span-3">
+                  <div className="text-xs text-gray-500 mb-1">{f.label}</div>
+                  {bankRows(f.key).map((b, i) => (
+                    <div key={i} className="grid grid-cols-1 md:grid-cols-4 gap-2 mb-2 items-center">
+                      <input placeholder="Account Number" className="border rounded px-2 py-1"
+                        value={b.accountNumber} onChange={(e) => updateBankRow(f.key, i, 'accountNumber', e.target.value)} />
+                      <input placeholder="IFSC Code" className="border rounded px-2 py-1"
+                        value={b.ifsc} onChange={(e) => updateBankRow(f.key, i, 'ifsc', e.target.value)} />
+                      <input placeholder="Bank Name" className="border rounded px-2 py-1"
+                        value={b.bankName} onChange={(e) => updateBankRow(f.key, i, 'bankName', e.target.value)} />
+                      {bankRows(f.key).length > 1 && (
+                        <button type="button" className="text-red-600 text-xs justify-self-start"
+                          onClick={() => removeBankRow(f.key, i)}>
+                          Remove
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  <button type="button" className="text-emerald-700 text-sm"
+                    onClick={() => addBankRow(f.key)}>
+                    + Add another bank account
+                  </button>
+                </div>
+              );
+            }
+            return (
+              <div key={f.key} className="flex flex-col">
+                <label className="text-xs text-gray-500 mb-1">{f.label}</label>
+                {f.type === 'select' ? (
+                  <select
+                    className="border rounded px-2 py-1"
+                    value={form[f.key] ?? ''}
+                    onChange={(e) => setForm({ ...form, [f.key]: e.target.value })}
+                    required={f.required}>
+                    <option value="">Select...</option>
+                    {f.options?.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                ) : (
+                  <input
+                    className="border rounded px-2 py-1"
+                    type={f.type || 'text'}
+                    value={form[f.key] ?? ''}
+                    onChange={(e) => setForm({ ...form, [f.key]: e.target.value })}
+                    required={f.required}
+                  />
+                )}
+              </div>
+            );
+          })}
           <div className="md:col-span-3 flex items-center gap-3">
             <button disabled={loading} className="bg-emerald-700 text-white px-4 py-2 rounded hover:bg-emerald-800">
               {loading ? 'Saving...' : `Add ${title.replace(/s$/, '')}`}

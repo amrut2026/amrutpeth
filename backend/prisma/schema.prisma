@@ -54,6 +54,18 @@ model User {
   createdAt  DateTime @default(now())
 }
 
+// ---------------- Divisions (geographic/business areas) ----------------
+// Used to group dealers and suppliers/manufacturers by area of establishment.
+model Division {
+  id          Int      @id @default(autoincrement())
+  name        String   @unique
+  description String?
+  createdAt   DateTime @default(now())
+
+  dealers     Dealer[]
+  suppliers   Supplier[]
+}
+
 // ---------------- Dealer ----------------
 model Dealer {
   id            Int      @id @default(autoincrement())
@@ -61,6 +73,8 @@ model Dealer {
   address       String
   contactNumber String
   gstNumber     String
+  divisionId    Int?
+  division      Division? @relation(fields: [divisionId], references: [id])
   createdAt     DateTime @default(now())
 
   bankAccounts  DealerBankAccount[]
@@ -68,6 +82,7 @@ model Dealer {
   users         User[]
   inventory     Inventory[]    @relation("DealerInventory")
   purchases     Purchase[]     @relation("DealerPurchases")
+  purchasesFromRetailers Purchase[] @relation("PurchaseFromDealer")
   sales         Sale[]         @relation("DealerSales")
   vouchers      Voucher[]
   payments      Payment[]
@@ -152,9 +167,21 @@ model Supplier {
   address       String
   contactNumber String
   gstNumber     String
+  divisionId    Int?
+  division      Division? @relation(fields: [divisionId], references: [id])
   createdAt     DateTime @default(now())
 
+  bankAccounts  SupplierBankAccount[]
   purchases     Purchase[]
+}
+
+model SupplierBankAccount {
+  id            Int      @id @default(autoincrement())
+  supplierId    Int
+  supplier      Supplier @relation(fields: [supplierId], references: [id])
+  accountNumber String
+  ifsc          String
+  bankName      String
 }
 
 // ---------------- Inventory ----------------
@@ -175,17 +202,22 @@ model Inventory {
 }
 
 // ---------------- Purchases / Inwards ----------------
+// supplierId is set when a DEALER buys from a manufacturer/supplier.
+// sourceDealerId is set when a RETAILER buys from their primary dealer.
+// Exactly one of the two is populated, depending on ownerType.
 model Purchase {
-  id          Int       @id @default(autoincrement())
-  ownerType   OwnerType
-  dealerId    Int?
-  retailerId  Int?
-  dealer      Dealer?   @relation("DealerPurchases", fields: [dealerId], references: [id])
-  retailer    Retailer? @relation("RetailerPurchases", fields: [retailerId], references: [id])
-  supplierId  Int
-  supplier    Supplier  @relation(fields: [supplierId], references: [id])
-  date        DateTime  @default(now())
-  items       PurchaseItem[]
+  id             Int       @id @default(autoincrement())
+  ownerType      OwnerType
+  dealerId       Int?
+  retailerId     Int?
+  dealer         Dealer?   @relation("DealerPurchases", fields: [dealerId], references: [id])
+  retailer       Retailer? @relation("RetailerPurchases", fields: [retailerId], references: [id])
+  supplierId     Int?
+  supplier       Supplier? @relation(fields: [supplierId], references: [id])
+  sourceDealerId Int?
+  sourceDealer   Dealer?   @relation("PurchaseFromDealer", fields: [sourceDealerId], references: [id])
+  date           DateTime  @default(now())
+  items          PurchaseItem[]
 }
 
 model PurchaseItem {

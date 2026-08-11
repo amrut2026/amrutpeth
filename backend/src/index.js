@@ -19,6 +19,7 @@ import userRoleRoutes from './routes/userRoles.js';
 import activityRoutes from './routes/activities.js';
 import roleActivityMappingRoutes from './routes/roleActivityMapping.js';
 import supplierRoutes from './routes/suppliers.js';
+import divisionRoutes from './routes/divisions.js';
 
 const app = express();
 app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
@@ -43,6 +44,7 @@ app.use('/api/user-roles', userRoleRoutes);
 app.use('/api/activities', activityRoutes);
 app.use('/api/role-activity-mapping', roleActivityMappingRoutes);
 app.use('/api/suppliers', supplierRoutes);
+app.use('/api/divisions', divisionRoutes);
 
 app.use((err, req, res, next) => {
   console.error(err);

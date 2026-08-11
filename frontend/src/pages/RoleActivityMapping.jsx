@@ -1,6 +1,26 @@
 import { useEffect, useState } from 'react';
 import api from '../api.js';
 
+// Mirrors the ADMIN nav order/labels in Layout.jsx, so this table reads as a
+// direct on/off switch for each sidebar item. Anything not in this list (e.g.
+// legacy activities with no sidebar equivalent) is appended at the end.
+const NAV_ORDER = [
+  'Organisation', 'Role-Activity Mapping', 'Divisions', 'Dealers', 'Retailers',
+  'Suppliers / Manufacturers', 'Categories', 'Products', 'Inventory', 'Purchases',
+  'Sales (POS)', 'Vouchers', 'Receipts', 'Payments', 'Reports',
+];
+
+function sortByNavOrder(activities) {
+  return [...activities].sort((a, b) => {
+    const ai = NAV_ORDER.indexOf(a.activityName);
+    const bi = NAV_ORDER.indexOf(b.activityName);
+    if (ai === -1 && bi === -1) return a.activityName.localeCompare(b.activityName);
+    if (ai === -1) return 1;
+    if (bi === -1) return -1;
+    return ai - bi;
+  });
+}
+
 export default function RoleActivityMapping() {
   const [roles, setRoles] = useState([]);
   const [activities, setActivities] = useState([]);
@@ -10,7 +30,7 @@ export default function RoleActivityMapping() {
   async function load() {
     const { data } = await api.get('/role-activity-mapping');
     setRoles(data.roles);
-    setActivities(data.activities);
+    setActivities(sortByNavOrder(data.activities));
     setMappings(data.mappings);
   }
   useEffect(() => { load(); }, []);

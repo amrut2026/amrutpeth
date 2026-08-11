@@ -20,7 +20,7 @@ router.get('/', authRequired, async (req, res) => {
 router.get('/:id', authRequired, async (req, res) => {
   const retailer = await prisma.retailer.findUnique({
     where: { id: Number(req.params.id) },
-    include: { bankAccounts: true, users: { select: { id: true, username: true } } }
+    include: { bankAccounts: true, users: { select: { id: true, username: true } }, dealer: true }
   });
   res.json(retailer);
 });
@@ -29,7 +29,11 @@ router.get('/:id', authRequired, async (req, res) => {
 // Optionally pass username + password to create that retailer's login in the same step.
 router.post('/', authRequired, requireRole('ADMIN', 'DEALER'), async (req, res) => {
   const { name, address, contactNumber, gstNumber, bankAccounts, username, password } = req.body;
-  const primaryDealerId = req.user.role === 'DEALER' ? req.user.dealerId : req.body.primaryDealerId;
+  const primaryDealerId = req.user.role === 'DEALER' ? req.user.dealerId : Number(req.body.primaryDealerId);
+
+  if (req.user.role === 'ADMIN' && (!req.body.primaryDealerId || Number.isNaN(primaryDealerId))) {
+    return res.status(400).json({ error: 'Primary dealer is required' });
+  }
 
   if (username && !password) {
     return res.status(400).json({ error: 'Password is required to create a login' });

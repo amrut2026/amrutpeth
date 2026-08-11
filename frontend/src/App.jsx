@@ -18,6 +18,7 @@ import Reports from './pages/Reports.jsx';
 import Organisation from './pages/Organisation.jsx';
 import RoleActivityMapping from './pages/RoleActivityMapping.jsx';
 import Suppliers from './pages/Suppliers.jsx';
+import Divisions from './pages/Divisions.jsx';
 
 function Protected({ children }) {
   const { user } = useAuth();
@@ -33,6 +34,7 @@ export default function App() {
       <Route path="/organisation" element={<Protected><Organisation /></Protected>} />
       <Route path="/role-activity-mapping" element={<Protected><RoleActivityMapping /></Protected>} />
       <Route path="/suppliers" element={<Protected><Suppliers /></Protected>} />
+      <Route path="/divisions" element={<Protected><Divisions /></Protected>} />
       <Route path="/dealers" element={<Protected><Dealers /></Protected>} />
       <Route path="/retailers" element={<Protected><Retailers /></Protected>} />
       <Route path="/categories" element={<Protected><Categories /></Protected>} />

@@ -5,7 +5,8 @@ import { useAuth } from '../context/AuthContext.jsx';
 export default function Dealers() {
   const { user } = useAuth();
   const [dealers, setDealers] = useState([]);
-  const [form, setForm] = useState({ name: '', address: '', contactNumber: '', gstNumber: '', username: '', password: '' });
+  const [divisions, setDivisions] = useState([]);
+  const [form, setForm] = useState({ name: '', address: '', contactNumber: '', gstNumber: '', divisionId: '', username: '', password: '' });
   const [bankAccounts, setBankAccounts] = useState([{ accountNumber: '', ifsc: '', bankName: '' }]);
   const [error, setError] = useState('');
   const [credEdit, setCredEdit] = useState(null); // dealer id currently setting/resetting a login
@@ -13,8 +14,11 @@ export default function Dealers() {
   const [credError, setCredError] = useState('');
 
   async function load() {
-    const { data } = await api.get('/dealers');
-    setDealers(data);
+    const calls = [api.get('/dealers')];
+    if (user.role === 'ADMIN') calls.push(api.get('/divisions'));
+    const results = await Promise.all(calls);
+    setDealers(results[0].data);
+    if (user.role === 'ADMIN') setDivisions(results[1].data);
   }
   useEffect(() => { load(); }, []);
 
@@ -29,7 +33,7 @@ export default function Dealers() {
     setError('');
     try {
       await api.post('/dealers', { ...form, bankAccounts });
-      setForm({ name: '', address: '', contactNumber: '', gstNumber: '', username: '', password: '' });
+      setForm({ name: '', address: '', contactNumber: '', gstNumber: '', divisionId: '', username: '', password: '' });
       setBankAccounts([{ accountNumber: '', ifsc: '', bankName: '' }]);
       load();
     } catch (err) {
@@ -67,7 +71,15 @@ export default function Dealers() {
               value={form.contactNumber} onChange={(e) => setForm({ ...form, contactNumber: e.target.value })} />
             <input placeholder="GST Number" className="border rounded px-2 py-1" required
               value={form.gstNumber} onChange={(e) => setForm({ ...form, gstNumber: e.target.value })} />
+            <select className="border rounded px-2 py-1" required
+              value={form.divisionId} onChange={(e) => setForm({ ...form, divisionId: e.target.value })}>
+              <option value="">Division...</option>
+              {divisions.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
           </div>
+          {divisions.length === 0 && (
+            <p className="text-xs text-amber-600 -mt-2">No divisions yet — add one under Divisions first.</p>
+          )}
 
           <div>
             <div className="text-sm font-medium mb-2">Login (optional — lets this dealer sign in and see their own data)</div>
@@ -111,6 +123,7 @@ export default function Dealers() {
                   <div className="font-semibold">{d.name} <span className="text-xs text-gray-400">#{d.id}</span></div>
                   <div className="text-sm text-gray-500">{d.address}</div>
                   <div className="text-sm text-gray-500">Ph: {d.contactNumber} · GST: {d.gstNumber}</div>
+                  <div className="text-sm text-gray-500">Division: {d.division?.name || '—'}</div>
                 </div>
                 {user.role === 'ADMIN' && (
                   <div className="text-right">

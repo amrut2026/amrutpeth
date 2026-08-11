@@ -9,7 +9,7 @@ router.get('/', authRequired, async (req, res) => {
   let where = {};
   if (scope.ownerType === 'DEALER') where = { ownerType: 'DEALER', dealerId: scope.dealerId };
   if (scope.ownerType === 'RETAILER') where = { ownerType: 'RETAILER', retailerId: scope.retailerId };
-  const purchases = await prisma.purchase.findMany({ where, include: { items: { include: { product: true } }, supplier: true }, orderBy: { date: 'desc' } });
+  const purchases = await prisma.purchase.findMany({ where, include: { items: { include: { product: true } }, supplier: true, sourceDealer: true }, orderBy: { date: 'desc' } });
   res.json(purchases);
 });
 
@@ -19,15 +19,31 @@ router.post('/', authRequired, async (req, res) => {
   if (!scope.ownerType) return res.status(403).json({ error: 'Only dealer/retailer accounts can record purchases' });
   const { supplierId, items } = req.body; // items: [{ productId, quantity, rate }]
 
+  let supplierIdToUse = null;
+  let sourceDealerIdToUse = null;
+
+  if (scope.ownerType === 'DEALER') {
+    if (!supplierId) return res.status(400).json({ error: 'Supplier is required' });
+    supplierIdToUse = Number(supplierId);
+  } else {
+    // RETAILER: always sourced from their own primary dealer.
+    // Looked up server-side rather than trusting the client, so a retailer can't
+    // record a purchase against a dealer that isn't theirs.
+    const retailer = await prisma.retailer.findUnique({ where: { id: scope.retailerId } });
+    if (!retailer) return res.status(404).json({ error: 'Retailer not found' });
+    sourceDealerIdToUse = retailer.primaryDealerId;
+  }
+
   const purchase = await prisma.purchase.create({
     data: {
       ownerType: scope.ownerType,
       dealerId: scope.ownerType === 'DEALER' ? scope.dealerId : null,
       retailerId: scope.ownerType === 'RETAILER' ? scope.retailerId : null,
-      supplierId: Number(supplierId),
+      supplierId: supplierIdToUse,
+      sourceDealerId: sourceDealerIdToUse,
       items: { create: items.map(i => ({ productId: Number(i.productId), quantity: Number(i.quantity), rate: i.rate })) }
     },
-    include: { items: true, supplier: true }
+    include: { items: true, supplier: true, sourceDealer: true }
   });
 
   for (const i of items) {

@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext.jsx';
 const NAV = {
   ADMIN: [
     ['/organisation', 'Organisation'], ['/role-activity-mapping', 'Role-Activity Mapping'],
+    ['/divisions', 'Divisions'],
     ['/dealers', 'Dealers'], ['/retailers', 'Retailers'], ['/suppliers', 'Suppliers / Manufacturers'],
     ['/categories', 'Categories'],
     ['/products', 'Products'], ['/inventory', 'Inventory'], ['/purchases', 'Purchases'],
@@ -53,3 +54,4 @@ export default function Layout({ children }) {
     </div>
   );
 }
+

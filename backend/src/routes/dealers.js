@@ -10,7 +10,7 @@ router.get('/', authRequired, async (req, res) => {
   const where = req.user.role === 'DEALER' ? { id: req.user.dealerId } : {};
   const dealers = await prisma.dealer.findMany({
     where,
-    include: { bankAccounts: true, users: { select: { id: true, username: true } } }
+    include: { bankAccounts: true, users: { select: { id: true, username: true } }, division: true }
   });
   res.json(dealers);
 });
@@ -18,7 +18,7 @@ router.get('/', authRequired, async (req, res) => {
 router.get('/:id', authRequired, async (req, res) => {
   const dealer = await prisma.dealer.findUnique({
     where: { id: Number(req.params.id) },
-    include: { bankAccounts: true, retailers: true, users: { select: { id: true, username: true } } }
+    include: { bankAccounts: true, retailers: true, users: { select: { id: true, username: true } }, division: true }
   });
   res.json(dealer);
 });
@@ -26,7 +26,7 @@ router.get('/:id', authRequired, async (req, res) => {
 // Create dealer (ADMIN only, i.e. manufacturer/platform owner onboarding a dealer)
 // Optionally pass username + password to create that dealer's login in the same step.
 router.post('/', authRequired, requireRole('ADMIN'), async (req, res) => {
-  const { name, address, contactNumber, gstNumber, bankAccounts, username, password } = req.body;
+  const { name, address, contactNumber, gstNumber, divisionId, bankAccounts, username, password } = req.body;
 
   if (username && !password) {
     return res.status(400).json({ error: 'Password is required to create a login' });
@@ -40,11 +40,12 @@ router.post('/', authRequired, requireRole('ADMIN'), async (req, res) => {
       const created = await tx.dealer.create({
         data: {
           name, address, contactNumber, gstNumber,
+          divisionId: divisionId ? Number(divisionId) : null,
           bankAccounts: { create: (bankAccounts || []).map(b => ({
             accountNumber: b.accountNumber, ifsc: b.ifsc, bankName: b.bankName
           })) }
         },
-        include: { bankAccounts: true }
+        include: { bankAccounts: true, division: true }
       });
 
       if (username) {
@@ -69,8 +70,10 @@ router.post('/', authRequired, requireRole('ADMIN'), async (req, res) => {
 router.put('/:id', authRequired, requireRole('ADMIN', 'DEALER'), async (req, res) => {
   const id = Number(req.params.id);
   if (req.user.role === 'DEALER' && req.user.dealerId !== id) return res.status(403).json({ error: 'Forbidden' });
-  const { name, address, contactNumber, gstNumber } = req.body;
-  const dealer = await prisma.dealer.update({ where: { id }, data: { name, address, contactNumber, gstNumber } });
+  const { name, address, contactNumber, gstNumber, divisionId } = req.body;
+  const data = { name, address, contactNumber, gstNumber };
+  if (req.user.role === 'ADMIN' && divisionId !== undefined) data.divisionId = divisionId ? Number(divisionId) : null;
+  const dealer = await prisma.dealer.update({ where: { id }, data });
   res.json(dealer);
 });
 
