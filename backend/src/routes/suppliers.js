@@ -4,9 +4,16 @@ import { authRequired, requireRole } from '../middleware/auth.js';
 
 const router = Router();
 
-// Any logged-in dealer/retailer needs to see suppliers to record purchases against them
+// Any logged-in dealer/retailer needs to see suppliers to record purchases against them.
+// DEALER accounts only see suppliers in their own division; ADMIN sees everything
+// (needed to manage the master list under Suppliers).
 router.get('/', authRequired, async (req, res) => {
-  res.json(await prisma.supplier.findMany({ orderBy: { name: 'asc' }, include: { bankAccounts: true, division: true } }));
+  let where = {};
+  if (req.user.role === 'DEALER') {
+    const dealer = await prisma.dealer.findUnique({ where: { id: req.user.dealerId } });
+    where = { divisionId: dealer?.divisionId ?? -1 }; // -1 matches nothing if the dealer has no division set
+  }
+  res.json(await prisma.supplier.findMany({ where, orderBy: { name: 'asc' }, include: { bankAccounts: true, division: true } }));
 });
 
 router.get('/:id', authRequired, async (req, res) => {

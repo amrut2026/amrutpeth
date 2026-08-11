@@ -4,31 +4,29 @@ import Barcode, { printBarcodeLabels } from '../components/Barcode.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 
 const empty = {
-  categoryId: '', name: '', sizeWeight: '', costPrice: '', sellingPrice: '', discount: '0', mrp: '',
-  manufacturingDate: '', expiryDate: '', batchName: '', fssaiCode: '', initialQuantity: '0', reorderLevel: '10'
+  categoryId: '', supplierId: '', name: '', sizeWeight: '', fssaiCode: '',
 };
-
-// Convert an ISO date string to yyyy-mm-dd for <input type="date">
-function toDateInput(iso) {
-  return iso ? String(iso).slice(0, 10) : '';
-}
 
 export default function Products() {
   const { user } = useAuth();
   const isAdmin = user.role === 'ADMIN';
   const [products, setProducts] = useState([]);
   const [categories, setCategories] = useState([]);
+  const [suppliers, setSuppliers] = useState([]);
   const [form, setForm] = useState(empty);
   const [selectedId, setSelectedId] = useState(null);
+  const [cloneSource, setCloneSource] = useState(null); // product being cloned from, if any
   const [printQty, setPrintQty] = useState(1);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
+  const [supplierFilter, setSupplierFilter] = useState('');
 
   async function load() {
-    const [p, c] = await Promise.all([api.get('/products'), api.get('/categories')]);
+    const [p, c, s] = await Promise.all([api.get('/products'), api.get('/categories'), api.get('/suppliers')]);
     setProducts(p.data);
     setCategories(c.data);
+    setSuppliers(s.data);
   }
   useEffect(() => { load(); }, []);
 
@@ -37,26 +35,37 @@ export default function Products() {
 
   function selectProduct(p) {
     setSelectedId(p.id);
+    setCloneSource(null);
     setError('');
     setForm({
       categoryId: p.categoryId,
+      supplierId: p.supplierId || '',
       name: p.name,
       sizeWeight: p.sizeWeight,
-      costPrice: p.costPrice,
-      sellingPrice: p.sellingPrice,
-      discount: p.discount,
-      mrp: p.mrp,
-      manufacturingDate: toDateInput(p.manufacturingDate),
-      expiryDate: toDateInput(p.expiryDate),
-      batchName: p.batchName,
       fssaiCode: p.fssaiCode,
-      initialQuantity: '',
-      reorderLevel: '',
+    });
+  }
+
+  // Pre-fills the create form with another product's details, but as a brand
+  // new record: no id (so it POSTs, not PUTs), no supplier pre-selected (the
+  // admin must explicitly pick the target supplier), and a fresh barcode will
+  // be generated server-side on save.
+  function cloneProduct(p) {
+    setSelectedId(null);
+    setCloneSource(p);
+    setError('');
+    setForm({
+      categoryId: p.categoryId,
+      supplierId: '',
+      name: p.name,
+      sizeWeight: p.sizeWeight,
+      fssaiCode: p.fssaiCode,
     });
   }
 
   function startNew() {
     setSelectedId(null);
+    setCloneSource(null);
     setForm(empty);
     setError('');
   }
@@ -81,7 +90,8 @@ export default function Products() {
   }
 
   const filtered = products.filter((p) =>
-    !search || p.name.toLowerCase().includes(search.toLowerCase()) || p.barcode.includes(search)
+    (!search || p.name.toLowerCase().includes(search.toLowerCase()) || p.barcode.includes(search)) &&
+    (!supplierFilter || p.supplierId === Number(supplierFilter))
   );
 
   return (
@@ -93,13 +103,25 @@ export default function Products() {
         {isAdmin && (
         <div className="bg-white p-4 rounded shadow h-fit sticky top-4">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="font-semibold">{isEditing ? `Edit Product #${selectedId}` : 'New Product'}</h2>
+            <h2 className="font-semibold">
+              {isEditing ? `Edit Product #${selectedId}` : cloneSource ? `Cloning "${cloneSource.name}"` : 'New Product'}
+            </h2>
             {isEditing && (
               <button type="button" onClick={startNew} className="text-sm text-emerald-700 hover:underline">
                 + New product instead
               </button>
             )}
+            {!isEditing && cloneSource && (
+              <button type="button" onClick={startNew} className="text-sm text-gray-500 hover:underline">
+                Cancel clone
+              </button>
+            )}
           </div>
+          {cloneSource && (
+            <p className="text-xs text-amber-600 -mt-2 mb-3">
+              Pick the destination supplier below and adjust any fields (e.g. pricing) before saving.
+            </p>
+          )}
 
           <form onSubmit={submit} className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <select className="border rounded px-2 py-1 md:col-span-2" required
@@ -107,43 +129,21 @@ export default function Products() {
               <option value="">Category...</option>
               {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
+            <select className="border rounded px-2 py-1 md:col-span-2" required
+              value={form.supplierId} onChange={(e) => setForm({ ...form, supplierId: e.target.value })}>
+              <option value="">Supplier...</option>
+              {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
             <input placeholder="Product Name" className="border rounded px-2 py-1" required
               value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
             <input placeholder="Size / Weight (e.g. 200g)" className="border rounded px-2 py-1" required
               value={form.sizeWeight} onChange={(e) => setForm({ ...form, sizeWeight: e.target.value })} />
-            <input placeholder="Batch Name" className="border rounded px-2 py-1" required
-              value={form.batchName} onChange={(e) => setForm({ ...form, batchName: e.target.value })} />
-            <input placeholder="FSSAI Code" className="border rounded px-2 py-1" required
+            <input placeholder="FSSAI Code" className="border rounded px-2 py-1 md:col-span-2" required
               value={form.fssaiCode} onChange={(e) => setForm({ ...form, fssaiCode: e.target.value })} />
 
-            <input type="number" step="0.01" placeholder="Cost Price" className="border rounded px-2 py-1" required
-              value={form.costPrice} onChange={(e) => setForm({ ...form, costPrice: e.target.value })} />
-            <input type="number" step="0.01" placeholder="Selling Price" className="border rounded px-2 py-1" required
-              value={form.sellingPrice} onChange={(e) => setForm({ ...form, sellingPrice: e.target.value })} />
-            <input type="number" step="0.01" placeholder="Discount" className="border rounded px-2 py-1"
-              value={form.discount} onChange={(e) => setForm({ ...form, discount: e.target.value })} />
-            <input type="number" step="0.01" placeholder="MRP" className="border rounded px-2 py-1" required
-              value={form.mrp} onChange={(e) => setForm({ ...form, mrp: e.target.value })} />
-
-            <div className="flex flex-col">
-              <label className="text-xs text-gray-500">Manufacturing Date</label>
-              <input type="date" className="border rounded px-2 py-1" required
-                value={form.manufacturingDate} onChange={(e) => setForm({ ...form, manufacturingDate: e.target.value })} />
-            </div>
-            <div className="flex flex-col">
-              <label className="text-xs text-gray-500">Expiry Date</label>
-              <input type="date" className="border rounded px-2 py-1" required
-                value={form.expiryDate} onChange={(e) => setForm({ ...form, expiryDate: e.target.value })} />
-            </div>
-
-            {!isEditing && (
-              <>
-                <input type="number" placeholder="Initial Stock Qty" className="border rounded px-2 py-1"
-                  value={form.initialQuantity} onChange={(e) => setForm({ ...form, initialQuantity: e.target.value })} />
-                <input type="number" placeholder="Reorder Level" className="border rounded px-2 py-1"
-                  value={form.reorderLevel} onChange={(e) => setForm({ ...form, reorderLevel: e.target.value })} />
-              </>
-            )}
+            <p className="md:col-span-2 text-xs text-gray-500">
+              Pricing, MRP, dates, and batch name are set when this product is purchased, not here — see Purchases.
+            </p>
 
             {isEditing && selectedProduct && (
               <div className="md:col-span-2 flex items-center gap-3 bg-gray-50 rounded p-2">
@@ -162,7 +162,7 @@ export default function Products() {
             {error && <p className="md:col-span-2 text-red-600 text-sm">{error}</p>}
 
             <button disabled={saving} className="md:col-span-2 bg-emerald-700 text-white px-4 py-2 rounded hover:bg-emerald-800">
-              {saving ? 'Saving...' : isEditing ? 'Save Changes' : 'Create Product & Generate Barcode'}
+              {saving ? 'Saving...' : isEditing ? 'Save Changes' : cloneSource ? 'Create Cloned Product' : 'Create Product & Generate Barcode'}
             </button>
           </form>
         </div>
@@ -175,12 +175,21 @@ export default function Products() {
               Browsing the product catalog. Only an admin can add or edit products.
             </p>
           )}
-          <input
-            placeholder="Search by name or barcode..."
-            className="border rounded px-3 py-2 w-full mb-3"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
+          <div className="flex flex-col md:flex-row gap-3 mb-3">
+            <input
+              placeholder="Search by name or barcode..."
+              className="border rounded px-3 py-2 w-full"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+            <select
+              className="border rounded px-3 py-2 w-full md:w-64"
+              value={supplierFilter}
+              onChange={(e) => setSupplierFilter(e.target.value)}>
+              <option value="">All suppliers</option>
+              {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+          </div>
           <div className="space-y-2 max-h-[75vh] overflow-y-auto pr-1">
             {filtered.map((p) => (
               <div
@@ -191,12 +200,18 @@ export default function Products() {
                 } ${selectedId === p.id ? 'border-emerald-600' : 'border-transparent hover:border-gray-200'}`}>
                 <div>
                   <div className="font-semibold">{p.name} <span className="text-xs text-gray-400">({p.sizeWeight})</span></div>
-                  <div className="text-sm text-gray-500">
-                    {p.category?.name} · MRP ₹{p.mrp} · Selling ₹{p.sellingPrice} · Batch {p.batchName}
-                  </div>
-                  <div className="text-xs text-gray-400">Barcode: {p.barcode}</div>
+                  <div className="text-sm text-gray-500">{p.category?.name}</div>
+                  <div className="text-xs text-gray-400">Supplier: {p.supplier?.name || '—'} · Barcode: {p.barcode}</div>
                 </div>
                 <div className="flex items-center gap-2">
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); cloneProduct(p); }}
+                      className="border border-emerald-700 text-emerald-700 px-3 py-2 rounded text-sm hover:bg-emerald-50">
+                      Clone
+                    </button>
+                  )}
                   {!isAdmin && (
                     <button
                       type="button"

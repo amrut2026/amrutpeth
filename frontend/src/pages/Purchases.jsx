@@ -9,7 +9,12 @@ export default function Purchases() {
   const [suppliers, setSuppliers] = useState([]);
   const [myDealer, setMyDealer] = useState(null);
   const [supplierId, setSupplierId] = useState('');
-  const [items, setItems] = useState([{ productId: '', quantity: '', rate: '' }]);
+  const [error, setError] = useState('');
+  const emptyItem = {
+    productId: '', quantity: '', rate: '', sellingPrice: '', discount: '0', mrp: '',
+    manufacturingDate: '', expiryDate: '', batchName: ''
+  };
+  const [items, setItems] = useState([{ ...emptyItem }]);
 
   async function load() {
     const calls = [api.get('/purchases'), api.get('/products')];
@@ -32,13 +37,18 @@ export default function Purchases() {
 
   async function submit(e) {
     e.preventDefault();
+    setError('');
     // Retailers always buy from their own primary dealer — the backend derives this
     // server-side, so nothing source-related needs to be sent for them.
     const payload = user.role === 'DEALER' ? { supplierId, items } : { items };
-    await api.post('/purchases', payload);
-    setSupplierId('');
-    setItems([{ productId: '', quantity: '', rate: '' }]);
-    load();
+    try {
+      await api.post('/purchases', payload);
+      setSupplierId('');
+      setItems([{ ...emptyItem }]);
+      load();
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to record purchase');
+    }
   }
 
   return (
@@ -69,21 +79,47 @@ export default function Purchases() {
           </>
         )}
 
+        {error && <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">{error}</div>}
+
         {items.map((it, i) => (
-          <div key={i} className="grid grid-cols-3 gap-2">
-            <select className="border rounded px-2 py-1" required
-              value={it.productId} onChange={(e) => updateItem(i, 'productId', e.target.value)}>
-              <option value="">Product...</option>
-              {products.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.sizeWeight})</option>)}
-            </select>
-            <input type="number" placeholder="Quantity" className="border rounded px-2 py-1" required
-              value={it.quantity} onChange={(e) => updateItem(i, 'quantity', e.target.value)} />
-            <input type="number" step="0.01" placeholder="Rate" className="border rounded px-2 py-1" required
-              value={it.rate} onChange={(e) => updateItem(i, 'rate', e.target.value)} />
+          <div key={i} className="border rounded p-3 space-y-2">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+              <select className="border rounded px-2 py-1" required
+                value={it.productId} onChange={(e) => updateItem(i, 'productId', e.target.value)}>
+                <option value="">Product...</option>
+                {products.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.sizeWeight})</option>)}
+              </select>
+              <input type="number" placeholder="Quantity" className="border rounded px-2 py-1" required
+                value={it.quantity} onChange={(e) => updateItem(i, 'quantity', e.target.value)} />
+              <input placeholder="Batch Name" className="border rounded px-2 py-1" required
+                value={it.batchName} onChange={(e) => updateItem(i, 'batchName', e.target.value)} />
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+              <input type="number" step="0.01" placeholder="Cost Price" className="border rounded px-2 py-1" required
+                value={it.rate} onChange={(e) => updateItem(i, 'rate', e.target.value)} />
+              <input type="number" step="0.01" placeholder="Selling Price" className="border rounded px-2 py-1" required
+                value={it.sellingPrice} onChange={(e) => updateItem(i, 'sellingPrice', e.target.value)} />
+              <input type="number" step="0.01" placeholder="Discount" className="border rounded px-2 py-1"
+                value={it.discount} onChange={(e) => updateItem(i, 'discount', e.target.value)} />
+              <input type="number" step="0.01" placeholder="MRP" className="border rounded px-2 py-1" required
+                value={it.mrp} onChange={(e) => updateItem(i, 'mrp', e.target.value)} />
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="flex flex-col">
+                <label className="text-xs text-gray-500">Manufacturing Date</label>
+                <input type="date" className="border rounded px-2 py-1" required
+                  value={it.manufacturingDate} onChange={(e) => updateItem(i, 'manufacturingDate', e.target.value)} />
+              </div>
+              <div className="flex flex-col">
+                <label className="text-xs text-gray-500">Expiry Date</label>
+                <input type="date" className="border rounded px-2 py-1" required
+                  value={it.expiryDate} onChange={(e) => updateItem(i, 'expiryDate', e.target.value)} />
+              </div>
+            </div>
           </div>
         ))}
         <button type="button" className="text-emerald-700 text-sm"
-          onClick={() => setItems([...items, { productId: '', quantity: '', rate: '' }])}>
+          onClick={() => setItems([...items, { ...emptyItem }])}>
           + Add another item
         </button>
         <div>
@@ -97,7 +133,9 @@ export default function Purchases() {
             <div className="font-semibold">{p.supplier?.name || p.sourceDealer?.name} <span className="text-xs text-gray-400">{new Date(p.date).toLocaleString()}</span></div>
             <ul className="text-sm text-gray-600 mt-1">
               {p.items.map((it) => (
-                <li key={it.id}>{it.product?.name} — qty {it.quantity} @ ₹{it.rate}</li>
+                <li key={it.id}>
+                  {it.product?.name} — qty {it.quantity} @ ₹{it.rate} (batch {it.batchName}, MRP ₹{it.mrp}, exp {new Date(it.expiryDate).toLocaleDateString()})
+                </li>
               ))}
             </ul>
           </div>

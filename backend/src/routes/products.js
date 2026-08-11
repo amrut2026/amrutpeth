@@ -14,33 +14,40 @@ function generateBarcode() {
 // Product catalog is shared across the whole platform — any logged-in
 // dealer/retailer/admin can browse it (they need this to record purchases
 // and sales), but only ADMIN can create/edit/delete entries.
+// DEALER accounts only see products from suppliers in their own division.
 router.get('/', authRequired, async (req, res) => {
-  const products = await prisma.product.findMany({ include: { category: true }, orderBy: { id: 'desc' } });
+  let where = {};
+  if (req.user.role === 'DEALER') {
+    const dealer = await prisma.dealer.findUnique({ where: { id: req.user.dealerId } });
+    where = { supplier: { divisionId: dealer?.divisionId ?? -1 } }; // -1 matches nothing if the dealer has no division set
+  }
+  const products = await prisma.product.findMany({ where, include: { category: true, supplier: true }, orderBy: { id: 'desc' } });
   res.json(products);
 });
 
 router.get('/:id', authRequired, async (req, res) => {
-  const product = await prisma.product.findUnique({ where: { id: Number(req.params.id) }, include: { category: true } });
+  const product = await prisma.product.findUnique({ where: { id: Number(req.params.id) }, include: { category: true, supplier: true } });
   res.json(product);
 });
 
 // Create product - ADMIN only (manufacturer/platform owner manages the master catalog)
+// Every product belongs to exactly one supplier — to offer the same item from a
+// different supplier, clone it (see the frontend's "Clone to another supplier").
+// Pricing, MRP, dates, and batch name are NOT set here — they're captured per
+// batch when the product is purchased (see purchases.js).
 router.post('/', authRequired, requireRole('ADMIN'), async (req, res) => {
-  const {
-    categoryId, name, sizeWeight, costPrice, sellingPrice, discount, mrp,
-    manufacturingDate, expiryDate, batchName, fssaiCode
-  } = req.body;
+  const { categoryId, supplierId, name, sizeWeight, fssaiCode } = req.body;
+
+  if (!supplierId) return res.status(400).json({ error: 'Supplier is required' });
 
   const barcode = generateBarcode();
 
   const product = await prisma.product.create({
     data: {
-      categoryId: Number(categoryId), name, sizeWeight,
-      costPrice, sellingPrice, discount: discount || 0, mrp,
-      manufacturingDate: new Date(manufacturingDate),
-      expiryDate: new Date(expiryDate),
-      batchName, fssaiCode, barcode,
-    }
+      categoryId: Number(categoryId), supplierId: Number(supplierId), name, sizeWeight,
+      fssaiCode, barcode,
+    },
+    include: { category: true, supplier: true }
   });
 
   res.json(product);
@@ -48,19 +55,15 @@ router.post('/', authRequired, requireRole('ADMIN'), async (req, res) => {
 
 router.put('/:id', authRequired, requireRole('ADMIN'), async (req, res) => {
   const id = Number(req.params.id);
-  const {
-    categoryId, name, sizeWeight, costPrice, sellingPrice, discount, mrp,
-    manufacturingDate, expiryDate, batchName, fssaiCode
-  } = req.body;
+  const { categoryId, supplierId, name, sizeWeight, fssaiCode } = req.body;
   const product = await prisma.product.update({
     where: { id },
     data: {
       categoryId: categoryId ? Number(categoryId) : undefined,
-      name, sizeWeight, costPrice, sellingPrice, discount, mrp,
-      manufacturingDate: manufacturingDate ? new Date(manufacturingDate) : undefined,
-      expiryDate: expiryDate ? new Date(expiryDate) : undefined,
-      batchName, fssaiCode
-    }
+      supplierId: supplierId !== undefined ? (supplierId ? Number(supplierId) : null) : undefined,
+      name, sizeWeight, fssaiCode
+    },
+    include: { category: true, supplier: true }
   });
   res.json(product);
 });

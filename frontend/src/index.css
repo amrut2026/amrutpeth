@@ -1,3 +1,20 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Panel theme: every screen builds its cards/forms/tables with Tailwind's
+   bg-white utility (see Dealers, Retailers, Suppliers/CrudTable, Products,
+   Purchases, Divisions, Role-Activity Mapping, etc). Overriding it here
+   re-colors every panel across the whole app from one place, rather than
+   editing bg-white -> bg-orange-50 in every component individually.
+   !important is needed to reliably win over the Tailwind utility itself. */
+.bg-white {
+  background-color: #fff7ed !important; /* light orange (Tailwind orange-50) */
+  color: #7c2d12; /* dark orange/brown (Tailwind orange-900) - readable on the above */
+}
+
+/* Table header rows sit inside those panels and use bg-gray-100; tint them
+   to match so the panel reads as one cohesive orange surface. */
+.bg-gray-100 {
+  background-color: #ffedd5 !important; /* Tailwind orange-100 */
+}

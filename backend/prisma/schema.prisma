@@ -9,8 +9,6 @@ generator client {
 
 datasource db {
   provider  = "postgresql"
-  url       = env("DATABASE_URL")   // pooled connection, used at runtime
-  directUrl = env("DIRECT_URL")     // direct connection, used for migrations
 }
 
 enum Role {
@@ -137,21 +135,19 @@ model ProductCategory {
 // Product master catalog. Managed centrally by ADMIN only — dealers and
 // retailers get stock into their own inventory via the Purchases module,
 // they do not own or edit catalog entries themselves.
+// Note: pricing, MRP, dates, and batch name are NOT here — those vary per
+// batch purchased and live on PurchaseItem instead. The barcode identifies
+// the product itself and stays the same across every purchase/batch.
 model Product {
   id               Int      @id @default(autoincrement())
   categoryId       Int
   category         ProductCategory @relation(fields: [categoryId], references: [id])
+  supplierId       Int?
+  supplier         Supplier? @relation(fields: [supplierId], references: [id])
   name             String
   sizeWeight       String
-  costPrice        Decimal  @db.Decimal(10,2)
-  sellingPrice     Decimal  @db.Decimal(10,2)
-  discount         Decimal  @db.Decimal(10,2) @default(0)
-  mrp              Decimal  @db.Decimal(10,2)
-  manufacturingDate DateTime
-  expiryDate       DateTime
-  batchName        String
   fssaiCode        String
-  barcode          String   @unique  // encoded value for barcode/QR
+  barcode          String   @unique  // encoded value for barcode/QR - stable, never regenerated
 
   createdAt        DateTime @default(now())
   inventory        Inventory[]
@@ -173,6 +169,7 @@ model Supplier {
 
   bankAccounts  SupplierBankAccount[]
   purchases     Purchase[]
+  products      Product[]
 }
 
 model SupplierBankAccount {
@@ -220,14 +217,24 @@ model Purchase {
   items          PurchaseItem[]
 }
 
+// Each line item captures the batch-specific details of what was actually
+// bought: cost, selling price, discount, MRP, dates, and batch name. These
+// used to live on Product itself, but a re-order of the same product can
+// arrive with different pricing/dates/batch, so they belong here instead.
 model PurchaseItem {
-  id          Int      @id @default(autoincrement())
-  purchaseId  Int
-  purchase    Purchase @relation(fields: [purchaseId], references: [id])
-  productId   Int
-  product     Product  @relation(fields: [productId], references: [id])
-  quantity    Int
-  rate        Decimal  @db.Decimal(10,2)
+  id                Int      @id @default(autoincrement())
+  purchaseId        Int
+  purchase          Purchase @relation(fields: [purchaseId], references: [id])
+  productId         Int
+  product           Product  @relation(fields: [productId], references: [id])
+  quantity          Int
+  rate              Decimal  @db.Decimal(10,2) // cost price paid per unit for this batch
+  sellingPrice      Decimal  @db.Decimal(10,2)
+  discount          Decimal  @db.Decimal(10,2) @default(0)
+  mrp               Decimal  @db.Decimal(10,2)
+  manufacturingDate DateTime
+  expiryDate        DateTime
+  batchName         String
 }
 
 // ---------------- Sales / POS ----------------

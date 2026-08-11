@@ -17,7 +17,14 @@ router.get('/', authRequired, async (req, res) => {
 router.post('/', authRequired, async (req, res) => {
   const scope = ownerScope(req);
   if (!scope.ownerType) return res.status(403).json({ error: 'Only dealer/retailer accounts can record purchases' });
-  const { supplierId, items } = req.body; // items: [{ productId, quantity, rate }]
+  const { supplierId, items } = req.body;
+  // items: [{ productId, quantity, rate, sellingPrice, discount, mrp, manufacturingDate, expiryDate, batchName }]
+
+  for (const i of items) {
+    if (!i.rate || !i.sellingPrice || !i.mrp || !i.manufacturingDate || !i.expiryDate || !i.batchName) {
+      return res.status(400).json({ error: 'Cost price, selling price, MRP, dates, and batch name are required for every item' });
+    }
+  }
 
   let supplierIdToUse = null;
   let sourceDealerIdToUse = null;
@@ -41,9 +48,21 @@ router.post('/', authRequired, async (req, res) => {
       retailerId: scope.ownerType === 'RETAILER' ? scope.retailerId : null,
       supplierId: supplierIdToUse,
       sourceDealerId: sourceDealerIdToUse,
-      items: { create: items.map(i => ({ productId: Number(i.productId), quantity: Number(i.quantity), rate: i.rate })) }
+      items: {
+        create: items.map(i => ({
+          productId: Number(i.productId),
+          quantity: Number(i.quantity),
+          rate: i.rate,
+          sellingPrice: i.sellingPrice,
+          discount: i.discount || 0,
+          mrp: i.mrp,
+          manufacturingDate: new Date(i.manufacturingDate),
+          expiryDate: new Date(i.expiryDate),
+          batchName: i.batchName,
+        }))
+      }
     },
-    include: { items: true, supplier: true, sourceDealer: true }
+    include: { items: { include: { product: true } }, supplier: true, sourceDealer: true }
   });
 
   for (const i of items) {
