@@ -229,7 +229,8 @@ model PurchaseItem {
   product           Product  @relation(fields: [productId], references: [id])
   quantity          Int
   rate              Decimal  @db.Decimal(10,2) // cost price paid per unit for this batch
-  sellingPrice      Decimal  @db.Decimal(10,2)
+  dealerCommission  Decimal  @db.Decimal(5,2)  // dealer commission %, used to derive sellingPrice
+  sellingPrice      Decimal  @db.Decimal(10,2) // = rate + (dealerCommission * rate / 100), rounded to 1 decimal
   discount          Decimal  @db.Decimal(10,2) @default(0)
   mrp               Decimal  @db.Decimal(10,2)
   manufacturingDate DateTime

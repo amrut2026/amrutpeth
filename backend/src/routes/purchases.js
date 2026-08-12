@@ -21,8 +21,8 @@ router.post('/', authRequired, async (req, res) => {
   // items: [{ productId, quantity, rate, sellingPrice, discount, mrp, manufacturingDate, expiryDate, batchName }]
 
   for (const i of items) {
-    if (!i.rate || !i.sellingPrice || !i.mrp || !i.manufacturingDate || !i.expiryDate || !i.batchName) {
-      return res.status(400).json({ error: 'Cost price, selling price, MRP, dates, and batch name are required for every item' });
+    if (!i.rate || !i.dealerCommission || !i.sellingPrice || !i.mrp || !i.manufacturingDate || !i.expiryDate || !i.batchName) {
+      return res.status(400).json({ error: 'Cost price, dealer commission, selling price, MRP, dates, and batch name are required for every item' });
     }
   }
 
@@ -53,6 +53,7 @@ router.post('/', authRequired, async (req, res) => {
           productId: Number(i.productId),
           quantity: Number(i.quantity),
           rate: i.rate,
+          dealerCommission: i.dealerCommission,
           sellingPrice: i.sellingPrice,
           discount: i.discount || 0,
           mrp: i.mrp,
