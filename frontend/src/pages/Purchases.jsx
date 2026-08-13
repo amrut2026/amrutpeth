@@ -144,7 +144,13 @@ export default function Purchases() {
                   disabled={user.role === 'DEALER' && !supplierId}
                   value={it.productId} onChange={(e) => updateItem(i, 'productId', e.target.value)}>
                   <option value="">Product... / उत्पादन निवडा...</option>
-                  {availableProducts.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.sizeWeight})</option>)}
+                  {availableProducts.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {user.role === 'RETAILER'
+                        ? `${p.name} / ${p.supplier?.name || '—'}`
+                        : `${p.name} (${p.sizeWeight})`}
+                    </option>
+                  ))}
                 </select>
                 {user.role === 'DEALER' && !supplierId && (
                   <p className="text-xs text-amber-600">

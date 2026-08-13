@@ -4,11 +4,21 @@ import api from '../api.js';
 // Generic list+create component driven by a field config.
 // fields: [{ key, label, type: 'text'|'number'|'date'|'select', options? }]
 // canWrite: if false, the create form is hidden and only the list is shown (read-only view).
-export default function CrudTable({ title, endpoint, fields, columns, transformSubmit, canWrite = true }) {
+export default function CrudTable({
+  title,
+  endpoint,
+  fields,
+  columns,
+  transformSubmit,
+  canWrite = true,
+  editable = false,
+  addButtonLabel,
+}) {
   const [rows, setRows] = useState([]);
   const [form, setForm] = useState({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [editingId, setEditingId] = useState(null);
 
   async function load() {
     const { data } = await api.get(endpoint);
@@ -37,6 +47,22 @@ export default function CrudTable({ title, endpoint, fields, columns, transformS
     setForm({ ...form, [key]: rows.length ? rows : [{ ...emptyBankRow }] });
   }
 
+  function startEdit(row) {
+    const next = {};
+    fields.forEach((f) => {
+      next[f.key] = row[f.key] ?? '';
+    });
+    setForm(next);
+    setEditingId(row.id);
+    setError('');
+  }
+
+  function cancelEdit() {
+    setForm({});
+    setEditingId(null);
+    setError('');
+  }
+
   async function submit(e) {
     e.preventDefault();
     setLoading(true);
@@ -51,8 +77,13 @@ export default function CrudTable({ title, endpoint, fields, columns, transformS
         }
       });
       const payload = transformSubmit ? transformSubmit(cleaned) : cleaned;
-      await api.post(endpoint, payload);
+      if (editingId) {
+        await api.put(`${endpoint}/${editingId}`, payload);
+      } else {
+        await api.post(endpoint, payload);
+      }
       setForm({});
+      setEditingId(null);
       await load();
     } catch (err) {
       setError(err.response?.data?.error || 'Something went wrong');
@@ -121,8 +152,21 @@ export default function CrudTable({ title, endpoint, fields, columns, transformS
           })}
           <div className="md:col-span-3 flex items-center gap-3">
             <button disabled={loading} className="bg-emerald-700 text-white px-4 py-2 rounded hover:bg-emerald-800">
-              {loading ? 'Saving...' : `Add ${title.replace(/s$/, '')}`}
+              {loading
+                ? 'Saving...'
+                : editingId
+                ? 'Save'
+                : addButtonLabel || `Add ${title.replace(/s$/, '')}`}
             </button>
+            {editingId && (
+              <button
+                type="button"
+                onClick={cancelEdit}
+                className="text-gray-600 text-sm px-3 py-2 rounded hover:bg-gray-100"
+              >
+                Cancel
+              </button>
+            )}
             {error && <span className="text-red-600 text-sm">{error}</span>}
           </div>
         </form>
@@ -131,18 +175,32 @@ export default function CrudTable({ title, endpoint, fields, columns, transformS
       <div className="bg-white rounded shadow overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-gray-100">
-            <tr>{columns.map((c) => <th key={c.key} className="text-left p-2">{c.label}</th>)}</tr>
+            <tr>
+              {columns.map((c) => <th key={c.key} className="text-left p-2">{c.label}</th>)}
+              {editable && canWrite && <th className="text-left p-2">Actions</th>}
+            </tr>
           </thead>
           <tbody>
             {rows.map((r) => (
-              <tr key={r.id} className="border-t">
+              <tr key={r.id} className={`border-t ${editingId === r.id ? 'bg-emerald-50' : ''}`}>
                 {columns.map((c) => (
                   <td key={c.key} className="p-2">{c.render ? c.render(r) : r[c.key]}</td>
                 ))}
+                {editable && canWrite && (
+                  <td className="p-2">
+                    <button
+                      type="button"
+                      onClick={() => startEdit(r)}
+                      className="text-emerald-700 text-sm hover:underline"
+                    >
+                      Modify
+                    </button>
+                  </td>
+                )}
               </tr>
             ))}
             {rows.length === 0 && (
-              <tr><td className="p-3 text-gray-400" colSpan={columns.length}>No records yet.</td></tr>
+              <tr><td className="p-3 text-gray-400" colSpan={columns.length + (editable && canWrite ? 1 : 0)}>No records yet.</td></tr>
             )}
           </tbody>
         </table>

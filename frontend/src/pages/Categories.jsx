@@ -5,9 +5,16 @@ export default function Categories() {
   const { user } = useAuth();
   return (
     <CrudTable
-      title="Product Categories"
+      title={
+        <>
+          Product Categories{' '}
+          <span className="text-base font-normal text-gray-500">(उत्पादन श्रेण्या)</span>
+        </>
+      }
       endpoint="/categories"
       canWrite={user.role === 'DEALER'}
+      editable={user.role === 'DEALER'}
+      addButtonLabel="Add Product Category"
       fields={[
         { key: 'name', label: 'Category Name', required: true },
         { key: 'description', label: 'Description' },
