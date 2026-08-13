@@ -5,14 +5,15 @@ import { authRequired, requireRole } from '../middleware/auth.js';
 
 const router = Router();
 
-// List retailers - ADMIN sees all, DEALER sees own retailers, RETAILER sees self
+// List retailers - ADMIN sees all (grouped under their respective dealer),
+// DEALER sees own retailers, RETAILER sees self
 router.get('/', authRequired, async (req, res) => {
   let where = {};
   if (req.user.role === 'DEALER') where = { primaryDealerId: req.user.dealerId };
   if (req.user.role === 'RETAILER') where = { id: req.user.retailerId };
   const retailers = await prisma.retailer.findMany({
     where,
-    include: { bankAccounts: true, users: { select: { id: true, username: true } } }
+    include: { bankAccounts: true, users: { select: { id: true, username: true } }, dealer: true }
   });
   res.json(retailers);
 });
@@ -25,15 +26,13 @@ router.get('/:id', authRequired, async (req, res) => {
   res.json(retailer);
 });
 
-// Create retailer - DEALER (or ADMIN) creates a retailer under a dealer
+// Create retailer - DEALER only. Admin no longer creates retailers directly;
+// it's the dealer onboarding their own retailer, so primaryDealerId always
+// comes from the logged-in dealer's own id, never from the client.
 // Optionally pass username + password to create that retailer's login in the same step.
-router.post('/', authRequired, requireRole('ADMIN', 'DEALER'), async (req, res) => {
+router.post('/', authRequired, requireRole('DEALER'), async (req, res) => {
   const { name, address, contactNumber, gstNumber, bankAccounts, username, password } = req.body;
-  const primaryDealerId = req.user.role === 'DEALER' ? req.user.dealerId : Number(req.body.primaryDealerId);
-
-  if (req.user.role === 'ADMIN' && (!req.body.primaryDealerId || Number.isNaN(primaryDealerId))) {
-    return res.status(400).json({ error: 'Primary dealer is required' });
-  }
+  const primaryDealerId = req.user.dealerId;
 
   if (username && !password) {
     return res.status(400).json({ error: 'Password is required to create a login' });
@@ -73,15 +72,28 @@ router.post('/', authRequired, requireRole('ADMIN', 'DEALER'), async (req, res) 
   }
 });
 
-router.put('/:id', authRequired, requireRole('ADMIN', 'DEALER'), async (req, res) => {
+router.put('/:id', authRequired, requireRole('DEALER'), async (req, res) => {
   const id = Number(req.params.id);
+  const existing = await prisma.retailer.findUnique({ where: { id } });
+  if (!existing || existing.primaryDealerId !== req.user.dealerId) {
+    return res.status(403).json({ error: 'You can only edit your own retailers' });
+  }
   const { name, address, contactNumber, gstNumber } = req.body;
   const retailer = await prisma.retailer.update({ where: { id }, data: { name, address, contactNumber, gstNumber } });
   res.json(retailer);
 });
 
-router.post('/:id/bank-accounts', authRequired, requireRole('ADMIN', 'DEALER', 'RETAILER'), async (req, res) => {
+router.post('/:id/bank-accounts', authRequired, requireRole('DEALER', 'RETAILER'), async (req, res) => {
   const retailerId = Number(req.params.id);
+  if (req.user.role === 'DEALER') {
+    const retailer = await prisma.retailer.findUnique({ where: { id: retailerId } });
+    if (!retailer || retailer.primaryDealerId !== req.user.dealerId) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+  }
+  if (req.user.role === 'RETAILER' && req.user.retailerId !== retailerId) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
   const { accountNumber, ifsc, bankName } = req.body;
   const acc = await prisma.retailerBankAccount.create({ data: { retailerId, accountNumber, ifsc, bankName } });
   res.json(acc);
@@ -89,16 +101,14 @@ router.post('/:id/bank-accounts', authRequired, requireRole('ADMIN', 'DEALER', '
 
 // Create a login for an existing retailer (no login yet), or reset an existing one's password.
 // DEALER can only do this for their own retailers.
-router.post('/:id/credentials', authRequired, requireRole('ADMIN', 'DEALER'), async (req, res) => {
+router.post('/:id/credentials', authRequired, requireRole('DEALER'), async (req, res) => {
   const retailerId = Number(req.params.id);
   const { username, password } = req.body;
   if (!password) return res.status(400).json({ error: 'Password is required' });
 
-  if (req.user.role === 'DEALER') {
-    const retailer = await prisma.retailer.findUnique({ where: { id: retailerId } });
-    if (!retailer || retailer.primaryDealerId !== req.user.dealerId) {
-      return res.status(403).json({ error: 'Forbidden' });
-    }
+  const retailer = await prisma.retailer.findUnique({ where: { id: retailerId } });
+  if (!retailer || retailer.primaryDealerId !== req.user.dealerId) {
+    return res.status(403).json({ error: 'Forbidden' });
   }
 
   const existing = await prisma.user.findFirst({ where: { retailerId } });
@@ -123,8 +133,13 @@ router.post('/:id/credentials', authRequired, requireRole('ADMIN', 'DEALER'), as
   }
 });
 
-router.delete('/:id', authRequired, requireRole('ADMIN', 'DEALER'), async (req, res) => {
-  await prisma.retailer.delete({ where: { id: Number(req.params.id) } });
+router.delete('/:id', authRequired, requireRole('DEALER'), async (req, res) => {
+  const id = Number(req.params.id);
+  const existing = await prisma.retailer.findUnique({ where: { id } });
+  if (!existing || existing.primaryDealerId !== req.user.dealerId) {
+    return res.status(403).json({ error: 'You can only delete your own retailers' });
+  }
+  await prisma.retailer.delete({ where: { id } });
   res.json({ ok: true });
 });
 

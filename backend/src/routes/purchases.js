@@ -1,10 +1,12 @@
 import { Router } from 'express';
 import { prisma } from '../prisma.js';
-import { authRequired, ownerScope } from '../middleware/auth.js';
+import { authRequired, ownerScope, requireRole } from '../middleware/auth.js';
 
 const router = Router();
 
-router.get('/', authRequired, async (req, res) => {
+// Purchase of product is a Dealer/Retailer activity only — Admin (and any other
+// role) is blocked from both viewing and recording purchases.
+router.get('/', authRequired, requireRole('DEALER', 'RETAILER'), async (req, res) => {
   const scope = ownerScope(req);
   let where = {};
   if (scope.ownerType === 'DEALER') where = { ownerType: 'DEALER', dealerId: scope.dealerId };
@@ -14,7 +16,7 @@ router.get('/', authRequired, async (req, res) => {
 });
 
 // Create purchase (stock inwards) - increments inventory
-router.post('/', authRequired, async (req, res) => {
+router.post('/', authRequired, requireRole('DEALER', 'RETAILER'), async (req, res) => {
   const scope = ownerScope(req);
   if (!scope.ownerType) return res.status(403).json({ error: 'Only dealer/retailer accounts can record purchases' });
   const { supplierId, items } = req.body;
@@ -39,6 +41,24 @@ router.post('/', authRequired, async (req, res) => {
     const retailer = await prisma.retailer.findUnique({ where: { id: scope.retailerId } });
     if (!retailer) return res.status(404).json({ error: 'Retailer not found' });
     sourceDealerIdToUse = retailer.primaryDealerId;
+  }
+
+  // Every item must be a product belonging to the relevant dealer — a dealer's
+  // own products for a dealer purchase, or the retailer's primary dealer's
+  // products for a retailer purchase. Checked server-side (not just via the
+  // already-scoped dropdown) so a purchase can't be recorded against products
+  // from a different dealer.
+  const expectedDealerId = scope.ownerType === 'DEALER' ? scope.dealerId : sourceDealerIdToUse;
+  const productIds = items.map((i) => Number(i.productId));
+  const ownedProducts = await prisma.product.findMany({ where: { id: { in: productIds }, dealerId: expectedDealerId } });
+  if (ownedProducts.length !== new Set(productIds).size) {
+    return res.status(403).json({ error: 'One or more products do not belong to your dealer' });
+  }
+  // For a dealer purchase specifically, every product must also belong to the
+  // supplier selected for this purchase — a purchase can only bring in stock
+  // from one supplier at a time.
+  if (scope.ownerType === 'DEALER' && ownedProducts.some((p) => p.supplierId !== supplierIdToUse)) {
+    return res.status(403).json({ error: 'One or more products do not belong to the selected supplier' });
   }
 
   const purchase = await prisma.purchase.create({

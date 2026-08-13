@@ -26,6 +26,16 @@ function Protected({ children }) {
   return <Layout>{children}</Layout>;
 }
 
+// Same as Protected, but also restricted to a set of roles — used for
+// screens (like Purchases) that only Dealer and Retailer accounts may open.
+// Admin (or any other role) is bounced back to the dashboard.
+function RoleProtected({ roles, children }) {
+  const { user } = useAuth();
+  if (!user) return <Navigate to="/login" replace />;
+  if (!roles.includes(user.role)) return <Navigate to="/" replace />;
+  return <Layout>{children}</Layout>;
+}
+
 export default function App() {
   return (
     <Routes>
@@ -40,7 +50,7 @@ export default function App() {
       <Route path="/categories" element={<Protected><Categories /></Protected>} />
       <Route path="/products" element={<Protected><Products /></Protected>} />
       <Route path="/inventory" element={<Protected><Inventory /></Protected>} />
-      <Route path="/purchases" element={<Protected><Purchases /></Protected>} />
+      <Route path="/purchases" element={<RoleProtected roles={['DEALER', 'RETAILER']}><Purchases /></RoleProtected>} />
       <Route path="/sales" element={<Protected><Sales /></Protected>} />
       <Route path="/vouchers" element={<Protected><Vouchers /></Protected>} />
       <Route path="/receipts" element={<Protected><Receipts /></Protected>} />

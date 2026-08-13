@@ -40,6 +40,12 @@ export default function Purchases() {
   }
   useEffect(() => { load(); }, []);
 
+  function updateSupplier(val) {
+    setSupplierId(val);
+    // Previously chosen products may not belong to the new supplier, so clear them.
+    setItems(items.map((it) => ({ ...it, productId: '' })));
+  }
+
   function updateItem(i, key, val) {
     const copy = [...items];
     copy[i][key] = val;
@@ -82,6 +88,14 @@ export default function Purchases() {
     }
   }
 
+  // Dealer purchases are tied to a single supplier for the whole purchase, so
+  // the product dropdown only offers products from that supplier. Retailers
+  // don't pick a supplier (they always buy from their own primary dealer), so
+  // their product list is unfiltered.
+  const availableProducts = user.role === 'DEALER'
+    ? products.filter((p) => supplierId && p.supplierId === Number(supplierId))
+    : products;
+
   return (
     <div>
       <h1 className="text-2xl font-semibold">Purchases / Stock Inwards</h1>
@@ -92,7 +106,7 @@ export default function Purchases() {
           <>
             <FieldLabel en="Supplier / Manufacturer" mr="पुरवठादार / उत्पादक" />
             <select className="border rounded px-2 py-1 w-full md:w-1/2" required
-              value={supplierId} onChange={(e) => setSupplierId(e.target.value)}>
+              value={supplierId} onChange={(e) => updateSupplier(e.target.value)}>
               <option value="">Supplier / Manufacturer... / पुरवठादार / उत्पादक निवडा...</option>
               {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
@@ -127,10 +141,17 @@ export default function Purchases() {
               <div className="flex flex-col gap-1">
                 <FieldLabel en="Product" mr="उत्पादन" />
                 <select className="border rounded px-2 py-1" required
+                  disabled={user.role === 'DEALER' && !supplierId}
                   value={it.productId} onChange={(e) => updateItem(i, 'productId', e.target.value)}>
                   <option value="">Product... / उत्पादन निवडा...</option>
-                  {products.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.sizeWeight})</option>)}
+                  {availableProducts.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.sizeWeight})</option>)}
                 </select>
+                {user.role === 'DEALER' && !supplierId && (
+                  <p className="text-xs text-amber-600">
+                    Select a supplier first.
+                    <span className="block">प्रथम पुरवठादार निवडा.</span>
+                  </p>
+                )}
               </div>
               <div className="flex flex-col gap-1">
                 <FieldLabel en="Quantity" mr="प्रमाण" />

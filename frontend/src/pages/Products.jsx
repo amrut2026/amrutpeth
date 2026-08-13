@@ -9,7 +9,7 @@ const empty = {
 
 export default function Products() {
   const { user } = useAuth();
-  const isAdmin = user.role === 'ADMIN';
+  const isDealer = user.role === 'DEALER';
   const [products, setProducts] = useState([]);
   const [categories, setCategories] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
@@ -48,7 +48,7 @@ export default function Products() {
 
   // Pre-fills the create form with another product's details, but as a brand
   // new record: no id (so it POSTs, not PUTs), no supplier pre-selected (the
-  // admin must explicitly pick the target supplier), and a fresh barcode will
+  // dealer must explicitly pick the target supplier), and a fresh barcode will
   // be generated server-side on save.
   function cloneProduct(p) {
     setSelectedId(null);
@@ -98,9 +98,9 @@ export default function Products() {
     <div>
       <h1 className="text-2xl font-semibold mb-4">Products</h1>
 
-      <div className={`grid grid-cols-1 ${isAdmin ? 'lg:grid-cols-2' : ''} gap-6`}>
-        {/* LEFT: product details form (create or edit) - ADMIN only */}
-        {isAdmin && (
+      <div className={`grid grid-cols-1 ${isDealer ? 'lg:grid-cols-2' : ''} gap-6`}>
+        {/* LEFT: product details form (create or edit) - DEALER only */}
+        {isDealer && (
         <div className="bg-white p-4 rounded shadow h-fit sticky top-4">
           <div className="flex items-center justify-between mb-3">
             <h2 className="font-semibold">
@@ -168,11 +168,11 @@ export default function Products() {
         </div>
         )}
 
-        {/* RIGHT: product list, selectable for editing on the left (ADMIN); read-only browse for others */}
+        {/* RIGHT: product list, selectable for editing on the left (DEALER); read-only browse for others */}
         <div>
-          {!isAdmin && (
+          {!isDealer && (
             <p className="text-sm text-gray-500 mb-3">
-              Browsing the product catalog. Only an admin can add or edit products.
+              Browsing the product catalog. Only a dealer can add or edit products.
             </p>
           )}
           <div className="flex flex-col md:flex-row gap-3 mb-3">
@@ -194,17 +194,17 @@ export default function Products() {
             {filtered.map((p) => (
               <div
                 key={p.id}
-                onClick={() => isAdmin && selectProduct(p)}
+                onClick={() => isDealer && selectProduct(p)}
                 className={`w-full text-left bg-white p-3 rounded shadow flex items-center justify-between gap-3 border-2 ${
-                  isAdmin ? 'cursor-pointer' : ''
+                  isDealer ? 'cursor-pointer' : ''
                 } ${selectedId === p.id ? 'border-emerald-600' : 'border-transparent hover:border-gray-200'}`}>
                 <div>
                   <div className="font-semibold">{p.name} <span className="text-xs text-gray-400">({p.sizeWeight})</span></div>
                   <div className="text-sm text-gray-500">{p.category?.name}</div>
-                  <div className="text-xs text-gray-400">Supplier: {p.supplier?.name || '—'} · Barcode: {p.barcode}</div>
+                  <div className="text-xs text-gray-400">Supplier: {p.supplier?.name || '—'} · Dealer: {p.dealer?.name || '—'} · Barcode: {p.barcode}</div>
                 </div>
                 <div className="flex items-center gap-2">
-                  {isAdmin && (
+                  {isDealer && (
                     <button
                       type="button"
                       onClick={(e) => { e.stopPropagation(); cloneProduct(p); }}
@@ -212,7 +212,7 @@ export default function Products() {
                       Clone
                     </button>
                   )}
-                  {!isAdmin && (
+                  {!isDealer && (
                     <button
                       type="button"
                       onClick={(e) => { e.stopPropagation(); printBarcodeLabels(p, 1); }}

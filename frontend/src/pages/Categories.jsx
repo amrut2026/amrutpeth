@@ -7,7 +7,7 @@ export default function Categories() {
     <CrudTable
       title="Product Categories"
       endpoint="/categories"
-      canWrite={user.role === 'ADMIN'}
+      canWrite={user.role === 'DEALER'}
       fields={[
         { key: 'name', label: 'Category Name', required: true },
         { key: 'description', label: 'Description' },
@@ -16,6 +16,7 @@ export default function Categories() {
         { key: 'id', label: 'ID' },
         { key: 'name', label: 'Name' },
         { key: 'description', label: 'Description' },
+        { key: 'dealer', label: 'Dealer', render: (r) => r.dealer?.name || '—' },
       ]}
     />
   );

@@ -6,7 +6,8 @@ export default function Dealers() {
   const { user } = useAuth();
   const [dealers, setDealers] = useState([]);
   const [divisions, setDivisions] = useState([]);
-  const [form, setForm] = useState({ name: '', address: '', contactNumber: '', gstNumber: '', divisionId: '', username: '', password: '' });
+  const [organisations, setOrganisations] = useState([]);
+  const [form, setForm] = useState({ name: '', address: '', contactNumber: '', gstNumber: '', divisionId: '', organizationId: '1', username: '', password: '' });
   const [bankAccounts, setBankAccounts] = useState([{ accountNumber: '', ifsc: '', bankName: '' }]);
   const [error, setError] = useState('');
   const [credEdit, setCredEdit] = useState(null); // dealer id currently setting/resetting a login
@@ -15,10 +16,10 @@ export default function Dealers() {
 
   async function load() {
     const calls = [api.get('/dealers')];
-    if (user.role === 'ADMIN') calls.push(api.get('/divisions'));
+    if (user.role === 'ADMIN') { calls.push(api.get('/divisions')); calls.push(api.get('/organisations')); }
     const results = await Promise.all(calls);
     setDealers(results[0].data);
-    if (user.role === 'ADMIN') setDivisions(results[1].data);
+    if (user.role === 'ADMIN') { setDivisions(results[1].data); setOrganisations(results[2].data); }
   }
   useEffect(() => { load(); }, []);
 
@@ -33,7 +34,7 @@ export default function Dealers() {
     setError('');
     try {
       await api.post('/dealers', { ...form, bankAccounts });
-      setForm({ name: '', address: '', contactNumber: '', gstNumber: '', divisionId: '', username: '', password: '' });
+      setForm({ name: '', address: '', contactNumber: '', gstNumber: '', divisionId: '', organizationId: '1', username: '', password: '' });
       setBankAccounts([{ accountNumber: '', ifsc: '', bankName: '' }]);
       load();
     } catch (err) {
@@ -76,9 +77,17 @@ export default function Dealers() {
               <option value="">Division...</option>
               {divisions.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
             </select>
+            <select className="border rounded px-2 py-1" required
+              value={form.organizationId} onChange={(e) => setForm({ ...form, organizationId: e.target.value })}>
+              <option value="">Organisation...</option>
+              {organisations.map((o) => <option key={o.orgId} value={o.orgId}>{o.orgName}</option>)}
+            </select>
           </div>
           {divisions.length === 0 && (
             <p className="text-xs text-amber-600 -mt-2">No divisions yet — add one under Divisions first.</p>
+          )}
+          {organisations.length === 0 && (
+            <p className="text-xs text-amber-600 -mt-2">No organisations yet — a dealer defaults to Organisation #1 once one exists.</p>
           )}
 
           <div>
@@ -124,6 +133,7 @@ export default function Dealers() {
                   <div className="text-sm text-gray-500">{d.address}</div>
                   <div className="text-sm text-gray-500">Ph: {d.contactNumber} · GST: {d.gstNumber}</div>
                   <div className="text-sm text-gray-500">Division: {d.division?.name || '—'}</div>
+                  <div className="text-sm text-gray-500">Organisation: {d.organisation?.orgName || '—'}</div>
                 </div>
                 {user.role === 'ADMIN' && (
                   <div className="text-right">

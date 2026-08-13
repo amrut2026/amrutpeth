@@ -12,6 +12,21 @@ async function main() {
     create: { username: 'admin', password: hash('admin123'), role: 'ADMIN' }
   });
 
+  // Organisation (Mahamandal) must exist before any Dealer, since Dealer.organizationId
+  // is a required FK (defaulting to 1). orgName has no unique constraint, so this is a
+  // manual find-or-create rather than an upsert.
+  let organisation = await prisma.organisation.findFirst({ where: { orgName: 'State Food Distributors Mahamandal' } });
+  if (!organisation) {
+    organisation = await prisma.organisation.create({
+      data: {
+        orgName: 'State Food Distributors Mahamandal',
+        orgAddress: 'Shivaji Nagar, Pune, Maharashtra',
+        orgContact: '9800011122',
+        orgType: 'MAHAMANDAL'
+      }
+    });
+  }
+
   const division = await prisma.division.upsert({
     where: { name: 'Pune Division' },
     update: {},
@@ -25,6 +40,7 @@ async function main() {
       contactNumber: '9876543210',
       gstNumber: '27ABCDE1234F1Z5',
       divisionId: division.id,
+      organizationId: organisation.orgId,
       bankAccounts: { create: [{ accountNumber: '123456789012', ifsc: 'HDFC0001234', bankName: 'HDFC Bank' }] }
     }
   });
@@ -113,16 +129,6 @@ async function main() {
     });
   }
 
-  // Sample Mahamandal organisation record
-  await prisma.organisation.create({
-    data: {
-      orgName: 'State Food Distributors Mahamandal',
-      orgAddress: 'Shivaji Nagar, Pune, Maharashtra',
-      orgContact: '9800011122',
-      orgType: 'MAHAMANDAL'
-    }
-  });
-
   // Sample suppliers/manufacturers
   await prisma.supplier.createMany({
     data: [
@@ -133,7 +139,7 @@ async function main() {
 
   console.log('Seed complete.');
   console.log('Logins: admin/admin123, dealer1/dealer123, retailer1/retailer123');
-  console.log({ dealerId: dealer.id, retailerId: retailer.id, categoryId: category.id });
+  console.log({ organisationId: organisation.orgId, dealerId: dealer.id, retailerId: retailer.id, categoryId: category.id });
 }
 
 main().catch(console.error).finally(() => prisma.$disconnect());

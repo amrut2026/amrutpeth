@@ -11,31 +11,36 @@ function generateBarcode() {
   return `${ts}${rnd}`;
 }
 
-// Product catalog is shared across the whole platform — any logged-in
-// dealer/retailer/admin can browse it (they need this to record purchases
-// and sales), but only ADMIN can create/edit/delete entries.
-// DEALER accounts only see products from suppliers in their own division.
+// Product catalog is created by dealers: each product belongs to exactly one
+// dealer (the one that created it). Admin can browse everything for oversight.
+// A DEALER only sees their own products; a RETAILER only sees products
+// belonging to their primary dealer — this is what keeps purchases and sales
+// scoped to "your own dealer's products" throughout the app.
 router.get('/', authRequired, async (req, res) => {
   let where = {};
   if (req.user.role === 'DEALER') {
-    const dealer = await prisma.dealer.findUnique({ where: { id: req.user.dealerId } });
-    where = { supplier: { divisionId: dealer?.divisionId ?? -1 } }; // -1 matches nothing if the dealer has no division set
+    where = { dealerId: req.user.dealerId };
+  } else if (req.user.role === 'RETAILER') {
+    const retailer = await prisma.retailer.findUnique({ where: { id: req.user.retailerId } });
+    where = { dealerId: retailer?.primaryDealerId ?? -1 }; // -1 matches nothing if somehow unset
   }
-  const products = await prisma.product.findMany({ where, include: { category: true, supplier: true }, orderBy: { id: 'desc' } });
+  const products = await prisma.product.findMany({ where, include: { category: true, supplier: true, dealer: true }, orderBy: { id: 'desc' } });
   res.json(products);
 });
 
 router.get('/:id', authRequired, async (req, res) => {
-  const product = await prisma.product.findUnique({ where: { id: Number(req.params.id) }, include: { category: true, supplier: true } });
+  const product = await prisma.product.findUnique({ where: { id: Number(req.params.id) }, include: { category: true, supplier: true, dealer: true } });
   res.json(product);
 });
 
-// Create product - ADMIN only (manufacturer/platform owner manages the master catalog)
+// Create product - DEALER only. Every product is automatically tagged with
+// the creating dealer's own id (never taken from the client) — this is what
+// scopes the product to that dealer for purchases and sales downstream.
 // Every product belongs to exactly one supplier — to offer the same item from a
 // different supplier, clone it (see the frontend's "Clone to another supplier").
 // Pricing, MRP, dates, and batch name are NOT set here — they're captured per
 // batch when the product is purchased (see purchases.js).
-router.post('/', authRequired, requireRole('ADMIN'), async (req, res) => {
+router.post('/', authRequired, requireRole('DEALER'), async (req, res) => {
   const { categoryId, supplierId, name, sizeWeight, fssaiCode } = req.body;
 
   if (!supplierId) return res.status(400).json({ error: 'Supplier is required' });
@@ -44,17 +49,19 @@ router.post('/', authRequired, requireRole('ADMIN'), async (req, res) => {
 
   const product = await prisma.product.create({
     data: {
-      categoryId: Number(categoryId), supplierId: Number(supplierId), name, sizeWeight,
+      categoryId: Number(categoryId), supplierId: Number(supplierId), dealerId: req.user.dealerId, name, sizeWeight,
       fssaiCode, barcode,
     },
-    include: { category: true, supplier: true }
+    include: { category: true, supplier: true, dealer: true }
   });
 
   res.json(product);
 });
 
-router.put('/:id', authRequired, requireRole('ADMIN'), async (req, res) => {
+router.put('/:id', authRequired, requireRole('DEALER'), async (req, res) => {
   const id = Number(req.params.id);
+  const existing = await prisma.product.findUnique({ where: { id } });
+  if (!existing || existing.dealerId !== req.user.dealerId) return res.status(403).json({ error: 'You can only edit your own products' });
   const { categoryId, supplierId, name, sizeWeight, fssaiCode } = req.body;
   const product = await prisma.product.update({
     where: { id },
@@ -63,7 +70,7 @@ router.put('/:id', authRequired, requireRole('ADMIN'), async (req, res) => {
       supplierId: supplierId !== undefined ? (supplierId ? Number(supplierId) : null) : undefined,
       name, sizeWeight, fssaiCode
     },
-    include: { category: true, supplier: true }
+    include: { category: true, supplier: true, dealer: true }
   });
   res.json(product);
 });
@@ -75,8 +82,11 @@ router.get('/lookup/:barcode', authRequired, async (req, res) => {
   res.json(product);
 });
 
-router.delete('/:id', authRequired, requireRole('ADMIN'), async (req, res) => {
-  await prisma.product.delete({ where: { id: Number(req.params.id) } });
+router.delete('/:id', authRequired, requireRole('DEALER'), async (req, res) => {
+  const id = Number(req.params.id);
+  const existing = await prisma.product.findUnique({ where: { id } });
+  if (!existing || existing.dealerId !== req.user.dealerId) return res.status(403).json({ error: 'You can only delete your own products' });
+  await prisma.product.delete({ where: { id } });
   res.json({ ok: true });
 });
 

@@ -1,5 +1,7 @@
+import { useEffect, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
+import api from '../api.js';
 
 // Each entry: [path, English label, Marathi label]
 const NAV = {
@@ -13,7 +15,6 @@ const NAV = {
     ['/categories', 'Categories', 'श्रेण्या'],
     ['/products', 'Products', 'उत्पादने'],
     ['/inventory', 'Inventory', 'साठा'],
-    ['/purchases', 'Purchases', 'खरेदी'],
     ['/sales', 'Sales (POS)', 'विक्री (पीओएस)'],
     ['/vouchers', 'Vouchers', 'व्हाउचर'],
     ['/receipts', 'Receipts', 'पावत्या'],
@@ -54,14 +55,28 @@ export default function Layout({ children }) {
   const navigate = useNavigate();
   const links = NAV[user.role] || [];
 
+  // Dealer/Retailer accounts are tied to a specific business — show that
+  // business's name next to the username/role so it's clear who's logged in.
+  // Admin has no such entity, so this stays empty for that role.
+  const [entityName, setEntityName] = useState('');
+  useEffect(() => {
+    setEntityName('');
+    if (user.role === 'DEALER' && user.dealerId) {
+      api.get(`/dealers/${user.dealerId}`).then(({ data }) => setEntityName(data?.name || '')).catch(() => {});
+    } else if (user.role === 'RETAILER' && user.retailerId) {
+      api.get(`/retailers/${user.retailerId}`).then(({ data }) => setEntityName(data?.name || '')).catch(() => {});
+    }
+  }, [user.role, user.dealerId, user.retailerId]);
+
   return (
     <div className="flex min-h-screen bg-gray-50">
       <aside className="w-64 bg-orange-900 text-white flex flex-col">
         <div className="p-4 border-b border-orange-700">
-          <div className="text-xl font-bold">Amrut Peth</div>
-          <div className="text-xs text-orange-200">अमृत पेठ</div>
+          <div className="text-4xl font-bold italic">Amrut Peth</div>
+          <div className="text-4xl font-bold italic text-orange-200">अमृत पेठ</div>
         </div>
         <div className="p-4 text-sm text-orange-200">
+          {entityName && <div className="text-base font-semibold text-white leading-tight">{entityName}</div>}
           {user.username}
           <span className="block text-xs uppercase tracking-wide">
             {user.role} · {ROLE_MR[user.role] || ''}

@@ -73,11 +73,15 @@ model Dealer {
   gstNumber     String
   divisionId    Int?
   division      Division? @relation(fields: [divisionId], references: [id])
+  organizationId Int      @default(1)
+  organisation   Organisation @relation(fields: [organizationId], references: [orgId])
   createdAt     DateTime @default(now())
 
   bankAccounts  DealerBankAccount[]
   retailers     Retailer[]
   users         User[]
+  products      Product[]
+  productCategories ProductCategory[]
   inventory     Inventory[]    @relation("DealerInventory")
   purchases     Purchase[]     @relation("DealerPurchases")
   purchasesFromRetailers Purchase[] @relation("PurchaseFromDealer")
@@ -125,10 +129,15 @@ model RetailerBankAccount {
 }
 
 // ---------------- Product Catalog ----------------
+// Categories are created by dealers and scoped to them — a DEALER only sees
+// and manages their own categories, while ADMIN can see every dealer's
+// categories (read-only) across the whole platform.
 model ProductCategory {
   id          Int       @id @default(autoincrement())
   name        String
   description String?
+  dealerId    Int
+  dealer      Dealer    @relation(fields: [dealerId], references: [id])
   products    Product[]
 }
 
@@ -144,6 +153,9 @@ model Product {
   category         ProductCategory @relation(fields: [categoryId], references: [id])
   supplierId       Int?
   supplier         Supplier? @relation(fields: [supplierId], references: [id])
+  dealerId         Int      // the dealer that created/owns this product — retailers may
+  dealer           Dealer   @relation(fields: [dealerId], references: [id])
+  // only purchase or sell it via that dealer, and other dealers can't see it
   name             String
   sizeWeight       String
   fssaiCode        String
@@ -319,6 +331,8 @@ model Organisation {
   orgContact String
   orgType    String   @default("MAHAMANDAL")
   createdAt  DateTime @default(now())
+
+  dealers    Dealer[]
 }
 
 // Roles from user_roles.json: Super User, Administrator, Owner, User
