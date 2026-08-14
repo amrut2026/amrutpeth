@@ -42,8 +42,16 @@ export default function Sales() {
         return [...prev, { product, quantity: 1 }];
       });
     } catch (err) {
-      setScanError(`No product found for barcode ${code}`);
+      setScanError(err.response?.data?.error || `No product found for barcode ${code}`);
     }
+  }
+
+  // Dealers sell at their own computed Sell Price; retailers sell to their
+  // end customers at the Retailer Selling Price (MRP net of the product's
+  // discount %). Both are carried directly on the product record returned by
+  // the barcode lookup.
+  function unitPrice(product) {
+    return Number(user.role === 'RETAILER' ? product.retailerSellingPrice : product.sellingPrice);
   }
 
   function updateQty(productId, qty) {
@@ -54,13 +62,13 @@ export default function Sales() {
     setCart(cart.filter((c) => c.product.id !== productId));
   }
 
-  const total = cart.reduce((s, c) => s + (Number(c.product.sellingPrice) - Number(c.product.discount || 0)) * c.quantity, 0);
+  const total = cart.reduce((s, c) => s + unitPrice(c.product) * c.quantity, 0);
 
   async function checkout() {
     if (cart.length === 0) return;
     const items = cart.map((c) => ({
       productId: c.product.id, quantity: c.quantity,
-      price: c.product.sellingPrice, discount: c.product.discount || 0
+      price: unitPrice(c.product), discount: 0
     }));
     await api.post('/sales', {
       customerType, customerRetailerId: customerType === 'RETAILER' ? customerRetailerId : undefined,
@@ -72,7 +80,7 @@ export default function Sales() {
   }
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
       <div className="lg:col-span-2">
         <h1 className="text-2xl font-semibold mb-4">Sales / POS</h1>
 
@@ -123,12 +131,12 @@ export default function Sales() {
               {cart.map((c) => (
                 <tr key={c.product.id} className="border-t">
                   <td className="p-2">{c.product.name} ({c.product.sizeWeight})</td>
-                  <td className="p-2">₹{c.product.sellingPrice}</td>
+                  <td className="p-2">₹{unitPrice(c.product)}</td>
                   <td className="p-2">
                     <input type="number" min="1" className="border rounded w-16 px-1"
                       value={c.quantity} onChange={(e) => updateQty(c.product.id, e.target.value)} />
                   </td>
-                  <td className="p-2">₹{((Number(c.product.sellingPrice) - Number(c.product.discount || 0)) * c.quantity).toFixed(2)}</td>
+                  <td className="p-2">₹{(unitPrice(c.product) * c.quantity).toFixed(2)}</td>
                   <td className="p-2">
                     <button className="text-red-600 text-xs" onClick={() => removeItem(c.product.id)}>Remove</button>
                   </td>
@@ -168,34 +176,34 @@ export default function Sales() {
             into this module via <code>POST /api/sales/pos-webhook</code>.
           </p>
         </div>
-      </div>
 
-      <div className="lg:col-span-3">
-        <h2 className="text-xl font-semibold mt-4 mb-3">Recent Sales</h2>
-        <div className="bg-white rounded shadow overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-gray-100">
-              <tr>
-                <th className="text-left p-2">#</th>
-                <th className="text-left p-2">Date</th>
-                <th className="text-left p-2">Customer</th>
-                <th className="text-left p-2">Payment</th>
-                <th className="text-left p-2">Total</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sales.map((s) => (
-                <tr key={s.id} className="border-t">
-                  <td className="p-2">{s.id}</td>
-                  <td className="p-2">{new Date(s.date).toLocaleString()}</td>
-                  <td className="p-2">{s.customerType}{s.posTransactionRef ? ` · ${s.posTransactionRef}` : ''}</td>
-                  <td className="p-2">{s.paymentMode}</td>
-                  <td className="p-2">₹{Number(s.totalAmount).toFixed(2)}</td>
+        <div className="mt-4">
+          <h2 className="text-lg font-semibold mb-2">Recent Sales</h2>
+          <div className="bg-white rounded shadow overflow-x-auto lg:max-h-[calc(100vh-24rem)] lg:overflow-y-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-100 sticky top-0">
+                <tr>
+                  <th className="text-left p-2">#</th>
+                  <th className="text-left p-2">Date</th>
+                  <th className="text-left p-2">Customer</th>
+                  <th className="text-left p-2">Payment</th>
+                  <th className="text-left p-2">Total</th>
                 </tr>
-              ))}
-              {sales.length === 0 && <tr><td className="p-3 text-gray-400" colSpan={5}>No sales yet.</td></tr>}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {sales.map((s) => (
+                  <tr key={s.id} className="border-t">
+                    <td className="p-2">{s.id}</td>
+                    <td className="p-2">{new Date(s.date).toLocaleString()}</td>
+                    <td className="p-2">{s.customerType}{s.posTransactionRef ? ` · ${s.posTransactionRef}` : ''}</td>
+                    <td className="p-2">{s.paymentMode}</td>
+                    <td className="p-2">₹{Number(s.totalAmount).toFixed(2)}</td>
+                  </tr>
+                ))}
+                {sales.length === 0 && <tr><td className="p-3 text-gray-400" colSpan={5}>No sales yet.</td></tr>}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>

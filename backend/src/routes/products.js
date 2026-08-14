@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { prisma } from '../prisma.js';
-import { authRequired, requireRole } from '../middleware/auth.js';
+import { authRequired, ownerScope, requireRole } from '../middleware/auth.js';
 
 const router = Router();
 
@@ -75,11 +75,41 @@ router.put('/:id', authRequired, requireRole('DEALER'), async (req, res) => {
   res.json(product);
 });
 
-// Lookup by barcode - used by POS / barcode scanner (any logged-in role)
+// Lookup by barcode - used by POS / barcode scanner (any logged-in role).
+// Product itself carries no pricing (it varies per purchase batch — see
+// PurchaseItem), so the current selling price is resolved from the most
+// recent batch that THIS owner (the logged-in dealer or retailer) purchased
+// of this product. A dealer sells at that batch's sellingPrice; a retailer
+// sells to their own customers at that batch's retailerSellingPrice.
 router.get('/lookup/:barcode', authRequired, async (req, res) => {
   const product = await prisma.product.findUnique({ where: { barcode: req.params.barcode } });
   if (!product) return res.status(404).json({ error: 'Product not found for this barcode' });
-  res.json(product);
+
+  const scope = ownerScope(req);
+  let latestItem = null;
+  if (scope.ownerType === 'DEALER') {
+    latestItem = await prisma.purchaseItem.findFirst({
+      where: { productId: product.id, purchase: { ownerType: 'DEALER', dealerId: scope.dealerId } },
+      orderBy: { id: 'desc' }
+    });
+  } else if (scope.ownerType === 'RETAILER') {
+    latestItem = await prisma.purchaseItem.findFirst({
+      where: { productId: product.id, purchase: { ownerType: 'RETAILER', retailerId: scope.retailerId } },
+      orderBy: { id: 'desc' }
+    });
+  }
+
+  if (!latestItem) {
+    return res.status(404).json({ error: 'No purchased stock found for this product yet — record a purchase before selling it' });
+  }
+
+  res.json({
+    ...product,
+    sellingPrice: latestItem.sellingPrice,
+    retailerSellingPrice: latestItem.retailerSellingPrice,
+    mrp: latestItem.mrp,
+    discount: latestItem.discount,
+  });
 });
 
 router.delete('/:id', authRequired, requireRole('DEALER'), async (req, res) => {

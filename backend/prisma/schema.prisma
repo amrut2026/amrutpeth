@@ -39,6 +39,16 @@ enum VoucherStatus {
   PAID
 }
 
+// Purchase review workflow: PENDING -> IN_REVIEW ("mark for review") ->
+// CONFIRMED (dealer's own purchase from a supplier) or RECEIVED (a
+// retailer's own purchase from their dealer).
+enum PurchaseStatus {
+  PENDING
+  IN_REVIEW
+  CONFIRMED
+  RECEIVED
+}
+
 // ---------------- Users / Auth ----------------
 model User {
   id         Int      @id @default(autoincrement())
@@ -226,6 +236,7 @@ model Purchase {
   sourceDealerId Int?
   sourceDealer   Dealer?   @relation("PurchaseFromDealer", fields: [sourceDealerId], references: [id])
   date           DateTime  @default(now())
+  status         PurchaseStatus @default(PENDING)
   items          PurchaseItem[]
 }
 
@@ -243,8 +254,9 @@ model PurchaseItem {
   rate              Decimal  @db.Decimal(10,2) // cost price paid per unit for this batch
   dealerCommission  Decimal  @db.Decimal(5,2)  // dealer commission %, used to derive sellingPrice
   sellingPrice      Decimal  @db.Decimal(10,2) // = rate + (dealerCommission * rate / 100), rounded to 1 decimal
-  discount          Decimal  @db.Decimal(10,2) @default(0)
+  discount          Decimal  @db.Decimal(10,2) @default(0) // product discount %, used to derive retailerSellingPrice
   mrp               Decimal  @db.Decimal(10,2)
+  retailerSellingPrice Decimal @db.Decimal(10,2) // = mrp - (discount * mrp / 100), rounded to 2 decimals
   manufacturingDate DateTime
   expiryDate        DateTime
   batchName         String
