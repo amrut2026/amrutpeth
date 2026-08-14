@@ -16,6 +16,8 @@ export default function Barcode({ value, width = 1.4, height = 40 }) {
 // price line is added below the barcode. Printed as "You Pay" rather than
 // "Retailer" since this is the price the retailer scanning the label pays,
 // not a description of who they are.
+// Sized to fit a 1.44in x 1in label (see openLabelPrintWindow) — smaller
+// barcode/font than the on-screen <Barcode> component uses.
 function renderLabelGroup({ name, sizeWeight, barcode, quantity = 1, priceInfo }) {
   const priceLine = priceInfo
     ? `<div class="price">${priceInfo.mrp != null ? `MRP: ₹${priceInfo.mrp}` : ''}${
@@ -25,28 +27,41 @@ function renderLabelGroup({ name, sizeWeight, barcode, quantity = 1, priceInfo }
   return Array.from({ length: Math.max(1, Number(quantity) || 1) }).map(() => `
     <div class="label">
       <div class="name">${name} (${sizeWeight})</div>
-      <svg class="bc" jsbarcode-value="${barcode}" jsbarcode-height="40" jsbarcode-fontsize="12"></svg>
+      <svg class="bc" jsbarcode-value="${barcode}" jsbarcode-width="1" jsbarcode-height="28" jsbarcode-fontsize="8" jsbarcode-margin="2"></svg>
       ${priceLine}
     </div>`).join('');
 }
 
+// Two label columns per row, sized for the TVS LP 46 Dlite BPLE on 3in-wide
+// roll stock: each label is 1.44in wide with a 0.12in gap between the two
+// columns (1.44 + 0.12 + 1.44 = 3in), 1in tall. No inter-row gap is printed
+// (assumes the physical labels are already die-cut/gapped on the roll) — if
+// the roll needs a printed gap between rows too, this is where to add it.
 function openLabelPrintWindow(title, labelsHtml) {
-  const win = window.open('', '_blank', 'width=420,height=600');
+  const win = window.open('', '_blank', 'width=340,height=600');
   win.document.write(`
     <html>
       <head>
         <title>${title}</title>
         <style>
-          body { font-family: sans-serif; }
-          .label { border: 1px dashed #999; padding: 8px; margin: 8px; display: inline-block; text-align: center; }
-          .name { font-size: 12px; font-weight: bold; }
-          .price { font-size: 11px; margin-top: 2px; color: #333; }
+          @page { size: 3in auto; margin: 0; }
+          * { box-sizing: border-box; }
+          body { margin: 0; font-family: sans-serif; }
+          .labels { display: grid; grid-template-columns: 1.44in 1.44in; column-gap: 0.12in; width: 3in; }
+          .label {
+            width: 1.44in; height: 1in; padding: 2px 4px;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            text-align: center; overflow: hidden;
+          }
+          .name { font-size: 9px; font-weight: bold; line-height: 1.15; }
+          .price { font-size: 8px; margin-top: 1px; color: #000; }
+          .bc { max-width: 100%; }
           @media print { .label { page-break-inside: avoid; } }
         </style>
         <script src="https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.5/JsBarcode.all.min.js"></script>
       </head>
       <body onload="JsBarcode('.bc').init(); setTimeout(() => window.print(), 300);">
-        ${labelsHtml}
+        <div class="labels">${labelsHtml}</div>
       </body>
     </html>
   `);
