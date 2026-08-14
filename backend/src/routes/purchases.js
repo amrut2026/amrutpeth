@@ -172,6 +172,48 @@ router.put('/:id', authRequired, requireRole('DEALER', 'RETAILER'), async (req, 
   res.json(purchase);
 });
 
+// Update only the quantity of one or more items on a purchase, without
+// touching anything else. Allowed while the purchase is PENDING or
+// IN_REVIEW — the two stages before inventory gets credited (see the
+// /:id/status route) — so a quick quantity correction doesn't require
+// resubmitting the whole item form via PUT.
+router.patch('/:id/quantities', authRequired, requireRole('DEALER', 'RETAILER'), async (req, res) => {
+  const scope = ownerScope(req);
+  const id = Number(req.params.id);
+  const { items } = req.body; // [{ id, quantity }]
+
+  const existing = await prisma.purchase.findUnique({ where: { id }, include: { items: true } });
+  if (!existing) return res.status(404).json({ error: 'Purchase not found' });
+
+  const owns = (scope.ownerType === 'DEALER' && existing.dealerId === scope.dealerId) ||
+    (scope.ownerType === 'RETAILER' && existing.retailerId === scope.retailerId);
+  if (!owns) return res.status(403).json({ error: 'You can only update your own purchases' });
+
+  const status = existing.status || 'PENDING';
+  if (status !== 'PENDING' && status !== 'IN_REVIEW') {
+    return res.status(400).json({ error: 'Quantity can only be edited while a purchase is pending or under review' });
+  }
+
+  if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'No items to update' });
+
+  const validItemIds = new Set(existing.items.map((i) => i.id));
+  for (const i of items) {
+    if (!validItemIds.has(Number(i.id))) return res.status(400).json({ error: 'Item does not belong to this purchase' });
+    if (!i.quantity || Number(i.quantity) <= 0) return res.status(400).json({ error: 'Quantity must be greater than zero' });
+  }
+
+  await prisma.$transaction(
+    items.map((i) => prisma.purchaseItem.update({ where: { id: Number(i.id) }, data: { quantity: Number(i.quantity) } }))
+  );
+
+  const purchase = await prisma.purchase.findUnique({
+    where: { id },
+    include: { items: { include: { product: true } }, supplier: true, sourceDealer: true }
+  });
+
+  res.json(purchase);
+});
+
 // Purchase status workflow: PENDING -> IN_REVIEW ("mark for review", either
 // owner) -> CONFIRMED (dealer's own purchases, from their supplier) or
 // RECEIVED (a retailer's own purchases, from their dealer). Scoped so an

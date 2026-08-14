@@ -70,6 +70,13 @@ export default function Purchases() {
   };
   const [items, setItems] = useState([{ ...emptyItem }]);
 
+  // Purchase lookup: pick a purchase by ID and edit its quantities inline
+  // while it's still PENDING or IN_REVIEW (before inventory is credited).
+  const [selectedPurchaseId, setSelectedPurchaseId] = useState('');
+  const [quantityEdits, setQuantityEdits] = useState({});
+  const [quantityError, setQuantityError] = useState('');
+  const [savingQuantities, setSavingQuantities] = useState(false);
+
   async function load() {
     const calls = [api.get('/purchases'), api.get('/products')];
     if (user.role === 'DEALER') calls.push(api.get('/suppliers'));
@@ -83,6 +90,52 @@ export default function Purchases() {
   }
   useEffect(() => { load(); }, []);
 
+  // Default the lookup dropdown to the most recent purchase, and keep it
+  // pointed at a valid purchase if the list changes.
+  useEffect(() => {
+    if (purchases.length && !purchases.some((p) => String(p.id) === selectedPurchaseId)) {
+      setSelectedPurchaseId(String(purchases[0].id));
+    }
+  }, [purchases]);
+
+  const selectedPurchase = purchases.find((p) => String(p.id) === selectedPurchaseId);
+  const isSelectedEditable = !!selectedPurchase &&
+    (!selectedPurchase.status || selectedPurchase.status === 'PENDING' || selectedPurchase.status === 'IN_REVIEW');
+
+  // Reset the quantity inputs to match the newly selected purchase. Only
+  // re-runs when the selected ID changes (not on every background reload),
+  // so it doesn't clobber quantities the user is mid-edit on.
+  useEffect(() => {
+    if (!selectedPurchase) { setQuantityEdits({}); return; }
+    const edits = {};
+    selectedPurchase.items.forEach((it) => { edits[it.id] = String(it.quantity); });
+    setQuantityEdits(edits);
+    setQuantityError('');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPurchaseId]);
+
+  async function saveQuantities() {
+    if (!selectedPurchase) return;
+    setQuantityError('');
+    const payloadItems = selectedPurchase.items.map((it) => ({
+      id: it.id,
+      quantity: Number(quantityEdits[it.id]),
+    }));
+    if (payloadItems.some((it) => !it.quantity || isNaN(it.quantity) || it.quantity <= 0)) {
+      setQuantityError('Quantity must be a number greater than zero for every item / प्रत्येक वस्तूसाठी प्रमाण शून्यापेक्षा जास्त संख्या असावी');
+      return;
+    }
+    setSavingQuantities(true);
+    try {
+      await api.patch(`/purchases/${selectedPurchase.id}/quantities`, { items: payloadItems });
+      await load();
+    } catch (err) {
+      setQuantityError(err.response?.data?.error || 'Failed to update quantity / प्रमाण अद्ययावत करण्यात अयशस्वी');
+    } finally {
+      setSavingQuantities(false);
+    }
+  }
+
   function updateSupplier(val) {
     setSupplierId(val);
     // Previously chosen products may not belong to the new supplier, so clear them.
@@ -95,6 +148,16 @@ export default function Purchases() {
 
   function removeItemRow(i) {
     setItems(items.length > 1 ? items.filter((_, idx) => idx !== i) : [{ ...emptyItem }]);
+  }
+
+  // Sets the current entry aside (it now only shows, read-only-as-a-card, in
+  // the preview table below — still editable there) and opens a fresh blank
+  // card for the next product. No-ops if the current card has no product
+  // picked yet, so you can't stack empty drafts.
+  function addAnotherItem() {
+    const current = items[items.length - 1];
+    if (!current.productId) return;
+    setItems([...items, { ...emptyItem }]);
   }
 
   // Loads an IN_REVIEW purchase's items into the entry form so they can be
@@ -266,14 +329,20 @@ export default function Purchases() {
           {error && <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">{error}</div>}
 
         <div className="space-y-4">
-          {items.map((it, i) => (
-            <div key={i} className="border rounded p-3 space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-medium text-gray-500">Item {i + 1} / वस्तू {i + 1}</span>
-                {items.length > 1 && (
-                  <button type="button" className="text-red-600 text-xs" onClick={() => removeItemRow(i)}>Remove</button>
-                )}
-              </div>
+          {items.map((it, i) => {
+            if (i !== items.length - 1) return null; // earlier items are already added — only the current entry shows as a card
+            return (
+              <div key={i} className="border rounded p-3 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-medium text-gray-500">
+                    {items.length > 1 ? `Item ${i + 1}` : 'Item'} / वस्तू {i + 1}
+                  </span>
+                  {items.length > 1 && (
+                    <button type="button" className="text-red-600 text-xs" onClick={() => removeItemRow(i)}>
+                      Back to previous item / मागील वस्तूकडे परत जा
+                    </button>
+                  )}
+                </div>
 
               {/* Line: Product */}
               <div className="flex flex-col gap-1">
@@ -365,31 +434,18 @@ export default function Purchases() {
                 )}
               </div>
             </div>
-          ))}
-        </div>
-        <button type="button" className="text-emerald-700 text-sm"
-          onClick={() => setItems([...items, { ...emptyItem }])}>
-          + Add another item / आणखी एक वस्तू जोडा
-        </button>
-        <div>
-          <button className="bg-emerald-700 text-white px-4 py-2 rounded hover:bg-emerald-800">
-            {editingPurchaseId ? 'Save Changes / बदल जतन करा' : 'Record Purchase / खरेदी नोंदवा'}
-          </button>
-        </div>
-      </form>
-
-      <div className="lg:sticky lg:top-4">
-        <h2 className="text-lg font-semibold mb-2">Purchase History / खरेदी इतिहास</h2>
-        <div className="grid gap-4 lg:max-h-[calc(100vh-8rem)] lg:overflow-y-auto pr-1">
-        {purchases.map((p) => (
-          <div key={p.id} className="bg-white rounded shadow p-4">
-            <div className="flex items-center justify-between flex-wrap gap-2 mb-2">
-              <div>
-                <div className="font-semibold">{p.supplier?.name || p.sourceDealer?.name}</div>
-                <div className="text-xs text-gray-400">{new Date(p.date).toLocaleString()}</div>
-              </div>
-              {statusAction(p)}
-            </div>
+          );
+        })}
+      </div>
+        
+        {/* Live preview of items in this purchase, same table layout used when viewing
+            an existing purchase. Quantity is editable here — same pattern as editing a
+            PENDING/IN_REVIEW purchase's quantity — and stays synced with the form above. */}
+        {items.some((it) => it.productId) && (
+          <div className="mt-2">
+            <p className="text-xs font-medium text-gray-500 mb-1">
+              Items in this Purchase<span className="block text-orange-700">या खरेदीतील वस्तू</span>
+            </p>
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead className="bg-gray-50">
@@ -409,38 +465,168 @@ export default function Purchases() {
                     <th className="text-left p-1">Exp (mm-yyyy) / कालबाह्यता</th>
                   </tr>
                 </thead>
-                <tbody>
-                  {p.items.map((it) => (
-                    <tr key={it.id} className="border-t">
-                      <td className="p-1">{it.product?.name}</td>
-                      <td className="p-1">{it.quantity}</td>
-                      <td className="p-1">{it.batchName}</td>
-                      <td className="p-1">₹{it.rate}</td>
-                      <td className="p-1">{it.dealerCommission}%</td>
-                      <td className="p-1">₹{it.sellingPrice}</td>
-                      <td className="p-1">₹{it.mrp}</td>
-                      <td className="p-1">{it.discount}%</td>
-                      {user.role === 'DEALER' && (
-                        <td className="p-1">₹{it.retailerSellingPrice ?? computeRetailerPrice(it)}</td>
-                      )}
-                      <td className="p-1">{formatMMYYYY(it.manufacturingDate)}</td>
-                      <td className="p-1">{formatMMYYYY(it.expiryDate)}</td>
-                    </tr>
-                  ))}
+                                <tbody>
+                  {items.map((it, i) => {
+                    if (!it.productId) return null;
+                    const product = products.find((p) => String(p.id) === String(it.productId));
+                    return (
+                      <tr key={i} className="border-t">
+                        <td className="p-1">{product?.name || '—'}</td>
+                        <td className="p-1">
+                          <input type="number" min="1" className="border rounded px-1 py-0.5 w-20"
+                            value={it.quantity} onChange={(e) => updateItem(i, 'quantity', e.target.value)} />
+                        </td>
+                        <td className="p-1">
+                          <input type="text" className="border rounded px-1 py-0.5 w-28"
+                            value={it.batchName} onChange={(e) => updateItem(i, 'batchName', e.target.value)} />
+                        </td>
+                        <td className="p-1">
+                          <input type="number" step="0.01" min="0" className="border rounded px-1 py-0.5 w-24"
+                            value={it.rate} onChange={(e) => updateItem(i, 'rate', e.target.value)} />
+                        </td>
+                        <td className="p-1">
+                          <input type="number" step="0.01" min="0" className="border rounded px-1 py-0.5 w-20"
+                            value={it.dealerCommission} onChange={(e) => updateItem(i, 'dealerCommission', e.target.value)} />
+                        </td>
+                        <td className="p-1 bg-gray-50 text-gray-700">{computeSellingPrice(it) ? `₹${computeSellingPrice(it)}` : '—'}</td>
+                        <td className="p-1">
+                          <input type="number" step="0.01" min="0" className="border rounded px-1 py-0.5 w-24"
+                            value={it.mrp} onChange={(e) => updateItem(i, 'mrp', e.target.value)} />
+                        </td>
+                        <td className="p-1">
+                          <input type="number" step="0.01" min="0" max="100" className="border rounded px-1 py-0.5 w-20"
+                            value={it.discount} onChange={(e) => updateItem(i, 'discount', e.target.value)} />
+                        </td>
+                        {user.role === 'DEALER' && (
+                          <td className="p-1 bg-gray-50 text-gray-700">{computeRetailerPrice(it) ? `₹${computeRetailerPrice(it)}` : '—'}</td>
+                        )}
+                        <td className="p-1">
+                          <input type="month" className="border rounded px-1 py-0.5 w-32"
+                            value={it.manufacturingDate} onChange={(e) => updateItem(i, 'manufacturingDate', e.target.value)} />
+                          {it.manufacturingDate && (
+                            <span className="block text-xs text-gray-400">{formatMMYYYY(it.manufacturingDate)}</span>
+                          )}
+                        </td>
+                        <td className="p-1">
+                          <input type="month" className="border rounded px-1 py-0.5 w-32"
+                            value={it.expiryDate} onChange={(e) => updateItem(i, 'expiryDate', e.target.value)} />
+                          {it.expiryDate && (
+                            <span className="block text-xs text-gray-400">{formatMMYYYY(it.expiryDate)}</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
           </div>
-        ))}
-        {purchases.length === 0 && (
-          <p className="text-gray-400">
-            No purchases recorded yet.
-            <span className="block text-xs">अद्याप कोणतीही खरेदी नोंदवलेली नाही.</span>
-          </p>
         )}
+
+        <button type="button" className="text-emerald-700 text-sm"
+          onClick={() => setItems([...items, { ...emptyItem }])}>
+          + Add another item / आणखी एक वस्तू जोडा
+        </button>
+        <div>
+          <button className="bg-emerald-700 text-white px-4 py-2 rounded hover:bg-emerald-800">
+            {editingPurchaseId ? 'Save Changes / बदल जतन करा' : 'Record Purchase / खरेदी नोंदवा'}
+          </button>
+        </div>
+      </form>
+
+      <div className="lg:sticky lg:top-4">
+          {/* Purchase lookup: pick a purchase by ID and view/edit it. This is
+              now the only view of a purchase on this side of the screen —
+              the full history list has been removed. */}
+          <div className="bg-white rounded shadow p-4">
+            <FieldLabel en="View / Edit Purchase" mr="खरेदी पहा / संपादित करा" />
+            <select className="border rounded px-2 py-1 w-full mt-1"
+              value={selectedPurchaseId} onChange={(e) => setSelectedPurchaseId(e.target.value)}>
+              <option value="">Select a purchase... / खरेदी निवडा...</option>
+              {purchases.map((p) => (
+                <option key={p.id} value={p.id}>
+                  #{p.id} — {p.supplier?.name || p.sourceDealer?.name || '—'} — {new Date(p.date).toLocaleDateString()} — {p.status || 'PENDING'}
+                </option>
+              ))}
+            </select>
+
+            {selectedPurchase ? (
+              <div className="mt-3">
+                <div className="flex items-center justify-between flex-wrap gap-2 mb-2">
+                  <div>
+                    <div className="font-semibold">{selectedPurchase.supplier?.name || selectedPurchase.sourceDealer?.name}</div>
+                    <div className="text-xs text-gray-400">{new Date(selectedPurchase.date).toLocaleString()}</div>
+                  </div>
+                  {statusAction(selectedPurchase)}
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="text-left p-1">Product / उत्पादन</th>
+                        <th className="text-left p-1">Qty / प्रमाण</th>
+                        <th className="text-left p-1">Batch / बॅच</th>
+                        <th className="text-left p-1">Cost / क्रय</th>
+                        <th className="text-left p-1">Commission / कमिशन</th>
+                        <th className="text-left p-1">Sell Price / विक्री किंमत</th>
+                        <th className="text-left p-1">MRP / एमआरपी</th>
+                        <th className="text-left p-1">Discount / सवलत</th>
+                        {user.role === 'DEALER' && (
+                          <th className="text-left p-1">Retailer Price / किरकोळ किंमत</th>
+                        )}
+                        <th className="text-left p-1">Mfg (mm-yyyy) / उत्पादन तारीख</th>
+                        <th className="text-left p-1">Exp (mm-yyyy) / कालबाह्यता</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {selectedPurchase.items.map((it) => (
+                        <tr key={it.id} className="border-t">
+                          <td className="p-1">{it.product?.name}</td>
+                          <td className="p-1">
+                            {isSelectedEditable ? (
+                              <input type="number" min="1" className="border rounded px-1 py-0.5 w-20"
+                                value={quantityEdits[it.id] ?? ''}
+                                onChange={(e) => setQuantityEdits((prev) => ({ ...prev, [it.id]: e.target.value }))} />
+                            ) : it.quantity}
+                          </td>
+                          <td className="p-1">{it.batchName}</td>
+                          <td className="p-1">₹{it.rate}</td>
+                          <td className="p-1">{it.dealerCommission}%</td>
+                          <td className="p-1">₹{it.sellingPrice}</td>
+                          <td className="p-1">₹{it.mrp}</td>
+                          <td className="p-1">{it.discount}%</td>
+                          {user.role === 'DEALER' && (
+                            <td className="p-1">₹{it.retailerSellingPrice ?? computeRetailerPrice(it)}</td>
+                          )}
+                          <td className="p-1">{formatMMYYYY(it.manufacturingDate)}</td>
+                          <td className="p-1">{formatMMYYYY(it.expiryDate)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {quantityError && (
+                  <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2 mt-2">{quantityError}</div>
+                )}
+
+                {isSelectedEditable && (
+                  <button type="button" onClick={saveQuantities} disabled={savingQuantities}
+                    className="mt-2 text-xs bg-emerald-700 text-white px-3 py-1.5 rounded hover:bg-emerald-800 disabled:opacity-50">
+                    {savingQuantities ? 'Saving... / जतन करत आहे...' : 'Save Quantity Changes / प्रमाण बदल जतन करा'}
+                  </button>
+                )}
+              </div>
+            ) : (
+              <p className="text-gray-400 text-sm mt-2">
+                No purchase selected.
+                <span className="block text-xs">कोणतीही खरेदी निवडलेली नाही.</span>
+              </p>
+            )}
+          </div>
         </div>
       </div>
       </div>
-    </div>
   );
 }
