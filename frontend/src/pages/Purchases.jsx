@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import api from '../api.js';
+import { printBarcodeLabelsBatch } from '../components/Barcode.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 
 // Small helper to render an English label with its Marathi translation
@@ -76,6 +77,11 @@ export default function Purchases() {
   const [quantityEdits, setQuantityEdits] = useState({});
   const [quantityError, setQuantityError] = useState('');
   const [savingQuantities, setSavingQuantities] = useState(false);
+
+  // Set right after a dealer confirms a purchase (and reopenable from a
+  // confirmed purchase's card) to ask how many labels to print per item,
+  // then print them with that batch's MRP / retailer selling price.
+  const [printPrompt, setPrintPrompt] = useState(null); // { purchase, quantities: { [itemId]: string } }
 
   async function load() {
     const calls = [api.get('/purchases'), api.get('/products')];
@@ -195,8 +201,44 @@ export default function Purchases() {
 
   async function completePurchase(purchaseId) {
     const nextStatus = user.role === 'DEALER' ? 'CONFIRMED' : 'RECEIVED';
-    await api.patch(`/purchases/${purchaseId}/status`, { status: nextStatus });
+    const { data } = await api.patch(`/purchases/${purchaseId}/status`, { status: nextStatus });
     load();
+    // Only a dealer's own CONFIRMED purchase is a stock-inwards event worth
+    // labeling — a retailer receiving stock doesn't print product barcodes.
+    if (user.role === 'DEALER' && nextStatus === 'CONFIRMED') {
+      openPrintPrompt(data);
+    }
+  }
+
+  // Opens the print-quantity prompt for a CONFIRMED purchase, defaulting
+  // each item's label count to the quantity purchased. Also reachable later
+  // from that purchase's card, to reprint without reconfirming — this is the
+  // only place in the app barcode labels are printed from, since Product
+  // itself carries no MRP/price (only a purchase batch does).
+  function openPrintPrompt(purchase) {
+    setPrintPrompt({
+      purchase,
+      quantities: Object.fromEntries(purchase.items.map((it) => [it.id, String(it.quantity)])),
+    });
+  }
+
+  function updatePrintQty(itemId, val) {
+    setPrintPrompt((pp) => (pp ? { ...pp, quantities: { ...pp.quantities, [itemId]: val } } : pp));
+  }
+
+  function submitPrintPrompt() {
+    printBarcodeLabelsBatch(
+      printPrompt.purchase.items.map((it) => ({
+        name: it.product?.name,
+        sizeWeight: it.product?.sizeWeight,
+        barcode: it.product?.barcode,
+        quantity: Number(printPrompt.quantities[it.id]) || 1,
+        mrp: it.mrp,
+        retailerSellingPrice: it.retailerSellingPrice,
+      })),
+      `Print Barcodes - Purchase #${printPrompt.purchase.id}`
+    );
+    setPrintPrompt(null);
   }
 
   function statusAction(p) {
@@ -228,9 +270,17 @@ export default function Purchases() {
       );
     }
     return (
-      <span className="text-xs bg-emerald-50 text-emerald-700 font-medium px-3 py-1.5 rounded border border-emerald-200">
-        {status === 'CONFIRMED' ? 'Confirmed / पुष्टी झाली' : 'Received / प्राप्त झाले'}
-      </span>
+      <div className="flex items-center gap-2">
+        <span className="text-xs bg-emerald-50 text-emerald-700 font-medium px-3 py-1.5 rounded border border-emerald-200">
+          {status === 'CONFIRMED' ? 'Confirmed / पुष्टी झाली' : 'Received / प्राप्त झाले'}
+        </span>
+        {user.role === 'DEALER' && status === 'CONFIRMED' && (
+          <button type="button" onClick={() => openPrintPrompt(p)}
+            className="text-xs bg-white border border-gray-400 text-gray-700 px-3 py-1.5 rounded hover:bg-gray-50">
+            Print Labels<span className="block">लेबल छापा</span>
+          </button>
+        )}
+      </div>
     );
   }
 
@@ -281,6 +331,40 @@ export default function Purchases() {
     <div>
       <h1 className="text-2xl font-semibold">Purchases / Stock Inwards</h1>
       <p className="text-sm text-orange-700 mb-4">खरेदी / साठा आवक</p>
+
+      {printPrompt && (
+        <div className="bg-white rounded shadow p-4 mb-4 border border-emerald-200">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="font-semibold text-sm">
+              Print Barcode Labels — Purchase #{printPrompt.purchase.id}
+              <span className="block text-xs font-normal text-orange-700">खरेदी #{printPrompt.purchase.id} साठी लेबल छापा</span>
+            </h3>
+            <button type="button" onClick={() => setPrintPrompt(null)} className="text-xs text-gray-500 hover:underline">
+              Skip / वगळा
+            </button>
+          </div>
+          <div className="divide-y">
+            {printPrompt.purchase.items.map((it) => (
+              <div key={it.id} className="flex items-center justify-between gap-3 py-2 text-sm">
+                <div>
+                  <div className="font-medium">{it.product?.name} <span className="text-xs text-gray-400">({it.product?.sizeWeight})</span></div>
+                  <div className="text-xs text-gray-400">Batch {it.batchName} · MRP ₹{it.mrp} · Retailer ₹{it.retailerSellingPrice} · Purchased {it.quantity}</div>
+                </div>
+                <div className="flex flex-col items-end gap-1">
+                  <FieldLabel en="Labels to print" mr="छापायची लेबल्स" />
+                  <input type="number" min="1" className="border rounded w-20 px-2 py-1"
+                    value={printPrompt.quantities[it.id]}
+                    onChange={(e) => updatePrintQty(it.id, e.target.value)} />
+                </div>
+              </div>
+            ))}
+          </div>
+          <button type="button" onClick={submitPrintPrompt}
+            className="mt-3 bg-emerald-700 text-white text-sm px-4 py-2 rounded hover:bg-emerald-800">
+            Print Labels / लेबल छापा
+          </button>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
         <form onSubmit={submit} className="bg-white p-4 rounded shadow space-y-3">

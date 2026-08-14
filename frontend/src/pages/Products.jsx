@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import api from '../api.js';
-import Barcode, { printBarcodeLabels } from '../components/Barcode.jsx';
+import Barcode from '../components/Barcode.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 
 const empty = {
@@ -16,7 +16,6 @@ export default function Products() {
   const [form, setForm] = useState(empty);
   const [selectedId, setSelectedId] = useState(null);
   const [cloneSource, setCloneSource] = useState(null); // product being cloned from, if any
-  const [printQty, setPrintQty] = useState(1);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
@@ -148,14 +147,10 @@ export default function Products() {
             {isEditing && selectedProduct && (
               <div className="md:col-span-2 flex items-center gap-3 bg-gray-50 rounded p-2">
                 <Barcode value={selectedProduct.barcode} />
-                <div className="flex items-center gap-2">
-                  <input type="number" min="1" value={printQty} onChange={(e) => setPrintQty(e.target.value)}
-                    className="border rounded w-16 px-1 py-1 text-sm" />
-                  <button type="button" onClick={() => printBarcodeLabels(selectedProduct, Number(printQty) || 1)}
-                    className="bg-gray-800 text-white px-3 py-2 rounded text-sm hover:bg-gray-700">
-                    Print Labels
-                  </button>
-                </div>
+                <p className="text-xs text-gray-500">
+                  Barcode labels are printed from Purchases, once a purchase carrying this
+                  product's MRP and retailer price is confirmed.
+                </p>
               </div>
             )}
 
@@ -210,14 +205,6 @@ export default function Products() {
                       onClick={(e) => { e.stopPropagation(); cloneProduct(p); }}
                       className="border border-emerald-700 text-emerald-700 px-3 py-2 rounded text-sm hover:bg-emerald-50">
                       Clone
-                    </button>
-                  )}
-                  {!isDealer && (
-                    <button
-                      type="button"
-                      onClick={(e) => { e.stopPropagation(); printBarcodeLabels(p, 1); }}
-                      className="bg-gray-800 text-white px-3 py-2 rounded text-sm hover:bg-gray-700">
-                      Print
                     </button>
                   )}
                   {selectedId === p.id && <span className="text-emerald-700 text-sm font-medium">Editing</span>}
