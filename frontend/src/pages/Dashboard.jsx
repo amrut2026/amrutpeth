@@ -37,15 +37,38 @@ export default function Dashboard() {
       </div>
 
       {lowStock.length > 0 && (
-        <div className="bg-red-50 border border-red-200 rounded p-4">
+        <div>
           <h2 className="font-semibold text-red-700 mb-2">⚠ Reorder needed / पुनर्क्रम आवश्यक</h2>
-          <ul className="text-sm text-red-700 space-y-1 max-h-[50vh] overflow-y-auto pr-1">
-            {lowStock.map((i) => (
-              <li key={i.id}>
-                {i.product?.name} — qty / प्रमाण {i.quantity} (reorder level / पुनर्क्रम पातळी {i.reorderLevel})
-              </li>
-            ))}
-          </ul>
+          <div className="bg-white rounded shadow overflow-x-auto overflow-y-auto max-h-[75vh]">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-100 sticky top-0 z-10">
+                <tr>
+                  <th className="text-left p-2">Product <span className="text-gray-400 font-normal">/ उत्पादन</span></th>
+                  <th className="text-left p-2">Barcode <span className="text-gray-400 font-normal">/ बारकोड</span></th>
+                  <th className="text-left p-2">Batch <span className="text-gray-400 font-normal">/ बॅच</span></th>
+                  <th className="text-left p-2">Expiry <span className="text-gray-400 font-normal">/ एक्सपायरी</span></th>
+                  <th className="text-left p-2">MRP <span className="text-gray-400 font-normal">/ एमआरपी</span></th>
+                  <th className="text-left p-2">Quantity <span className="text-gray-400 font-normal">/ प्रमाण</span></th>
+                  <th className="text-left p-2">Reorder Level <span className="text-gray-400 font-normal">/ पुनर्क्रम पातळी</span></th>
+                  <th className="text-left p-2">Status <span className="text-gray-400 font-normal">/ स्थिती</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                {lowStock.map((r) => (
+                  <tr key={r.id} className="border-t bg-red-50">
+                    <td className="p-2">{r.product?.name} ({r.product?.sizeWeight})</td>
+                    <td className="p-2">{r.product?.barcode}</td>
+                    <td className="p-2">{r.batchName || '-'}</td>
+                    <td className="p-2">{r.expiryDate ? new Date(r.expiryDate).toLocaleDateString() : '-'}</td>
+                    <td className="p-2">{r.mrp != null ? `₹${Number(r.mrp).toFixed(2)}` : '-'}</td>
+                    <td className="p-2">{r.quantity}</td>
+                    <td className="p-2">{r.reorderLevel}</td>
+                    <td className="p-2"><span className="text-red-600 font-semibold">⚠ Reorder now / आता पुन्हा मागवा</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>

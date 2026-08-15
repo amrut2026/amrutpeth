@@ -9,9 +9,9 @@ export default function Inventory() {
   return (
     <div>
       <h1 className="text-2xl font-semibold mb-4">Inventory <span className="text-gray-400 font-normal">/ इन्व्हेंटरी</span></h1>
-      <div className="bg-white rounded shadow overflow-x-auto">
+      <div className="bg-white rounded shadow overflow-x-auto overflow-y-auto max-h-[75vh]">
         <table className="w-full text-sm">
-          <thead className="bg-gray-100">
+          <thead className="bg-gray-100 sticky top-0 z-10">
             <tr>
               <th className="text-left p-2">Product <span className="text-gray-400 font-normal">/ उत्पादन</span></th>
               <th className="text-left p-2">Barcode <span className="text-gray-400 font-normal">/ बारकोड</span></th>
