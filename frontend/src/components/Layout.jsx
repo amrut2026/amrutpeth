@@ -82,7 +82,12 @@ export default function Layout({ children }) {
             {user.role} · {ROLE_MR[user.role] || ''}
           </span>
         </div>
-        <nav className="flex-1 px-2 space-y-1">
+        <button
+          onClick={() => { logout(); navigate('/login'); }}
+          className="mx-4 mb-4 px-3 py-2 bg-orange-700 rounded hover:bg-orange-600 text-sm">
+          Log out <span className="text-orange-200">· बाहेर पडा</span>
+        </button>
+        <nav className="flex-1 px-2 space-y-1 overflow-y-auto">
           {links.map(([to, label, labelMr]) => (
             <NavLink key={to} to={to}
               className={({ isActive }) =>
@@ -92,11 +97,6 @@ export default function Layout({ children }) {
             </NavLink>
           ))}
         </nav>
-        <button
-          onClick={() => { logout(); navigate('/login'); }}
-          className="m-4 px-3 py-2 bg-orange-700 rounded hover:bg-orange-600 text-sm">
-          Log out <span className="text-orange-200">· बाहेर पडा</span>
-        </button>
       </aside>
       <main className="flex-1 p-6 overflow-y-auto">{children}</main>
     </div>
