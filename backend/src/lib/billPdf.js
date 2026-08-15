@@ -33,7 +33,9 @@ const L = {
   thankYou: 'Thank you for your business. / आपल्या व्यवसायासाठी धन्यवाद.',
 };
 
-const COLS = [
+// Consumer-facing bill (CASH sale, either a dealer selling direct or a
+// retailer selling to their end customer): shows MRP and savings.
+const COLS_FULL = [
   { key: 'sn', label: 'S.No\nअ.क्र.', width: 32 },
   { key: 'name', label: 'Product\nउत्पादन', width: 130 },
   { key: 'batch', label: 'Batch\nबॅच', width: 65 },
@@ -42,6 +44,18 @@ const COLS = [
   { key: 'price', label: 'Price\nकिंमत', width: 58, align: 'right' },
   { key: 'saved', label: 'You Save\nबचत', width: 60, align: 'right' },
   { key: 'amount', label: 'Amount\nरक्कम', width: 70, align: 'right' },
+];
+
+// B2B bill (a dealer selling on to a retailer): MRP and "You Save" are a
+// consumer-facing concept and don't belong on a wholesale invoice, so
+// they're dropped and the remaining columns take the freed-up width.
+const COLS_B2B = [
+  { key: 'sn', label: 'S.No\nअ.क्र.', width: 32 },
+  { key: 'name', label: 'Product\nउत्पादन', width: 230 },
+  { key: 'batch', label: 'Batch\nबॅच', width: 90 },
+  { key: 'qty', label: 'Qty\nप्रमाण', width: 50, align: 'right' },
+  { key: 'price', label: 'Price\nकिंमत', width: 60, align: 'right' },
+  { key: 'amount', label: 'Amount\nरक्कम', width: 53, align: 'right' },
 ];
 
 function fmt(n) {
@@ -84,11 +98,11 @@ function drawBillMeta(doc, sale) {
   doc.moveDown(0.5);
 }
 
-function drawTableHeader(doc) {
+function drawTableHeader(doc, cols) {
   const y = doc.y;
   let x = PAGE_MARGIN;
   doc.font(FONT_BOLD).fontSize(6.5);
-  for (const col of COLS) {
+  for (const col of cols) {
     doc.text(col.label, x, y, { width: col.width, align: col.align || 'left' });
     x += col.width;
   }
@@ -98,10 +112,10 @@ function drawTableHeader(doc) {
   doc.font(FONT_REGULAR).fontSize(8);
 }
 
-function drawRow(doc, row) {
+function drawRow(doc, cols, row) {
   const y = doc.y;
   let x = PAGE_MARGIN;
-  for (const col of COLS) {
+  for (const col of cols) {
     doc.text(String(row[col.key] ?? ''), x, y, { width: col.width, align: col.align || 'left' });
     x += col.width;
   }
@@ -132,9 +146,14 @@ export async function generateSaleBillPdf(sale, party) {
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
 
+    // A dealer selling on to a retailer is a B2B transaction — MRP and "You
+    // Save" are a consumer-facing concept and don't belong on that invoice.
+    const isB2B = sale.customerType === 'RETAILER';
+    const cols = isB2B ? COLS_B2B : COLS_FULL;
+
     drawHeader(doc, party);
     drawBillMeta(doc, sale);
-    drawTableHeader(doc);
+    drawTableHeader(doc, cols);
 
     const rowsPerPage = 28; // slightly lower than before — bilingual header takes more vertical space
     let runningTotal = 0;
@@ -147,9 +166,9 @@ export async function generateSaleBillPdf(sale, party) {
       const savedPerUnit = mrp != null && mrp > Number(item.price) ? mrp - Number(item.price) : 0;
       const savedTotal = savedPerUnit * Number(item.quantity);
       runningTotal += amount;
-      totalSavings += savedTotal;
+      if (!isB2B) totalSavings += savedTotal;
 
-      drawRow(doc, {
+      drawRow(doc, cols, {
         sn: idx + 1,
         name: item.product?.name || `#${item.productId}`,
         batch: item.batchName || '-',
@@ -168,7 +187,7 @@ export async function generateSaleBillPdf(sale, party) {
         drawHeader(doc, party);
         doc.font(FONT_REGULAR).fontSize(8).text(`${L.continued} (${L.billNo}: ${sale.id})`, PAGE_MARGIN, doc.y);
         doc.moveDown(0.3);
-        drawTableHeader(doc);
+        drawTableHeader(doc, cols);
         rowsOnPage = 0;
       }
     });
@@ -176,7 +195,7 @@ export async function generateSaleBillPdf(sale, party) {
     doc.moveTo(PAGE_MARGIN, doc.y).lineTo(RIGHT_EDGE, doc.y).stroke();
     doc.moveDown(0.3);
 
-    if (totalSavings > 0) {
+    if (!isB2B && totalSavings > 0) {
       doc.font(FONT_REGULAR).fontSize(9);
       doc.text(`${L.totalSavings}: Rs. ${fmt(totalSavings)}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH, align: 'right' });
       doc.moveDown(0.2);
