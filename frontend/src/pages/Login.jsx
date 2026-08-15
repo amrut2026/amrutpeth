@@ -16,7 +16,7 @@ export default function Login() {
       await login(username, password);
       navigate('/');
     } catch (err) {
-      setError('Invalid username or password');
+      setError('Invalid username or password / अवैध वापरकर्तानाव किंवा संकेतशब्द');
     }
   }
 
@@ -24,19 +24,19 @@ export default function Login() {
     <div className="min-h-screen flex items-center justify-center bg-emerald-900">
       <form onSubmit={submit} className="bg-white rounded shadow p-8 w-full max-w-sm">
         <h1 className="text-2xl font-bold mb-1 text-emerald-900">FoodMart</h1>
-        <p className="text-sm text-gray-500 mb-6">Dealer / Retailer / Admin login</p>
+        <p className="text-sm text-gray-500 mb-6">Dealer / Retailer / Admin login (डीलर / किरकोळ विक्रेता / प्रशासक लॉगिन)</p>
         <div className="mb-3">
-          <label className="text-xs text-gray-500">Username</label>
+          <label className="text-xs text-gray-500">Username / वापरकर्तानाव</label>
           <input className="w-full border rounded px-3 py-2" value={username} onChange={(e) => setUsername(e.target.value)} />
         </div>
         <div className="mb-4">
-          <label className="text-xs text-gray-500">Password</label>
+          <label className="text-xs text-gray-500">Password / संकेतशब्द</label>
           <input type="password" className="w-full border rounded px-3 py-2" value={password} onChange={(e) => setPassword(e.target.value)} />
         </div>
         {error && <p className="text-red-600 text-sm mb-3">{error}</p>}
-        <button className="w-full bg-emerald-700 text-white py-2 rounded hover:bg-emerald-800">Log in</button>
+        <button className="w-full bg-emerald-700 text-white py-2 rounded hover:bg-emerald-800">Log in / लॉग इन करा</button>
         <p className="text-xs text-gray-400 mt-4">
-          Demo logins (after seeding): admin/admin123, dealer1/dealer123, retailer1/retailer123
+          Demo logins / डेमो लॉगिन (after seeding / सीड केल्यानंतर): admin/admin123, dealer1/dealer123, retailer1/retailer123
         </p>
       </form>
     </div>

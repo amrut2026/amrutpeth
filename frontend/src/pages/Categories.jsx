@@ -14,16 +14,16 @@ export default function Categories() {
       endpoint="/categories"
       canWrite={user.role === 'DEALER'}
       editable={user.role === 'DEALER'}
-      addButtonLabel="Add Product Category"
+      addButtonLabel="Add Product Category / उत्पादन श्रेणी जोडा"
       fields={[
-        { key: 'name', label: 'Category Name', required: true },
-        { key: 'description', label: 'Description' },
+        { key: 'name', label: 'Category Name / श्रेणीचे नाव', required: true },
+        { key: 'description', label: 'Description / वर्णन' },
       ]}
       columns={[
-        { key: 'id', label: 'ID' },
-        { key: 'name', label: 'Name' },
-        { key: 'description', label: 'Description' },
-        { key: 'dealer', label: 'Dealer', render: (r) => r.dealer?.name || '—' },
+        { key: 'id', label: 'ID / आयडी' },
+        { key: 'name', label: 'Name / नाव' },
+        { key: 'description', label: 'Description / वर्णन' },
+        { key: 'dealer', label: 'Dealer / डीलर', render: (r) => r.dealer?.name || '—' },
       ]}
     />
   );

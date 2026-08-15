@@ -5,17 +5,23 @@ export default function Divisions() {
   const { user } = useAuth();
   return (
     <CrudTable
-      title="Divisions"
+      title={
+        <>
+          Divisions{' '}
+          <span className="text-base font-normal text-gray-500">(विभाग)</span>
+        </>
+      }
       endpoint="/divisions"
       canWrite={user.role === 'ADMIN'}
+      addButtonLabel="Add Division / विभाग जोडा"
       fields={[
-        { key: 'name', label: 'Name', required: true },
-        { key: 'description', label: 'Description' },
+        { key: 'name', label: 'Name / नाव', required: true },
+        { key: 'description', label: 'Description / वर्णन' },
       ]}
       columns={[
-        { key: 'id', label: 'ID' },
-        { key: 'name', label: 'Name' },
-        { key: 'description', label: 'Description', render: (r) => r.description || '—' },
+        { key: 'id', label: 'ID / आयडी' },
+        { key: 'name', label: 'Name / नाव' },
+        { key: 'description', label: 'Description / वर्णन', render: (r) => r.description || '—' },
       ]}
     />
   );
