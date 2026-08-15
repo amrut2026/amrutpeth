@@ -1,6 +1,6 @@
 // ============================================================
 // FoodMart PoC - Prisma schema (PostgreSQL)
-// Run: npx prisma migrate dev --name init
+// Run: npx prisma migrate dev --name add_inventory_pricing
 // ============================================================
 
 generator client {
@@ -204,6 +204,13 @@ model SupplierBankAccount {
 }
 
 // ---------------- Inventory ----------------
+// One row per product + owner + BATCH. A product with stock from two
+// different accepted purchases (different batchName) now has two rows here,
+// each with its own quantity and its own pricing/dates from that specific
+// PurchaseItem (see purchases.js /:id/status, which upserts per batch
+// instead of collapsing into a single row). This lets a seller choose which
+// batch to sell from at sale time (see sales.js) rather than always selling
+// at "whatever the latest purchase price was."
 model Inventory {
   id            Int       @id @default(autoincrement())
   productId     Int
@@ -215,9 +222,25 @@ model Inventory {
   retailer      Retailer? @relation("RetailerInventory", fields: [retailerId], references: [id])
   quantity      Int       @default(0)
   reorderLevel  Int       @default(10)
+
+  // -- pricing/batch fields, carried from this specific PurchaseItem --
+  rate                 Decimal   @db.Decimal(10,2) @default(0) // cost price paid per unit, this batch
+  dealerCommission     Decimal   @db.Decimal(5,2)  @default(0) // % used to derive sellingPrice
+  sellingPrice         Decimal   @db.Decimal(10,2) @default(0) // dealer -> retailer price
+  discount             Decimal   @db.Decimal(10,2) @default(0) // % used to derive retailerSellingPrice
+  mrp                  Decimal   @db.Decimal(10,2) @default(0)
+  retailerSellingPrice Decimal   @db.Decimal(10,2) @default(0) // retailer -> end customer / dealer cash-sale price
+  manufacturingDate    DateTime?
+  expiryDate           DateTime?
+  batchName            String    @default("")
+
   updatedAt     DateTime  @updatedAt
 
-  @@unique([productId, ownerType, dealerId, retailerId])
+  // batchName is part of the identity now — same product+owner can have
+  // multiple batch rows. batchName defaults to "" rather than being
+  // nullable because Postgres treats NULLs as distinct for uniqueness
+  // purposes, which would let duplicate "no batch" rows slip through.
+  @@unique([productId, ownerType, dealerId, retailerId, batchName])
 }
 
 // ---------------- Purchases / Inwards ----------------
@@ -288,6 +311,13 @@ model SaleItem {
   quantity  Int
   price     Decimal @db.Decimal(10,2)
   discount  Decimal @db.Decimal(10,2) @default(0)
+  // Snapshot of MRP from the Inventory batch at sale time — printed on the
+  // bill alongside the sale price so "you saved" can be shown per line.
+  mrp       Decimal? @db.Decimal(10,2)
+  // Snapshot of which Inventory batch this line was sold from, captured at
+  // sale time — printed on the bill for traceability. Not a live FK to
+  // Inventory, since that row's quantity keeps changing after the sale.
+  batchName String?
 }
 
 // ---------------- Vouchers (Dealer -> Retailer receivable) ----------------

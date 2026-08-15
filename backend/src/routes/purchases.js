@@ -255,17 +255,38 @@ router.patch('/:id/status', authRequired, requireRole('DEALER', 'RETAILER'), asy
     (scope.ownerType === 'RETAILER' && status === 'RECEIVED');
   if (isTerminal) {
     for (const i of purchase.items) {
+      // Keyed on batchName too — each batch gets its own Inventory row with
+      // its own quantity and its own pricing, so a seller can later choose
+      // which batch to sell from (see sales.js). If the exact same batch
+      // name is received again (re-receiving the same lot), its quantity is
+      // topped up rather than creating a duplicate row.
       const invWhere = {
-        productId_ownerType_dealerId_retailerId: {
+        productId_ownerType_dealerId_retailerId_batchName: {
           productId: i.productId,
           ownerType: scope.ownerType,
           dealerId: scope.ownerType === 'DEALER' ? scope.dealerId : null,
           retailerId: scope.ownerType === 'RETAILER' ? scope.retailerId : null,
+          batchName: i.batchName,
         }
       };
+
+      const priceFields = {
+        rate: i.rate,
+        dealerCommission: i.dealerCommission,
+        sellingPrice: i.sellingPrice,
+        discount: i.discount,
+        mrp: i.mrp,
+        retailerSellingPrice: i.retailerSellingPrice,
+        manufacturingDate: i.manufacturingDate,
+        expiryDate: i.expiryDate,
+      };
+
       const existingInv = await prisma.inventory.findUnique({ where: invWhere }).catch(() => null);
       if (existingInv) {
-        await prisma.inventory.update({ where: invWhere, data: { quantity: { increment: i.quantity } } });
+        await prisma.inventory.update({
+          where: invWhere,
+          data: { quantity: { increment: i.quantity }, ...priceFields }
+        });
       } else {
         await prisma.inventory.create({
           data: {
@@ -273,8 +294,10 @@ router.patch('/:id/status', authRequired, requireRole('DEALER', 'RETAILER'), asy
             ownerType: scope.ownerType,
             dealerId: scope.ownerType === 'DEALER' ? scope.dealerId : null,
             retailerId: scope.ownerType === 'RETAILER' ? scope.retailerId : null,
+            batchName: i.batchName,
             quantity: i.quantity,
-            reorderLevel: 10
+            reorderLevel: 10,
+            ...priceFields
           }
         });
       }
