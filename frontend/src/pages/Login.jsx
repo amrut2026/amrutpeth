@@ -21,9 +21,9 @@ export default function Login() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-emerald-900">
+    <div className="min-h-screen flex items-center justify-center bg-orange-600">
       <form onSubmit={submit} className="bg-white rounded shadow p-8 w-full max-w-sm">
-        <h1 className="text-2xl font-bold mb-1 text-emerald-900">
+        <h1 className="text-2xl font-bold mb-1 text-orange-700">
           Amrut Peth <span className="text-base font-normal text-gray-500">(अमृत पेठ)</span>
         </h1>
         <p className="text-sm text-gray-500 mb-6">Dealer / Retailer / Admin login (डीलर / किरकोळ विक्रेता / प्रशासक लॉगिन)</p>
@@ -36,7 +36,7 @@ export default function Login() {
           <input type="password" className="w-full border rounded px-3 py-2" value={password} onChange={(e) => setPassword(e.target.value)} />
         </div>
         {error && <p className="text-red-600 text-sm mb-3">{error}</p>}
-        <button className="w-full bg-emerald-700 text-white py-2 rounded hover:bg-emerald-800">Log in / लॉग इन करा</button>
+        <button className="w-full bg-orange-600 text-white py-2 rounded hover:bg-orange-700">Log in / लॉग इन करा</button>
         <p className="text-xs text-gray-400 mt-4">
           Demo logins / डेमो लॉगिन (after seeding / सीड केल्यानंतर): admin/admin123, dealer1/dealer123, retailer1/retailer123
         </p>
