@@ -39,7 +39,7 @@ export default function Dashboard() {
       {lowStock.length > 0 && (
         <div className="bg-red-50 border border-red-200 rounded p-4">
           <h2 className="font-semibold text-red-700 mb-2">⚠ Reorder needed / पुनर्क्रम आवश्यक</h2>
-          <ul className="text-sm text-red-700 space-y-1">
+          <ul className="text-sm text-red-700 space-y-1 max-h-[50vh] overflow-y-auto pr-1">
             {lowStock.map((i) => (
               <li key={i.id}>
                 {i.product?.name} — qty / प्रमाण {i.quantity} (reorder level / पुनर्क्रम पातळी {i.reorderLevel})

@@ -80,9 +80,9 @@ export default function Reports() {
       )}
 
       {tab === 'inventory' && (
-        <div className="bg-white rounded shadow overflow-x-auto">
+        <div className="bg-white rounded shadow overflow-x-auto overflow-y-auto max-h-[70vh]">
           <table className="w-full text-sm">
-            <thead className="bg-gray-100"><tr>
+            <thead className="bg-gray-100 sticky top-0 z-10"><tr>
               <th className="text-left p-2">Product / उत्पादन</th><th className="text-left p-2">Qty / प्रमाण</th>
               <th className="text-left p-2">Reorder Level / पुनर्क्रम पातळी</th><th className="text-left p-2">Status / स्थिती</th>
             </tr></thead>
