@@ -23,7 +23,9 @@ export default function Login() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-emerald-900">
       <form onSubmit={submit} className="bg-white rounded shadow p-8 w-full max-w-sm">
-        <h1 className="text-2xl font-bold mb-1 text-emerald-900">FoodMart</h1>
+        <h1 className="text-2xl font-bold mb-1 text-emerald-900">
+          Amrut Peth <span className="text-base font-normal text-gray-500">(अमृत पेठ)</span>
+        </h1>
         <p className="text-sm text-gray-500 mb-6">Dealer / Retailer / Admin login (डीलर / किरकोळ विक्रेता / प्रशासक लॉगिन)</p>
         <div className="mb-3">
           <label className="text-xs text-gray-500">Username / वापरकर्तानाव</label>
