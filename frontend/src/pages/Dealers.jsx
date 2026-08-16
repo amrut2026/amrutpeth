@@ -7,7 +7,7 @@ export default function Dealers() {
   const [dealers, setDealers] = useState([]);
   const [divisions, setDivisions] = useState([]);
   const [organisations, setOrganisations] = useState([]);
-  const [form, setForm] = useState({ name: '', address: '', contactNumber: '', gstNumber: '', divisionId: '', organizationId: '1', username: '', password: '' });
+  const [form, setForm] = useState({ name: '', address: '', contactNumber: '', gstNumber: '', divisionId: '', organisationId: '1', username: '', password: '' });
   const [bankAccounts, setBankAccounts] = useState([{ accountNumber: '', ifsc: '', bankName: '' }]);
   const [error, setError] = useState('');
   const [credEdit, setCredEdit] = useState(null); // dealer id currently setting/resetting a login
@@ -34,7 +34,7 @@ export default function Dealers() {
     setError('');
     try {
       await api.post('/dealers', { ...form, bankAccounts });
-      setForm({ name: '', address: '', contactNumber: '', gstNumber: '', divisionId: '', organizationId: '1', username: '', password: '' });
+      setForm({ name: '', address: '', contactNumber: '', gstNumber: '', divisionId: '', organisationId: '1', username: '', password: '' });
       setBankAccounts([{ accountNumber: '', ifsc: '', bankName: '' }]);
       load();
     } catch (err) {
@@ -78,7 +78,7 @@ export default function Dealers() {
               {divisions.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
             </select>
             <select className="border rounded px-2 py-1" required
-              value={form.organizationId} onChange={(e) => setForm({ ...form, organizationId: e.target.value })}>
+              value={form.organisationId} onChange={(e) => setForm({ ...form, organisationId: e.target.value })}>
               <option value="">Organisation...</option>
               {organisations.map((o) => <option key={o.orgId} value={o.orgId}>{o.orgName}</option>)}
             </select>

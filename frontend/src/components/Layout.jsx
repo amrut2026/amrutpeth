@@ -38,7 +38,7 @@ const NAV = {
     ['/purchases', 'Purchases (Inwards)', 'खरेदी (आवक)'],
     ['/sales', 'Sales (POS)', 'विक्री (पीओएस)'],
     ['/vouchers', 'Vouchers Received', 'मिळालेले व्हाउचर'],
-    ['/receipts', 'Receipts (Pay Dealer)', 'पावती (डीलरला पैसे द्या)'],
+    ['/receipts', 'Payments (Pay Dealer)', 'देयके (डीलरला पैसे द्या)'],
     ['/reports', 'Reports', 'अहवाल'],
   ],
 };

@@ -1,6 +1,6 @@
 // ============================================================
 // FoodMart PoC - Prisma schema (PostgreSQL)
-// Run: npx prisma migrate dev --name add_inventory_pricing
+// Run: npx prisma migrate dev --name retailer_purchase_order_workflow
 // ============================================================
 
 generator client {
@@ -13,6 +13,7 @@ datasource db {
 
 enum Role {
   ADMIN         // manufacturer / platform owner
+  ORGANISATION  // login tied to an Organisation (Mahamandal/Federation/Association) itself
   DEALER
   RETAILER
 }
@@ -39,14 +40,42 @@ enum VoucherStatus {
   PAID
 }
 
-// Purchase review workflow: PENDING -> IN_REVIEW ("mark for review") ->
-// CONFIRMED (dealer's own purchase from a supplier) or RECEIVED (a
-// retailer's own purchase from their dealer).
+// Purchase review workflow forks by role after IN_REVIEW:
+//   DEALER (buying from a supplier):     PENDING -> IN_REVIEW -> CONFIRMED
+//   RETAILER (buying from their dealer): PENDING -> IN_REVIEW -> ORDERED
+//     -> IN_TRANSIT -> RECEIVED
+// ORDERED means the retailer has placed the order — a mirror row is created
+// in the dealer's own Sale table at that point (see Purchase.linkedSale)
+// so it shows up in their normal sales workflow. IN_TRANSIT means the
+// dealer has dispatched it: their own inventory has already been
+// decremented, via the linked Sale's dispatch (see sales.js PATCH
+// /:id/dispatch) — that route is the only thing allowed to make this
+// transition, since it also requires picking a batch per item. RECEIVED is
+// the terminal state where the retailer's own inventory finally gets
+// credited (see purchases.js PATCH /:id/status).
 enum PurchaseStatus {
   PENDING
   IN_REVIEW
   CONFIRMED
+  ORDERED
+  IN_TRANSIT
   RECEIVED
+}
+
+// A regular POS sale (walk-in cash sale, a dealer selling on the spot to a
+// retailer, or a card/UPI terminal webhook) completes immediately and is
+// COMPLETED from the moment it's created — every Sale made directly
+// through sales.js's createSale() is this. IN_PENDING and DISPATCHED only
+// apply to a Sale that was auto-created from a retailer's purchase order
+// once it reaches ORDERED (see PurchaseStatus / Purchase.linkedSale):
+// IN_PENDING while it's waiting on the dealer to fulfil it (no batch
+// chosen yet, totalAmount/paymentMode are still null), DISPATCHED once the
+// dealer has picked a batch per item and their inventory has been
+// decremented.
+enum SaleStatus {
+  COMPLETED
+  IN_PENDING
+  DISPATCHED
 }
 
 // ---------------- Users / Auth ----------------
@@ -57,8 +86,10 @@ model User {
   role       Role
   dealerId   Int?
   retailerId Int?
+  organisationId Int?
   dealer     Dealer?   @relation(fields: [dealerId], references: [id])
   retailer   Retailer? @relation(fields: [retailerId], references: [id])
+  organisation Organisation? @relation(fields: [organisationId], references: [orgId])
   createdAt  DateTime @default(now())
 }
 
@@ -83,8 +114,8 @@ model Dealer {
   gstNumber     String
   divisionId    Int?
   division      Division? @relation(fields: [divisionId], references: [id])
-  organizationId Int      @default(1)
-  organisation   Organisation @relation(fields: [organizationId], references: [orgId])
+  organisationId Int      @default(1)
+  organisation   Organisation @relation(fields: [organisationId], references: [orgId])
   createdAt     DateTime @default(now())
 
   bankAccounts  DealerBankAccount[]
@@ -261,12 +292,30 @@ model Purchase {
   date           DateTime  @default(now())
   status         PurchaseStatus @default(PENDING)
   items          PurchaseItem[]
+
+  // Set when this is a retailer's purchase order and it reaches ORDERED —
+  // points at the mirror Sale row created in the source dealer's own Sale
+  // table (see purchases.js PATCH /:id/status and sales.js PATCH
+  // /:id/dispatch). Stays null for a dealer's own purchase from a
+  // supplier, and null for a retailer purchase that hasn't been placed yet.
+  linkedSaleId   Int?      @unique
+  linkedSale     Sale?     @relation(fields: [linkedSaleId], references: [id])
 }
 
 // Each line item captures the batch-specific details of what was actually
 // bought: cost, selling price, discount, MRP, dates, and batch name. These
 // used to live on Product itself, but a re-order of the same product can
 // arrive with different pricing/dates/batch, so they belong here instead.
+//
+// A DEALER buying from a supplier fills all of the fields below in
+// directly on the purchase form. A RETAILER buying from their own dealer
+// no longer enters any of this (see Purchases.jsx) — they only pick a
+// product and quantity, so these stay null until the dealer dispatches the
+// linked Sale and the fulfilling Inventory batch's values get copied
+// across (see sales.js PATCH /:id/dispatch). At that point they're
+// populated exactly like a dealer's own purchase, so the existing
+// RECEIVED-time inventory-crediting logic in purchases.js works unchanged
+// either way.
 model PurchaseItem {
   id                Int      @id @default(autoincrement())
   purchaseId        Int
@@ -274,15 +323,28 @@ model PurchaseItem {
   productId         Int
   product           Product  @relation(fields: [productId], references: [id])
   quantity          Int
-  rate              Decimal  @db.Decimal(10,2) // cost price paid per unit for this batch
-  dealerCommission  Decimal  @db.Decimal(5,2)  // dealer commission %, used to derive sellingPrice
-  sellingPrice      Decimal  @db.Decimal(10,2) // = rate + (dealerCommission * rate / 100), rounded to 1 decimal
+  // Snapshot of `quantity` taken when this line was (re)declared — set at
+  // POST / and PUT /:id (a full resubmission of the purchase form), and
+  // left untouched by PATCH /:id/quantities (the surgical quantity-only
+  // correction). That split is the whole point: comparing quantity against
+  // originalQuantity is how the UI flags a line that's since drifted from
+  // what was first asked for — see Purchases.jsx and Sales.jsx. Defaults to
+  // 0 purely so the column can be added to an existing table without a
+  // manual backfill migration; every row created through the app (POST /
+  // and PUT /:id) always sets it explicitly to match quantity, so a real
+  // 0 should never actually appear outside of old pre-migration rows.
+  originalQuantity  Int @default(0)
+  rate              Decimal? @db.Decimal(10,2) // cost price paid per unit for this batch
+  dealerCommission  Decimal? @db.Decimal(5,2)  // dealer commission %, used to derive sellingPrice
+  sellingPrice      Decimal? @db.Decimal(10,2) // = rate + (dealerCommission * rate / 100), rounded to 1 decimal
   discount          Decimal  @db.Decimal(10,2) @default(0) // product discount %, used to derive retailerSellingPrice
-  mrp               Decimal  @db.Decimal(10,2)
-  retailerSellingPrice Decimal @db.Decimal(10,2) // = mrp - (discount * mrp / 100), rounded to 2 decimals
-  manufacturingDate DateTime
-  expiryDate        DateTime
-  batchName         String
+  mrp               Decimal? @db.Decimal(10,2)
+  retailerSellingPrice Decimal? @db.Decimal(10,2) // = mrp - (discount * mrp / 100), rounded to 2 decimals
+  manufacturingDate DateTime?
+  expiryDate        DateTime?
+  batchName         String?
+
+  saleItem          SaleItem? // inverse of SaleItem.purchaseItemId, for a retailer-order line
 }
 
 // ---------------- Sales / POS ----------------
@@ -296,10 +358,18 @@ model Sale {
   customerType   CustomerType
   customerRetailerId Int?     // when dealer sells to a retailer
   date           DateTime     @default(now())
-  totalAmount    Decimal      @db.Decimal(10,2)
-  paymentMode    PaymentMode
+  // COMPLETED for every ordinary POS sale. IN_PENDING / DISPATCHED only
+  // apply to a Sale auto-created from a retailer's purchase order — see
+  // SaleStatus above.
+  status         SaleStatus   @default(COMPLETED)
+  totalAmount    Decimal?     @db.Decimal(10,2) // null until DISPATCHED for an order-linked Sale
+  paymentMode    PaymentMode?                   // null until DISPATCHED for an order-linked Sale
   posTransactionRef String?
   items          SaleItem[]
+
+  // Inverse of Purchase.linkedSale — set when this Sale was auto-created
+  // from a retailer's purchase order rather than entered directly at POS.
+  linkedPurchase Purchase?
 }
 
 model SaleItem {
@@ -309,7 +379,24 @@ model SaleItem {
   productId Int
   product   Product @relation(fields: [productId], references: [id])
   quantity  Int
-  price     Decimal @db.Decimal(10,2)
+  // Copied from the originating PurchaseItem.originalQuantity when this line
+  // is created (see purchases.js PATCH /:id/status, ORDERED transition).
+  // Null for an ordinary POS sale item, which has no retailer order behind
+  // it. Stays fixed while `quantity` may be corrected before dispatch (see
+  // sales.js PATCH /:id/items) — the dealer can fulfil for less than what
+  // was ordered but never more; see Sales.jsx for the max-quantity guard
+  // and the different-quantity highlight this makes possible.
+  //
+  // Deliberately stays nullable with NO default (unlike PurchaseItem's) —
+  // defaulting this to 0 would make every ordinary POS sale item register
+  // as "changed" (0 != quantity) and light up amber on Sales.jsx for no
+  // reason. Null genuinely means "not applicable" here, not "unset".
+  originalQuantity Int?
+  // Null until a batch is chosen for this line — see Sale.status /
+  // sales.js PATCH /:id/dispatch. Always set immediately for an ordinary
+  // POS sale (createSale resolves it from the chosen Inventory batch
+  // before the Sale/SaleItem rows are even created).
+  price     Decimal? @db.Decimal(10,2)
   discount  Decimal @db.Decimal(10,2) @default(0)
   // Snapshot of MRP from the Inventory batch at sale time — printed on the
   // bill alongside the sale price so "you saved" can be shown per line.
@@ -318,6 +405,15 @@ model SaleItem {
   // sale time — printed on the bill for traceability. Not a live FK to
   // Inventory, since that row's quantity keeps changing after the sale.
   batchName String?
+
+  // Set only for a line that mirrors a retailer's purchase-order item
+  // (see purchases.js PATCH /:id/status, ORDERED transition). Lets
+  // sales.js PATCH /:id/dispatch backfill the originating PurchaseItem's
+  // pricing/batch fields directly by id, rather than matching on
+  // productId (which could be ambiguous if a purchase has two lines for
+  // the same product).
+  purchaseItemId Int? @unique
+  purchaseItem   PurchaseItem? @relation(fields: [purchaseItemId], references: [id])
 }
 
 // ---------------- Vouchers (Dealer -> Retailer receivable) ----------------
@@ -375,6 +471,7 @@ model Organisation {
   createdAt  DateTime @default(now())
 
   dealers    Dealer[]
+  users      User[]
 }
 
 // Roles from user_roles.json: Super User, Administrator, Owner, User

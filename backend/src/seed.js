@@ -12,7 +12,7 @@ async function main() {
     create: { username: 'admin', password: hash('admin123'), role: 'ADMIN' }
   });
 
-  // Organisation (Mahamandal) must exist before any Dealer, since Dealer.organizationId
+  // Organisation (Mahamandal) must exist before any Dealer, since Dealer.organisationId
   // is a required FK (defaulting to 1). orgName has no unique constraint, so this is a
   // manual find-or-create rather than an upsert.
   let organisation = await prisma.organisation.findFirst({ where: { orgName: 'State Food Distributors Mahamandal' } });
@@ -40,7 +40,7 @@ async function main() {
       contactNumber: '9876543210',
       gstNumber: '27ABCDE1234F1Z5',
       divisionId: division.id,
-      organizationId: organisation.orgId,
+      organisationId: organisation.orgId,
       bankAccounts: { create: [{ accountNumber: '123456789012', ifsc: 'HDFC0001234', bankName: 'HDFC Bank' }] }
     }
   });
@@ -69,7 +69,7 @@ async function main() {
   });
 
   const category = await prisma.productCategory.create({
-    data: { name: 'Snacks', description: 'Packaged snack foods' }
+    data: { name: 'Snacks', description: 'Packaged snack foods', dealerId: dealer.id }
   });
 
   // ---- RBAC reference data: user_roles.json + activities.json ----
@@ -129,17 +129,58 @@ async function main() {
     });
   }
 
-  // Sample suppliers/manufacturers
-  await prisma.supplier.createMany({
-    data: [
-      { name: 'National Snacks Manufacturing Co.', address: 'MIDC, Nashik, Maharashtra', contactNumber: '9822011223', gstNumber: '27NSMCO1234H1Z1', divisionId: division.id },
-      { name: 'Golden Grains Pvt Ltd', address: 'Ambad Industrial Area, Nashik', contactNumber: '9822033445', gstNumber: '27GGPL5566K1Z9', divisionId: division.id },
-    ]
+  // Sample suppliers/manufacturers — created individually (rather than
+  // createMany) so we can grab the first one's id for the product below.
+  const supplier1 = await prisma.supplier.create({
+    data: { name: 'National Snacks Manufacturing Co.', address: 'MIDC, Nashik, Maharashtra', contactNumber: '9822011223', gstNumber: '27NSMCO1234H1Z1', divisionId: division.id }
+  });
+  await prisma.supplier.create({
+    data: { name: 'Golden Grains Pvt Ltd', address: 'Ambad Industrial Area, Nashik', contactNumber: '9822033445', gstNumber: '27GGPL5566K1Z9', divisionId: division.id }
+  });
+
+  // Sample product + a starting Inventory batch already sitting in the
+  // dealer's stock. Without this, there's nothing for retailer1 to place a
+  // purchase order against, and nothing for dealer1 to dispatch from — this
+  // lets the full ORDERED -> IN_TRANSIT -> RECEIVED workflow be exercised
+  // immediately after seeding, from Purchases.jsx / Sales.jsx, without
+  // having to create a product and receive a supplier purchase by hand first.
+  const product = await prisma.product.create({
+    data: {
+      categoryId: category.id,
+      supplierId: supplier1.id,
+      dealerId: dealer.id,
+      name: 'Tasty Bites Potato Chips',
+      sizeWeight: '100g',
+      fssaiCode: '10019022001234',
+      barcode: '8901234567890',
+    }
+  });
+
+  const inventory = await prisma.inventory.create({
+    data: {
+      productId: product.id,
+      ownerType: 'DEALER',
+      dealerId: dealer.id,
+      batchName: 'BATCH-2026-001',
+      quantity: 200,
+      reorderLevel: 20,
+      // Same formulas Purchases.jsx computes on screen: sellingPrice = rate
+      // + commission% of rate (22.00 here); retailerSellingPrice = mrp -
+      // discount% of mrp (28.50 here).
+      rate: 20.00,
+      dealerCommission: 10,
+      sellingPrice: 22.00,
+      discount: 5,
+      mrp: 30.00,
+      retailerSellingPrice: 28.50,
+      manufacturingDate: new Date('2026-06-01'),
+      expiryDate: new Date('2027-06-01'),
+    }
   });
 
   console.log('Seed complete.');
   console.log('Logins: admin/admin123, dealer1/dealer123, retailer1/retailer123');
-  console.log({ organisationId: organisation.orgId, dealerId: dealer.id, retailerId: retailer.id, categoryId: category.id });
+  console.log({ organisationId: organisation.orgId, dealerId: dealer.id, retailerId: retailer.id, categoryId: category.id, productId: product.id, inventoryId: inventory.id });
 }
 
 main().catch(console.error).finally(() => prisma.$disconnect());

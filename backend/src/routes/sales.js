@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { prisma } from '../prisma.js';
-import { authRequired, ownerScope } from '../middleware/auth.js';
+import { authRequired, ownerScope, requireRole } from '../middleware/auth.js';
 import { generateSaleBillPdf } from '../lib/billPdf.js';
 
 const router = Router();
@@ -131,6 +131,7 @@ async function createSale(req, res) {
           retailerId: scope.ownerType === 'RETAILER' ? scope.retailerId : null,
           customerType,
           customerRetailerId: customerType === 'RETAILER' ? Number(customerRetailerId) : null,
+          status: 'COMPLETED',
           totalAmount,
           paymentMode,
           posTransactionRef: posTransactionRef || null,
@@ -175,6 +176,181 @@ router.post('/', authRequired, createSale);
 router.post('/pos-webhook', authRequired, (req, res) => {
   req.body.posTransactionRef = req.body.posTransactionRef || `POS-${Date.now()}`;
   return createSale(req, res);
+});
+
+// PATCH /api/sales/:id/dispatch — a dealer fulfils a retailer's purchase
+// order (a Sale in IN_PENDING status, auto-created by purchases.js when the
+// retailer placed it — see PATCH /purchases/:id/status). Body:
+// { paymentMode, items: [{ saleItemId, inventoryId }] }
+//
+// For each line the dealer picks which of their own Inventory batches to
+// fulfil it from — same price rule as a direct dealer -> retailer POS sale
+// (wholesale sellingPrice, never trusted from the client, always resolved
+// from the chosen batch). That batch is decremented, the Sale is marked
+// DISPATCHED with a real total, the usual receivable voucher is raised
+// (this is a dealer -> retailer sale either way), and — if this Sale is
+// linked to a retailer purchase order — that order's PurchaseItem rows are
+// backfilled with the batch's pricing/dates/batchName and the order itself
+// is moved to IN_TRANSIT, ready for the retailer to mark RECEIVED.
+router.patch('/:id/dispatch', authRequired, requireRole('DEALER'), async (req, res) => {
+  try {
+    const scope = ownerScope(req);
+    const id = Number(req.params.id);
+    const { paymentMode, items } = req.body;
+
+    if (!PAYMENT_MODES.includes(paymentMode)) {
+      return res.status(400).json({ error: `paymentMode must be one of ${PAYMENT_MODES.join(', ')}` });
+    }
+    if (!items || !items.length) return res.status(400).json({ error: 'No items to dispatch' });
+
+    const sale = await prisma.sale.findUnique({
+      where: { id },
+      include: { items: true, linkedPurchase: true }
+    });
+    if (!sale) return res.status(404).json({ error: 'Sale not found' });
+    if (sale.dealerId !== scope.dealerId) return res.status(403).json({ error: 'You can only dispatch your own sales' });
+    if (sale.status !== 'IN_PENDING') return res.status(400).json({ error: 'Only a pending order can be dispatched' });
+
+    // A batch must be chosen for every line on the order — no partial dispatch.
+    const chosenBySaleItemId = new Map(items.map((i) => [Number(i.saleItemId), Number(i.inventoryId)]));
+    if (sale.items.some((si) => !chosenBySaleItemId.has(si.id))) {
+      return res.status(400).json({ error: 'A batch must be chosen for every item' });
+    }
+
+    const inventoryIds = [...chosenBySaleItemId.values()];
+    const invRows = await prisma.inventory.findMany({
+      where: { id: { in: inventoryIds }, ownerType: 'DEALER', dealerId: scope.dealerId }
+    });
+    const invById = new Map(invRows.map((r) => [r.id, r]));
+
+    const resolved = [];
+    for (const saleItem of sale.items) {
+      const inv = invById.get(chosenBySaleItemId.get(saleItem.id));
+      if (!inv) return res.status(403).json({ error: `Batch ${chosenBySaleItemId.get(saleItem.id)} does not belong to your inventory` });
+      if (inv.productId !== saleItem.productId) return res.status(400).json({ error: 'Chosen batch does not match the ordered product' });
+      if (inv.quantity < saleItem.quantity) {
+        return res.status(400).json({ error: `Insufficient stock in batch ${inv.batchName || inv.id} for product ${inv.productId}` });
+      }
+      resolved.push({ saleItem, inv });
+    }
+
+    const totalAmount = resolved.reduce((sum, { saleItem, inv }) => sum + Number(inv.sellingPrice) * saleItem.quantity, 0);
+
+    const updatedSale = await prisma.$transaction(async (tx) => {
+      for (const { saleItem, inv } of resolved) {
+        await tx.saleItem.update({
+          where: { id: saleItem.id },
+          data: { price: inv.sellingPrice, mrp: inv.mrp, batchName: inv.batchName }
+        });
+        await tx.inventory.update({ where: { id: inv.id }, data: { quantity: { decrement: saleItem.quantity } } });
+      }
+
+      const s = await tx.sale.update({
+        where: { id },
+        data: { status: 'DISPATCHED', totalAmount, paymentMode },
+        include: { items: { include: { product: true } } }
+      });
+
+      // Same auto-voucher a direct dealer -> retailer POS sale would raise.
+      if (sale.customerRetailerId) {
+        await tx.voucher.create({
+          data: {
+            dealerId: scope.dealerId,
+            retailerId: sale.customerRetailerId,
+            amount: totalAmount,
+            description: `Auto-voucher for Sale #${sale.id}`,
+          }
+        });
+      }
+
+      // Backfill the linked purchase order's items with this batch's
+      // pricing/dates so the retailer's inventory-crediting step (once
+      // they mark it RECEIVED) has real values to work with — exactly
+      // like a dealer's own purchase from a supplier would.
+      if (sale.linkedPurchase) {
+        for (const { saleItem, inv } of resolved) {
+          if (!saleItem.purchaseItemId) continue;
+          await tx.purchaseItem.update({
+            where: { id: saleItem.purchaseItemId },
+            data: {
+              rate: inv.sellingPrice, // dealer's wholesale price becomes the retailer's cost
+              dealerCommission: 0,    // not meaningful further down the chain
+              sellingPrice: inv.sellingPrice,
+              discount: inv.discount,
+              mrp: inv.mrp,
+              retailerSellingPrice: inv.retailerSellingPrice, // retailer's resale price to their own customer
+              manufacturingDate: inv.manufacturingDate,
+              expiryDate: inv.expiryDate,
+              batchName: inv.batchName,
+            }
+          });
+        }
+        await tx.purchase.update({ where: { id: sale.linkedPurchase.id }, data: { status: 'IN_TRANSIT' } });
+      }
+
+      return s;
+    });
+
+    res.json(updatedSale);
+  } catch (err) {
+    console.error('dispatch failed:', err);
+    res.status(500).json({ error: 'Failed to dispatch order', detail: err.message });
+  }
+});
+
+// PATCH /api/sales/:id/items — DEALER only. Edit the ordered quantity of
+// one or more lines on a retailer's pending order (a Sale in IN_PENDING
+// status), before batches are chosen and it's dispatched. Mirrors
+// purchases.js PATCH /:id/quantities on the buyer's side of the same order.
+// Body: { items: [{ id: saleItemId, quantity }] }
+//
+// If this Sale is linked to a retailer's Purchase (Purchase.linkedSaleId),
+// the matching PurchaseItem's quantity is kept in sync too, via
+// SaleItem.purchaseItemId — otherwise the dealer's fulfilled quantity and
+// the retailer's ordered quantity would silently disagree once the order
+// moves to IN_TRANSIT/RECEIVED. Locked once DISPATCHED (batches/pricing are
+// already committed) or for an ordinary completed POS sale (inventory has
+// already been decremented) — see Sales.jsx for the read-only view in
+// those cases.
+router.patch('/:id/items', authRequired, requireRole('DEALER'), async (req, res) => {
+  const scope = ownerScope(req);
+  const id = Number(req.params.id);
+  const { items } = req.body; // [{ id: saleItemId, quantity }]
+
+  const sale = await prisma.sale.findUnique({ where: { id }, include: { items: true } });
+  if (!sale) return res.status(404).json({ error: 'Sale not found' });
+  if (sale.dealerId !== scope.dealerId) return res.status(403).json({ error: 'You can only edit your own sales' });
+  if (sale.status !== 'IN_PENDING') return res.status(400).json({ error: 'Only a pending order can be edited' });
+
+  if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'No items to update' });
+
+  const validItemById = new Map(sale.items.map((i) => [i.id, i]));
+  for (const i of items) {
+    const saleItem = validItemById.get(Number(i.id));
+    if (!saleItem) return res.status(400).json({ error: 'Item does not belong to this sale' });
+    if (!i.quantity || Number(i.quantity) <= 0) return res.status(400).json({ error: 'Quantity must be greater than zero' });
+    // A dealer can fulfil for less than what the retailer ordered (partial
+    // fulfilment), but never more — originalQuantity is the ceiling.
+    if (saleItem.originalQuantity != null && Number(i.quantity) > saleItem.originalQuantity) {
+      return res.status(400).json({ error: `Quantity cannot exceed the ordered amount (${saleItem.originalQuantity})` });
+    }
+  }
+
+  await prisma.$transaction(async (tx) => {
+    for (const i of items) {
+      const saleItem = validItemById.get(Number(i.id));
+      await tx.saleItem.update({ where: { id: saleItem.id }, data: { quantity: Number(i.quantity) } });
+      if (saleItem.purchaseItemId) {
+        await tx.purchaseItem.update({ where: { id: saleItem.purchaseItemId }, data: { quantity: Number(i.quantity) } });
+      }
+    }
+  });
+
+  const updated = await prisma.sale.findUnique({
+    where: { id },
+    include: { items: { include: { product: true } } }
+  });
+  res.json(updated);
 });
 
 // GET /api/sales/:id/bill — standard printable PDF bill. Header shows the

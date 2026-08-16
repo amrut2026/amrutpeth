@@ -26,7 +26,7 @@ router.get('/:id', authRequired, async (req, res) => {
 // Create dealer (ADMIN only, i.e. manufacturer/platform owner onboarding a dealer)
 // Optionally pass username + password to create that dealer's login in the same step.
 router.post('/', authRequired, requireRole('ADMIN'), async (req, res) => {
-  const { name, address, contactNumber, gstNumber, divisionId, organizationId, bankAccounts, username, password } = req.body;
+  const { name, address, contactNumber, gstNumber, divisionId, organisationId, bankAccounts, username, password } = req.body;
 
   if (username && !password) {
     return res.status(400).json({ error: 'Password is required to create a login' });
@@ -41,7 +41,7 @@ router.post('/', authRequired, requireRole('ADMIN'), async (req, res) => {
         data: {
           name, address, contactNumber, gstNumber,
           divisionId: divisionId ? Number(divisionId) : null,
-          organizationId: organizationId ? Number(organizationId) : 1,
+          organisationId: organisationId ? Number(organisationId) : 1,
           bankAccounts: { create: (bankAccounts || []).map(b => ({
             accountNumber: b.accountNumber, ifsc: b.ifsc, bankName: b.bankName
           })) }
@@ -71,10 +71,10 @@ router.post('/', authRequired, requireRole('ADMIN'), async (req, res) => {
 router.put('/:id', authRequired, requireRole('ADMIN', 'DEALER'), async (req, res) => {
   const id = Number(req.params.id);
   if (req.user.role === 'DEALER' && req.user.dealerId !== id) return res.status(403).json({ error: 'Forbidden' });
-  const { name, address, contactNumber, gstNumber, divisionId, organizationId } = req.body;
+  const { name, address, contactNumber, gstNumber, divisionId, organisationId } = req.body;
   const data = { name, address, contactNumber, gstNumber };
   if (req.user.role === 'ADMIN' && divisionId !== undefined) data.divisionId = divisionId ? Number(divisionId) : null;
-  if (req.user.role === 'ADMIN' && organizationId !== undefined) data.organizationId = organizationId ? Number(organizationId) : 1;
+  if (req.user.role === 'ADMIN' && organisationId !== undefined) data.organisationId = organisationId ? Number(organisationId) : 1;
   const dealer = await prisma.dealer.update({ where: { id }, data });
   res.json(dealer);
 });

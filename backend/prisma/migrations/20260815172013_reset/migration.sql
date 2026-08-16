@@ -13,6 +13,12 @@ CREATE TYPE "CustomerType" AS ENUM ('CASH', 'RETAILER');
 -- CreateEnum
 CREATE TYPE "VoucherStatus" AS ENUM ('OPEN', 'PARTIALLY_PAID', 'PAID');
 
+-- CreateEnum
+CREATE TYPE "PurchaseStatus" AS ENUM ('PENDING', 'IN_REVIEW', 'CONFIRMED', 'ORDERED', 'IN_TRANSIT', 'RECEIVED');
+
+-- CreateEnum
+CREATE TYPE "SaleStatus" AS ENUM ('COMPLETED', 'IN_PENDING', 'DISPATCHED');
+
 -- CreateTable
 CREATE TABLE "User" (
     "id" SERIAL NOT NULL,
@@ -27,12 +33,24 @@ CREATE TABLE "User" (
 );
 
 -- CreateTable
+CREATE TABLE "Division" (
+    "id" SERIAL NOT NULL,
+    "name" TEXT NOT NULL,
+    "description" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "Division_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
 CREATE TABLE "Dealer" (
     "id" SERIAL NOT NULL,
     "name" TEXT NOT NULL,
     "address" TEXT NOT NULL,
     "contactNumber" TEXT NOT NULL,
     "gstNumber" TEXT NOT NULL,
+    "divisionId" INTEGER,
+    "organisationId" INTEGER NOT NULL DEFAULT 1,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "Dealer_pkey" PRIMARY KEY ("id")
@@ -78,6 +96,7 @@ CREATE TABLE "ProductCategory" (
     "id" SERIAL NOT NULL,
     "name" TEXT NOT NULL,
     "description" TEXT,
+    "dealerId" INTEGER NOT NULL,
 
     CONSTRAINT "ProductCategory_pkey" PRIMARY KEY ("id")
 );
@@ -86,15 +105,10 @@ CREATE TABLE "ProductCategory" (
 CREATE TABLE "Product" (
     "id" SERIAL NOT NULL,
     "categoryId" INTEGER NOT NULL,
+    "supplierId" INTEGER,
+    "dealerId" INTEGER NOT NULL,
     "name" TEXT NOT NULL,
     "sizeWeight" TEXT NOT NULL,
-    "costPrice" DECIMAL(10,2) NOT NULL,
-    "sellingPrice" DECIMAL(10,2) NOT NULL,
-    "discount" DECIMAL(10,2) NOT NULL DEFAULT 0,
-    "mrp" DECIMAL(10,2) NOT NULL,
-    "manufacturingDate" TIMESTAMP(3) NOT NULL,
-    "expiryDate" TIMESTAMP(3) NOT NULL,
-    "batchName" TEXT NOT NULL,
     "fssaiCode" TEXT NOT NULL,
     "barcode" TEXT NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -109,9 +123,21 @@ CREATE TABLE "Supplier" (
     "address" TEXT NOT NULL,
     "contactNumber" TEXT NOT NULL,
     "gstNumber" TEXT NOT NULL,
+    "divisionId" INTEGER,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "Supplier_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "SupplierBankAccount" (
+    "id" SERIAL NOT NULL,
+    "supplierId" INTEGER NOT NULL,
+    "accountNumber" TEXT NOT NULL,
+    "ifsc" TEXT NOT NULL,
+    "bankName" TEXT NOT NULL,
+
+    CONSTRAINT "SupplierBankAccount_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -123,6 +149,15 @@ CREATE TABLE "Inventory" (
     "retailerId" INTEGER,
     "quantity" INTEGER NOT NULL DEFAULT 0,
     "reorderLevel" INTEGER NOT NULL DEFAULT 10,
+    "rate" DECIMAL(10,2) NOT NULL DEFAULT 0,
+    "dealerCommission" DECIMAL(5,2) NOT NULL DEFAULT 0,
+    "sellingPrice" DECIMAL(10,2) NOT NULL DEFAULT 0,
+    "discount" DECIMAL(10,2) NOT NULL DEFAULT 0,
+    "mrp" DECIMAL(10,2) NOT NULL DEFAULT 0,
+    "retailerSellingPrice" DECIMAL(10,2) NOT NULL DEFAULT 0,
+    "manufacturingDate" TIMESTAMP(3),
+    "expiryDate" TIMESTAMP(3),
+    "batchName" TEXT NOT NULL DEFAULT '',
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "Inventory_pkey" PRIMARY KEY ("id")
@@ -134,8 +169,11 @@ CREATE TABLE "Purchase" (
     "ownerType" "OwnerType" NOT NULL,
     "dealerId" INTEGER,
     "retailerId" INTEGER,
-    "supplierId" INTEGER NOT NULL,
+    "supplierId" INTEGER,
+    "sourceDealerId" INTEGER,
     "date" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "status" "PurchaseStatus" NOT NULL DEFAULT 'PENDING',
+    "linkedSaleId" INTEGER,
 
     CONSTRAINT "Purchase_pkey" PRIMARY KEY ("id")
 );
@@ -146,7 +184,15 @@ CREATE TABLE "PurchaseItem" (
     "purchaseId" INTEGER NOT NULL,
     "productId" INTEGER NOT NULL,
     "quantity" INTEGER NOT NULL,
-    "rate" DECIMAL(10,2) NOT NULL,
+    "rate" DECIMAL(10,2),
+    "dealerCommission" DECIMAL(5,2),
+    "sellingPrice" DECIMAL(10,2),
+    "discount" DECIMAL(10,2) NOT NULL DEFAULT 0,
+    "mrp" DECIMAL(10,2),
+    "retailerSellingPrice" DECIMAL(10,2),
+    "manufacturingDate" TIMESTAMP(3),
+    "expiryDate" TIMESTAMP(3),
+    "batchName" TEXT,
 
     CONSTRAINT "PurchaseItem_pkey" PRIMARY KEY ("id")
 );
@@ -160,8 +206,9 @@ CREATE TABLE "Sale" (
     "customerType" "CustomerType" NOT NULL,
     "customerRetailerId" INTEGER,
     "date" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "totalAmount" DECIMAL(10,2) NOT NULL,
-    "paymentMode" "PaymentMode" NOT NULL,
+    "status" "SaleStatus" NOT NULL DEFAULT 'COMPLETED',
+    "totalAmount" DECIMAL(10,2),
+    "paymentMode" "PaymentMode",
     "posTransactionRef" TEXT,
 
     CONSTRAINT "Sale_pkey" PRIMARY KEY ("id")
@@ -173,8 +220,11 @@ CREATE TABLE "SaleItem" (
     "saleId" INTEGER NOT NULL,
     "productId" INTEGER NOT NULL,
     "quantity" INTEGER NOT NULL,
-    "price" DECIMAL(10,2) NOT NULL,
+    "price" DECIMAL(10,2),
     "discount" DECIMAL(10,2) NOT NULL DEFAULT 0,
+    "mrp" DECIMAL(10,2),
+    "batchName" TEXT,
+    "purchaseItemId" INTEGER,
 
     CONSTRAINT "SaleItem_pkey" PRIMARY KEY ("id")
 );
@@ -261,10 +311,19 @@ CREATE TABLE "RoleActivityMapping" (
 CREATE UNIQUE INDEX "User_username_key" ON "User"("username");
 
 -- CreateIndex
+CREATE UNIQUE INDEX "Division_name_key" ON "Division"("name");
+
+-- CreateIndex
 CREATE UNIQUE INDEX "Product_barcode_key" ON "Product"("barcode");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "Inventory_productId_ownerType_dealerId_retailerId_key" ON "Inventory"("productId", "ownerType", "dealerId", "retailerId");
+CREATE UNIQUE INDEX "Inventory_productId_ownerType_dealerId_retailerId_batchName_key" ON "Inventory"("productId", "ownerType", "dealerId", "retailerId", "batchName");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "Purchase_linkedSaleId_key" ON "Purchase"("linkedSaleId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "SaleItem_purchaseItemId_key" ON "SaleItem"("purchaseItemId");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "UserRole_roleName_key" ON "UserRole"("roleName");
@@ -282,6 +341,12 @@ ALTER TABLE "User" ADD CONSTRAINT "User_dealerId_fkey" FOREIGN KEY ("dealerId") 
 ALTER TABLE "User" ADD CONSTRAINT "User_retailerId_fkey" FOREIGN KEY ("retailerId") REFERENCES "Retailer"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
+ALTER TABLE "Dealer" ADD CONSTRAINT "Dealer_divisionId_fkey" FOREIGN KEY ("divisionId") REFERENCES "Division"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Dealer" ADD CONSTRAINT "Dealer_organisationId_fkey" FOREIGN KEY ("organisationId") REFERENCES "Organisation"("orgId") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
 ALTER TABLE "DealerBankAccount" ADD CONSTRAINT "DealerBankAccount_dealerId_fkey" FOREIGN KEY ("dealerId") REFERENCES "Dealer"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
@@ -291,7 +356,22 @@ ALTER TABLE "Retailer" ADD CONSTRAINT "Retailer_primaryDealerId_fkey" FOREIGN KE
 ALTER TABLE "RetailerBankAccount" ADD CONSTRAINT "RetailerBankAccount_retailerId_fkey" FOREIGN KEY ("retailerId") REFERENCES "Retailer"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
+ALTER TABLE "ProductCategory" ADD CONSTRAINT "ProductCategory_dealerId_fkey" FOREIGN KEY ("dealerId") REFERENCES "Dealer"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
 ALTER TABLE "Product" ADD CONSTRAINT "Product_categoryId_fkey" FOREIGN KEY ("categoryId") REFERENCES "ProductCategory"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Product" ADD CONSTRAINT "Product_supplierId_fkey" FOREIGN KEY ("supplierId") REFERENCES "Supplier"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Product" ADD CONSTRAINT "Product_dealerId_fkey" FOREIGN KEY ("dealerId") REFERENCES "Dealer"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Supplier" ADD CONSTRAINT "Supplier_divisionId_fkey" FOREIGN KEY ("divisionId") REFERENCES "Division"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "SupplierBankAccount" ADD CONSTRAINT "SupplierBankAccount_supplierId_fkey" FOREIGN KEY ("supplierId") REFERENCES "Supplier"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "Inventory" ADD CONSTRAINT "Inventory_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
@@ -309,7 +389,13 @@ ALTER TABLE "Purchase" ADD CONSTRAINT "Purchase_dealerId_fkey" FOREIGN KEY ("dea
 ALTER TABLE "Purchase" ADD CONSTRAINT "Purchase_retailerId_fkey" FOREIGN KEY ("retailerId") REFERENCES "Retailer"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "Purchase" ADD CONSTRAINT "Purchase_supplierId_fkey" FOREIGN KEY ("supplierId") REFERENCES "Supplier"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "Purchase" ADD CONSTRAINT "Purchase_supplierId_fkey" FOREIGN KEY ("supplierId") REFERENCES "Supplier"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Purchase" ADD CONSTRAINT "Purchase_sourceDealerId_fkey" FOREIGN KEY ("sourceDealerId") REFERENCES "Dealer"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Purchase" ADD CONSTRAINT "Purchase_linkedSaleId_fkey" FOREIGN KEY ("linkedSaleId") REFERENCES "Sale"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "PurchaseItem" ADD CONSTRAINT "PurchaseItem_purchaseId_fkey" FOREIGN KEY ("purchaseId") REFERENCES "Purchase"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
@@ -328,6 +414,9 @@ ALTER TABLE "SaleItem" ADD CONSTRAINT "SaleItem_saleId_fkey" FOREIGN KEY ("saleI
 
 -- AddForeignKey
 ALTER TABLE "SaleItem" ADD CONSTRAINT "SaleItem_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "SaleItem" ADD CONSTRAINT "SaleItem_purchaseItemId_fkey" FOREIGN KEY ("purchaseItemId") REFERENCES "PurchaseItem"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "Voucher" ADD CONSTRAINT "Voucher_dealerId_fkey" FOREIGN KEY ("dealerId") REFERENCES "Dealer"("id") ON DELETE RESTRICT ON UPDATE CASCADE;

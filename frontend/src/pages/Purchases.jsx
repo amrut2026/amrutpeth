@@ -171,18 +171,24 @@ export default function Purchases() {
   function startEditPurchase(p) {
     setEditingPurchaseId(p.id);
     setError('');
-    if (user.role === 'DEALER') setSupplierId(p.supplierId ? String(p.supplierId) : '');
-    setItems(p.items.map((it) => ({
-      productId: String(it.productId),
-      quantity: String(it.quantity),
-      rate: String(it.rate),
-      dealerCommission: String(it.dealerCommission),
-      discount: String(it.discount),
-      mrp: String(it.mrp),
-      manufacturingDate: toMonthInputValue(it.manufacturingDate),
-      expiryDate: toMonthInputValue(it.expiryDate),
-      batchName: it.batchName || '',
-    })));
+    if (user.role === 'DEALER') {
+      setSupplierId(p.supplierId ? String(p.supplierId) : '');
+      setItems(p.items.map((it) => ({
+        productId: String(it.productId),
+        quantity: String(it.quantity),
+        rate: String(it.rate),
+        dealerCommission: String(it.dealerCommission),
+        discount: String(it.discount),
+        mrp: String(it.mrp),
+        manufacturingDate: toMonthInputValue(it.manufacturingDate),
+        expiryDate: toMonthInputValue(it.expiryDate),
+        batchName: it.batchName || '',
+      })));
+    } else {
+      // Retailer items only ever carry productId + quantity — the rest of
+      // emptyItem's shape stays blank since the form doesn't collect it.
+      setItems(p.items.map((it) => ({ ...emptyItem, productId: String(it.productId), quantity: String(it.quantity) })));
+    }
   }
 
   function cancelEditPurchase() {
@@ -199,8 +205,15 @@ export default function Purchases() {
     load();
   }
 
-  async function completePurchase(purchaseId) {
-    const nextStatus = user.role === 'DEALER' ? 'CONFIRMED' : 'RECEIVED';
+  // For a DEALER, IN_REVIEW always moves to CONFIRMED. For a RETAILER,
+  // IN_REVIEW moves to ORDERED (placing the order with their dealer — see
+  // purchases.js, this is also what creates the mirror Sale on the
+  // dealer's side); IN_TRANSIT (after the dealer dispatches it) moves to
+  // RECEIVED.
+  async function completePurchase(purchaseId, currentStatus) {
+    const nextStatus = user.role === 'DEALER'
+      ? 'CONFIRMED'
+      : (currentStatus === 'IN_TRANSIT' ? 'RECEIVED' : 'ORDERED');
     const { data } = await api.patch(`/purchases/${purchaseId}/status`, { status: nextStatus });
     load();
     // Only a dealer's own CONFIRMED purchase is a stock-inwards event worth
@@ -258,15 +271,34 @@ export default function Purchases() {
             className="text-xs bg-white border border-emerald-700 text-emerald-700 px-3 py-1.5 rounded hover:bg-emerald-50">
             Edit<span className="block">संपादित करा</span>
           </button>
-          <button type="button" onClick={() => completePurchase(p.id)}
+          <button type="button" onClick={() => completePurchase(p.id, status)}
             className="text-xs bg-emerald-700 text-white px-3 py-1.5 rounded hover:bg-emerald-800">
             {user.role === 'DEALER' ? (
               <>Confirm Purchase<span className="block">खरेदीची पुष्टी करा</span></>
             ) : (
-              <>Received<span className="block">प्राप्त झाले</span></>
+              <>Place Order<span className="block">ऑर्डर द्या</span></>
             )}
           </button>
         </div>
+      );
+    }
+    // RETAILER-only: order has been placed and is waiting on the dealer to
+    // dispatch it (see Sales.jsx, Dispatch action) — nothing for the
+    // retailer to do here yet.
+    if (status === 'ORDERED') {
+      return (
+        <span className="text-xs bg-amber-50 text-amber-800 font-medium px-3 py-1.5 rounded border border-amber-200">
+          Order Placed — awaiting dealer<span className="block">ऑर्डर दिली — डीलरची प्रतीक्षा</span>
+        </span>
+      );
+    }
+    // RETAILER-only: the dealer has dispatched it — retailer confirms receipt.
+    if (status === 'IN_TRANSIT') {
+      return (
+        <button type="button" onClick={() => completePurchase(p.id, status)}
+          className="text-xs bg-emerald-700 text-white px-3 py-1.5 rounded hover:bg-emerald-800">
+          Mark Received<span className="block">प्राप्त झाले असे चिन्हांकित करा</span>
+        </button>
       );
     }
     return (
@@ -287,21 +319,34 @@ export default function Purchases() {
   async function submit(e) {
     e.preventDefault();
     setError('');
-    // Sell Price and Retailer Selling Price are computed fresh from each item's
-    // other fields right here, rather than trusting a stored value, so
-    // validation always reflects what's actually on screen.
-    const computedItems = items.map((it) => ({
-      ...it,
-      sellingPrice: computeSellingPrice(it),
-      retailerSellingPrice: computeRetailerPrice(it),
-    }));
-    if (computedItems.some((it) => !it.sellingPrice || !it.retailerSellingPrice)) {
-      setError('Enter Cost Price, Dealer Commission, MRP and Product Discount for every item so Sell Price and Retailer Selling Price can be calculated / प्रत्येक वस्तूसाठी क्रय किंमत, डीलर कमिशन, एमआरपी आणि उत्पादन सवलत भरा जेणेकरून विक्री किंमत आणि किरकोळ विक्री किंमत आपोआप मोजली जाईल');
-      return;
+
+    let payloadItems;
+    if (user.role === 'RETAILER') {
+      // Only product + quantity — see the simplified item card above.
+      if (items.some((it) => !it.productId || !it.quantity)) {
+        setError('Select a product and quantity for every item / प्रत्येक वस्तूसाठी उत्पादन आणि प्रमाण निवडा');
+        return;
+      }
+      payloadItems = items.map((it) => ({ productId: it.productId, quantity: it.quantity }));
+    } else {
+      // Sell Price and Retailer Selling Price are computed fresh from each item's
+      // other fields right here, rather than trusting a stored value, so
+      // validation always reflects what's actually on screen.
+      const computedItems = items.map((it) => ({
+        ...it,
+        sellingPrice: computeSellingPrice(it),
+        retailerSellingPrice: computeRetailerPrice(it),
+      }));
+      if (computedItems.some((it) => !it.sellingPrice || !it.retailerSellingPrice)) {
+        setError('Enter Cost Price, Dealer Commission, MRP and Product Discount for every item so Sell Price and Retailer Selling Price can be calculated / प्रत्येक वस्तूसाठी क्रय किंमत, डीलर कमिशन, एमआरपी आणि उत्पादन सवलत भरा जेणेकरून विक्री किंमत आणि किरकोळ विक्री किंमत आपोआप मोजली जाईल');
+        return;
+      }
+      payloadItems = computedItems;
     }
+
     // Retailers always buy from their own primary dealer — the backend derives this
     // server-side, so nothing source-related needs to be sent for them.
-    const payload = user.role === 'DEALER' ? { supplierId, items: computedItems } : { items: computedItems };
+    const payload = user.role === 'DEALER' ? { supplierId, items: payloadItems } : { items: payloadItems };
     try {
       if (editingPurchaseId) {
         await api.put(`/purchases/${editingPurchaseId}`, payload);
@@ -448,75 +493,87 @@ export default function Purchases() {
                 )}
               </div>
 
-              {/* Line: Quantity, Batch Name, Manufacturing Date, Expiry Date */}
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                <div className="flex flex-col gap-1">
+              {/* Quantity is the only other field a RETAILER enters — everything
+                  else below (batch, dates, cost, MRP, discount, retailer
+                  price) is the dealer's own business detail and gets filled
+                  in later when the dealer dispatches the order, not here. */}
+              {user.role === 'RETAILER' ? (
+                <div className="flex flex-col gap-1 w-32">
                   <FieldLabel en="Quantity" mr="प्रमाण" />
                   <input type="number" placeholder="Quantity" className="border rounded px-2 py-1 w-full" required
                     value={it.quantity} onChange={(e) => updateItem(i, 'quantity', e.target.value)} />
                 </div>
-                <div className="flex flex-col gap-1">
-                  <FieldLabel en="Batch Name" mr="बॅच नाव" />
-                  <input placeholder="Batch Name" className="border rounded px-2 py-1 w-full" required
-                    value={it.batchName} onChange={(e) => updateItem(i, 'batchName', e.target.value)} />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <FieldLabel en="Manufacturing (mm-yyyy)" mr="उत्पादन तारीख" />
-                  <input type="month" className="border rounded px-2 py-1 w-full" required
-                    value={it.manufacturingDate} onChange={(e) => updateItem(i, 'manufacturingDate', e.target.value)} />
-                  {it.manufacturingDate && (
-                    <p className="text-xs text-gray-400">{formatMMYYYY(it.manufacturingDate)}</p>
-                  )}
-                </div>
-                <div className="flex flex-col gap-1">
-                  <FieldLabel en="Expiry (mm-yyyy)" mr="कालबाह्यता तारीख" />
-                  <input type="month" className="border rounded px-2 py-1 w-full" required
-                    value={it.expiryDate} onChange={(e) => updateItem(i, 'expiryDate', e.target.value)} />
-                  {it.expiryDate && (
-                    <p className="text-xs text-gray-400">{formatMMYYYY(it.expiryDate)}</p>
-                  )}
-                </div>
-              </div>
-
-              {/* Line: Cost Price, Commission, Sell Price */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-                <div className="flex flex-col gap-1">
-                  <FieldLabel en="Cost Price" mr="क्रय किंमत" />
-                  <input type="number" step="0.01" placeholder="Cost Price" className="border rounded px-2 py-1 w-full" required
-                    value={it.rate} onChange={(e) => updateItem(i, 'rate', e.target.value)} />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <FieldLabel en="Commission (%)" mr="डीलर कमिशन (%)" />
-                  <input type="number" step="0.01" placeholder="Commission (%)" className="border rounded px-2 py-1 w-full" required
-                    value={it.dealerCommission} onChange={(e) => updateItem(i, 'dealerCommission', e.target.value)} />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <FieldLabel en="Sell Price" mr="विक्री किंमत" />
-                  <input type="number" placeholder="Sell Price" className="border rounded px-2 py-1 w-full bg-gray-100 text-gray-700" disabled required
-                    value={computeSellingPrice(it)} />
-                </div>
-              </div>
-
-              {/* Line: MRP, Discount %, Retailer Selling Price (dealer only) */}
-              <div className={user.role === 'DEALER' ? 'grid grid-cols-1 md:grid-cols-3 gap-2' : 'grid grid-cols-1 md:grid-cols-2 gap-2'}>
-                <div className="flex flex-col gap-1">
-                  <FieldLabel en="MRP" mr="एमआरपी" />
-                  <input type="number" step="0.01" placeholder="MRP" className="border rounded px-2 py-1 w-full" required
-                    value={it.mrp} onChange={(e) => updateItem(i, 'mrp', e.target.value)} />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <FieldLabel en="Discount (%)" mr="सवलत (%)" />
-                  <input type="number" step="0.01" min="0" max="100" placeholder="Discount (%)" className="border rounded px-2 py-1 w-full"
-                    value={it.discount} onChange={(e) => updateItem(i, 'discount', e.target.value)} />
-                </div>
-                {user.role === 'DEALER' && (
-                  <div className="flex flex-col gap-1">
-                    <FieldLabel en="Retailer Selling Price" mr="किरकोळ विक्री किंमत" />
-                    <input type="number" placeholder="Retailer Selling Price" className="border rounded px-2 py-1 w-full bg-gray-100 text-gray-700" disabled required
-                      value={computeRetailerPrice(it)} />
+              ) : (
+                <>
+                  {/* Line: Quantity, Batch Name, Manufacturing Date, Expiry Date */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                    <div className="flex flex-col gap-1">
+                      <FieldLabel en="Quantity" mr="प्रमाण" />
+                      <input type="number" placeholder="Quantity" className="border rounded px-2 py-1 w-full" required
+                        value={it.quantity} onChange={(e) => updateItem(i, 'quantity', e.target.value)} />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <FieldLabel en="Batch Name" mr="बॅच नाव" />
+                      <input placeholder="Batch Name" className="border rounded px-2 py-1 w-full" required
+                        value={it.batchName} onChange={(e) => updateItem(i, 'batchName', e.target.value)} />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <FieldLabel en="Manufacturing (mm-yyyy)" mr="उत्पादन तारीख" />
+                      <input type="month" className="border rounded px-2 py-1 w-full" required
+                        value={it.manufacturingDate} onChange={(e) => updateItem(i, 'manufacturingDate', e.target.value)} />
+                      {it.manufacturingDate && (
+                        <p className="text-xs text-gray-400">{formatMMYYYY(it.manufacturingDate)}</p>
+                      )}
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <FieldLabel en="Expiry (mm-yyyy)" mr="कालबाह्यता तारीख" />
+                      <input type="month" className="border rounded px-2 py-1 w-full" required
+                        value={it.expiryDate} onChange={(e) => updateItem(i, 'expiryDate', e.target.value)} />
+                      {it.expiryDate && (
+                        <p className="text-xs text-gray-400">{formatMMYYYY(it.expiryDate)}</p>
+                      )}
+                    </div>
                   </div>
-                )}
-              </div>
+
+                  {/* Line: Cost Price, Commission, Sell Price */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                    <div className="flex flex-col gap-1">
+                      <FieldLabel en="Cost Price" mr="क्रय किंमत" />
+                      <input type="number" step="0.01" placeholder="Cost Price" className="border rounded px-2 py-1 w-full" required
+                        value={it.rate} onChange={(e) => updateItem(i, 'rate', e.target.value)} />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <FieldLabel en="Commission (%)" mr="डीलर कमिशन (%)" />
+                      <input type="number" step="0.01" placeholder="Commission (%)" className="border rounded px-2 py-1 w-full" required
+                        value={it.dealerCommission} onChange={(e) => updateItem(i, 'dealerCommission', e.target.value)} />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <FieldLabel en="Sell Price" mr="विक्री किंमत" />
+                      <input type="number" placeholder="Sell Price" className="border rounded px-2 py-1 w-full bg-gray-100 text-gray-700" disabled required
+                        value={computeSellingPrice(it)} />
+                    </div>
+                  </div>
+
+                  {/* Line: MRP, Discount %, Retailer Selling Price */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                    <div className="flex flex-col gap-1">
+                      <FieldLabel en="MRP" mr="एमआरपी" />
+                      <input type="number" step="0.01" placeholder="MRP" className="border rounded px-2 py-1 w-full" required
+                        value={it.mrp} onChange={(e) => updateItem(i, 'mrp', e.target.value)} />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <FieldLabel en="Discount (%)" mr="सवलत (%)" />
+                      <input type="number" step="0.01" min="0" max="100" placeholder="Discount (%)" className="border rounded px-2 py-1 w-full"
+                        value={it.discount} onChange={(e) => updateItem(i, 'discount', e.target.value)} />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <FieldLabel en="Retailer Selling Price" mr="किरकोळ विक्री किंमत" />
+                      <input type="number" placeholder="Retailer Selling Price" className="border rounded px-2 py-1 w-full bg-gray-100 text-gray-700" disabled required
+                        value={computeRetailerPrice(it)} />
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           );
         })}
@@ -524,8 +581,49 @@ export default function Purchases() {
         
         {/* Live preview of items in this purchase, same table layout used when viewing
             an existing purchase. Quantity is editable here — same pattern as editing a
-            PENDING/IN_REVIEW purchase's quantity — and stays synced with the form above. */}
-        {items.some((it) => it.productId) && (
+            PENDING/IN_REVIEW purchase's quantity — and stays synced with the form above.
+            RETAILER only ever has Product + Qty to show — everything else is the
+            dealer's business detail, filled in later at dispatch. */}
+        {items.some((it) => it.productId) && user.role === 'RETAILER' && (
+          <div className="mt-2">
+            <p className="text-xs font-medium text-gray-500 mb-1">
+              Items in this Purchase<span className="block text-orange-700">या खरेदीतील वस्तू</span>
+            </p>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="text-left p-1">Product / उत्पादन</th>
+                    <th className="text-left p-1">Qty / प्रमाण</th>
+                    <th className="text-left p-1">Original Qty / मूळ प्रमाण</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {items.map((it, i) => {
+                    if (!it.productId) return null;
+                    const product = products.find((p) => String(p.id) === String(it.productId));
+                    return (
+                      <tr key={i} className="border-t">
+                        <td className="p-1">{product?.name || '—'}</td>
+                        <td className="p-1">
+                          <input type="number" min="1" className="border rounded px-1 py-0.5 w-20"
+                            value={it.quantity} onChange={(e) => updateItem(i, 'quantity', e.target.value)} />
+                        </td>
+                        {/* Readonly — always mirrors Qty while the purchase is
+                            being created. The server sets originalQuantity to
+                            match whatever quantity is submitted; this is just
+                            showing the retailer what that baseline will be. */}
+                        <td className="p-1 text-gray-500">{it.quantity || '—'}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {items.some((it) => it.productId) && user.role === 'DEALER' && (
           <div className="mt-2">
             <p className="text-xs font-medium text-gray-500 mb-1">
               Items in this Purchase<span className="block text-orange-700">या खरेदीतील वस्तू</span>
@@ -542,9 +640,7 @@ export default function Purchases() {
                     <th className="text-left p-1">Sell Price / विक्री किंमत</th>
                     <th className="text-left p-1">MRP / एमआरपी</th>
                     <th className="text-left p-1">Discount / सवलत</th>
-                    {user.role === 'DEALER' && (
-                      <th className="text-left p-1">Retailer Price / किरकोळ किंमत</th>
-                    )}
+                    <th className="text-left p-1">Retailer Price / किरकोळ किंमत</th>
                     <th className="text-left p-1">Mfg (mm-yyyy) / उत्पादन तारीख</th>
                     <th className="text-left p-1">Exp (mm-yyyy) / कालबाह्यता</th>
                   </tr>
@@ -581,9 +677,7 @@ export default function Purchases() {
                           <input type="number" step="0.01" min="0" max="100" className="border rounded px-1 py-0.5 w-20"
                             value={it.discount} onChange={(e) => updateItem(i, 'discount', e.target.value)} />
                         </td>
-                        {user.role === 'DEALER' && (
-                          <td className="p-1 bg-gray-50 text-gray-700">{computeRetailerPrice(it) ? `₹${computeRetailerPrice(it)}` : '—'}</td>
-                        )}
+                        <td className="p-1 bg-gray-50 text-gray-700">{computeRetailerPrice(it) ? `₹${computeRetailerPrice(it)}` : '—'}</td>
                         <td className="p-1">
                           <input type="month" className="border rounded px-1 py-0.5 w-32"
                             value={it.manufacturingDate} onChange={(e) => updateItem(i, 'manufacturingDate', e.target.value)} />
@@ -644,52 +738,98 @@ export default function Purchases() {
                   {statusAction(selectedPurchase)}
                 </div>
 
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead className="bg-gray-50">
-                      <tr>
-                        <th className="text-left p-1">Product / उत्पादन</th>
-                        <th className="text-left p-1">Qty / प्रमाण</th>
-                        <th className="text-left p-1">Batch / बॅच</th>
-                        <th className="text-left p-1">Cost / क्रय</th>
-                        <th className="text-left p-1">Commission / कमिशन</th>
-                        <th className="text-left p-1">Sell Price / विक्री किंमत</th>
-                        <th className="text-left p-1">MRP / एमआरपी</th>
-                        <th className="text-left p-1">Discount / सवलत</th>
-                        {user.role === 'DEALER' && (
+                {user.role === 'RETAILER' ? (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th className="text-left p-1">Product / उत्पादन</th>
+                          <th className="text-left p-1">Original Qty / मूळ प्रमाण</th>
+                          <th className="text-left p-1">Qty / प्रमाण</th>
+                          <th className="text-left p-1">Batch / बॅच</th>
+                          <th className="text-left p-1">MRP / एमआरपी</th>
                           <th className="text-left p-1">Retailer Price / किरकोळ किंमत</th>
-                        )}
-                        <th className="text-left p-1">Mfg (mm-yyyy) / उत्पादन तारीख</th>
-                        <th className="text-left p-1">Exp (mm-yyyy) / कालबाह्यता</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {selectedPurchase.items.map((it) => (
-                        <tr key={it.id} className="border-t">
-                          <td className="p-1">{it.product?.name}</td>
-                          <td className="p-1">
-                            {isSelectedEditable ? (
-                              <input type="number" min="1" className="border rounded px-1 py-0.5 w-20"
-                                value={quantityEdits[it.id] ?? ''}
-                                onChange={(e) => setQuantityEdits((prev) => ({ ...prev, [it.id]: e.target.value }))} />
-                            ) : it.quantity}
-                          </td>
-                          <td className="p-1">{it.batchName}</td>
-                          <td className="p-1">₹{it.rate}</td>
-                          <td className="p-1">{it.dealerCommission}%</td>
-                          <td className="p-1">₹{it.sellingPrice}</td>
-                          <td className="p-1">₹{it.mrp}</td>
-                          <td className="p-1">{it.discount}%</td>
-                          {user.role === 'DEALER' && (
-                            <td className="p-1">₹{it.retailerSellingPrice ?? computeRetailerPrice(it)}</td>
-                          )}
-                          <td className="p-1">{formatMMYYYY(it.manufacturingDate)}</td>
-                          <td className="p-1">{formatMMYYYY(it.expiryDate)}</td>
+                          <th className="text-left p-1">Exp (mm-yyyy) / कालबाह्यता</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                      </thead>
+                      <tbody>
+                        {selectedPurchase.items.map((it) => {
+                          // Highlights a line the dealer fulfilled (or is
+                          // currently dispatching) for a different quantity
+                          // than what was originally ordered — that edit on
+                          // the dealer's Sales screen cascades back to this
+                          // PurchaseItem's quantity (see sales.js PATCH
+                          // /:id/items), so it shows up here too, most
+                          // relevantly right before Mark Received.
+                          const qtyChanged = it.originalQuantity != null && it.quantity !== it.originalQuantity;
+                          return (
+                            <tr key={it.id} className={`border-t ${qtyChanged ? 'bg-amber-50' : ''}`}>
+                              <td className="p-1">{it.product?.name}</td>
+                              <td className="p-1 text-gray-500">{it.originalQuantity ?? '—'}</td>
+                              <td className="p-1">
+                                {isSelectedEditable ? (
+                                  <input type="number" min="1" className="border rounded px-1 py-0.5 w-20"
+                                    value={quantityEdits[it.id] ?? ''}
+                                    onChange={(e) => setQuantityEdits((prev) => ({ ...prev, [it.id]: e.target.value }))} />
+                                ) : it.quantity}
+                              </td>
+                              {/* batch/MRP/price/expiry are only known once the dealer
+                                  has dispatched the order (IN_TRANSIT/RECEIVED) — blank
+                                  until then, since a retailer never enters them. */}
+                              <td className="p-1">{it.batchName || '—'}</td>
+                              <td className="p-1">{it.mrp != null ? `₹${it.mrp}` : '—'}</td>
+                              <td className="p-1">{it.retailerSellingPrice != null ? `₹${it.retailerSellingPrice}` : '—'}</td>
+                              <td className="p-1">{it.expiryDate ? formatMMYYYY(it.expiryDate) : '—'}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th className="text-left p-1">Product / उत्पादन</th>
+                          <th className="text-left p-1">Qty / प्रमाण</th>
+                          <th className="text-left p-1">Batch / बॅच</th>
+                          <th className="text-left p-1">Cost / क्रय</th>
+                          <th className="text-left p-1">Commission / कमिशन</th>
+                          <th className="text-left p-1">Sell Price / विक्री किंमत</th>
+                          <th className="text-left p-1">MRP / एमआरपी</th>
+                          <th className="text-left p-1">Discount / सवलत</th>
+                          <th className="text-left p-1">Retailer Price / किरकोळ किंमत</th>
+                          <th className="text-left p-1">Mfg (mm-yyyy) / उत्पादन तारीख</th>
+                          <th className="text-left p-1">Exp (mm-yyyy) / कालबाह्यता</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {selectedPurchase.items.map((it) => (
+                          <tr key={it.id} className="border-t">
+                            <td className="p-1">{it.product?.name}</td>
+                            <td className="p-1">
+                              {isSelectedEditable ? (
+                                <input type="number" min="1" className="border rounded px-1 py-0.5 w-20"
+                                  value={quantityEdits[it.id] ?? ''}
+                                  onChange={(e) => setQuantityEdits((prev) => ({ ...prev, [it.id]: e.target.value }))} />
+                              ) : it.quantity}
+                            </td>
+                            <td className="p-1">{it.batchName}</td>
+                            <td className="p-1">₹{it.rate}</td>
+                            <td className="p-1">{it.dealerCommission}%</td>
+                            <td className="p-1">₹{it.sellingPrice}</td>
+                            <td className="p-1">₹{it.mrp}</td>
+                            <td className="p-1">{it.discount}%</td>
+                            <td className="p-1">₹{it.retailerSellingPrice ?? computeRetailerPrice(it)}</td>
+                            <td className="p-1">{formatMMYYYY(it.manufacturingDate)}</td>
+                            <td className="p-1">{formatMMYYYY(it.expiryDate)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
 
                 {quantityError && (
                   <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2 mt-2">{quantityError}</div>

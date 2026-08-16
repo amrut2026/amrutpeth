@@ -4,6 +4,25 @@ import { authRequired, ownerScope, requireRole } from '../middleware/auth.js';
 
 const router = Router();
 
+// A DEALER buying from a supplier still enters full batch detail up front.
+// A RETAILER buying from their own dealer only ever picks a product and a
+// quantity — see Purchases.jsx and the PurchaseItem schema comment for why.
+function fullItemFieldsError(items) {
+  for (const i of items) {
+    if (!i.rate || !i.dealerCommission || !i.sellingPrice || !i.mrp || i.discount === undefined || i.discount === '' || !i.retailerSellingPrice || !i.manufacturingDate || !i.expiryDate || !i.batchName) {
+      return 'Cost price, dealer commission, selling price, MRP, discount %, retailer selling price, dates, and batch name are required for every item';
+    }
+  }
+  return null;
+}
+function minimalItemFieldsError(items) {
+  for (const i of items) {
+    if (!i.productId) return 'Product is required for every item';
+    if (!i.quantity || Number(i.quantity) <= 0) return 'Quantity must be greater than zero for every item';
+  }
+  return null;
+}
+
 // Purchase of product is a Dealer/Retailer activity only — Admin (and any other
 // role) is blocked from both viewing and recording purchases.
 router.get('/', authRequired, requireRole('DEALER', 'RETAILER'), async (req, res) => {
@@ -24,12 +43,12 @@ router.post('/', authRequired, requireRole('DEALER', 'RETAILER'), async (req, re
   if (!scope.ownerType) return res.status(403).json({ error: 'Only dealer/retailer accounts can record purchases' });
   const { supplierId, items } = req.body;
   // items: [{ productId, quantity, rate, sellingPrice, discount, mrp, manufacturingDate, expiryDate, batchName }]
+  // — a RETAILER's items only ever have productId + quantity; see the
+  // fullItemFieldsError/minimalItemFieldsError helpers above.
 
-  for (const i of items) {
-    if (!i.rate || !i.dealerCommission || !i.sellingPrice || !i.mrp || i.discount === undefined || i.discount === '' || !i.retailerSellingPrice || !i.manufacturingDate || !i.expiryDate || !i.batchName) {
-      return res.status(400).json({ error: 'Cost price, dealer commission, selling price, MRP, discount %, retailer selling price, dates, and batch name are required for every item' });
-    }
-  }
+  if (!items || !items.length) return res.status(400).json({ error: 'No items in purchase' });
+  const itemsError = scope.ownerType === 'RETAILER' ? minimalItemFieldsError(items) : fullItemFieldsError(items);
+  if (itemsError) return res.status(400).json({ error: itemsError });
 
   let supplierIdToUse = null;
   let sourceDealerIdToUse = null;
@@ -73,19 +92,22 @@ router.post('/', authRequired, requireRole('DEALER', 'RETAILER'), async (req, re
       sourceDealerId: sourceDealerIdToUse,
       status: 'PENDING',
       items: {
-        create: items.map(i => ({
-          productId: Number(i.productId),
-          quantity: Number(i.quantity),
-          rate: i.rate,
-          dealerCommission: i.dealerCommission,
-          sellingPrice: i.sellingPrice,
-          discount: i.discount || 0,
-          mrp: i.mrp,
-          retailerSellingPrice: i.retailerSellingPrice,
-          manufacturingDate: new Date(i.manufacturingDate),
-          expiryDate: new Date(i.expiryDate),
-          batchName: i.batchName,
-        }))
+        create: items.map(i => scope.ownerType === 'RETAILER'
+          ? { productId: Number(i.productId), quantity: Number(i.quantity), originalQuantity: Number(i.quantity) }
+          : {
+              productId: Number(i.productId),
+              quantity: Number(i.quantity),
+              originalQuantity: Number(i.quantity),
+              rate: i.rate,
+              dealerCommission: i.dealerCommission,
+              sellingPrice: i.sellingPrice,
+              discount: i.discount || 0,
+              mrp: i.mrp,
+              retailerSellingPrice: i.retailerSellingPrice,
+              manufacturingDate: new Date(i.manufacturingDate),
+              expiryDate: new Date(i.expiryDate),
+              batchName: i.batchName,
+            })
       }
     },
     include: { items: { include: { product: true } }, supplier: true, sourceDealer: true }
@@ -101,6 +123,9 @@ router.post('/', authRequired, requireRole('DEALER', 'RETAILER'), async (req, re
 // items after that point would silently desync stock from what was recorded.
 // The whole item list is resubmitted and swapped in — the simplest way to
 // support both "add a new item" and "edit an existing item" uniformly.
+// This also re-baselines originalQuantity to match (a full resubmission is
+// treated as redeclaring the order) — for a quantity-only tweak that should
+// NOT move the baseline, use PATCH /:id/quantities instead.
 router.put('/:id', authRequired, requireRole('DEALER', 'RETAILER'), async (req, res) => {
   const scope = ownerScope(req);
   const id = Number(req.params.id);
@@ -118,11 +143,8 @@ router.put('/:id', authRequired, requireRole('DEALER', 'RETAILER'), async (req, 
   }
 
   if (!items || !items.length) return res.status(400).json({ error: 'No items in purchase' });
-  for (const i of items) {
-    if (!i.rate || !i.dealerCommission || !i.sellingPrice || !i.mrp || i.discount === undefined || i.discount === '' || !i.retailerSellingPrice || !i.manufacturingDate || !i.expiryDate || !i.batchName) {
-      return res.status(400).json({ error: 'Cost price, dealer commission, selling price, MRP, discount %, retailer selling price, dates, and batch name are required for every item' });
-    }
-  }
+  const itemsError = scope.ownerType === 'RETAILER' ? minimalItemFieldsError(items) : fullItemFieldsError(items);
+  if (itemsError) return res.status(400).json({ error: itemsError });
 
   // A retailer purchase always stays sourced from the same dealer it was
   // created against; only a dealer purchase's supplier can be changed here.
@@ -150,19 +172,22 @@ router.put('/:id', authRequired, requireRole('DEALER', 'RETAILER'), async (req, 
       data: {
         supplierId: scope.ownerType === 'DEALER' ? supplierIdToUse : existing.supplierId,
         items: {
-          create: items.map(i => ({
-            productId: Number(i.productId),
-            quantity: Number(i.quantity),
-            rate: i.rate,
-            dealerCommission: i.dealerCommission,
-            sellingPrice: i.sellingPrice,
-            discount: i.discount || 0,
-            mrp: i.mrp,
-            retailerSellingPrice: i.retailerSellingPrice,
-            manufacturingDate: new Date(i.manufacturingDate),
-            expiryDate: new Date(i.expiryDate),
-            batchName: i.batchName,
-          }))
+          create: items.map(i => scope.ownerType === 'RETAILER'
+            ? { productId: Number(i.productId), quantity: Number(i.quantity), originalQuantity: Number(i.quantity) }
+            : {
+                productId: Number(i.productId),
+                quantity: Number(i.quantity),
+                originalQuantity: Number(i.quantity),
+                rate: i.rate,
+                dealerCommission: i.dealerCommission,
+                sellingPrice: i.sellingPrice,
+                discount: i.discount || 0,
+                mrp: i.mrp,
+                retailerSellingPrice: i.retailerSellingPrice,
+                manufacturingDate: new Date(i.manufacturingDate),
+                expiryDate: new Date(i.expiryDate),
+                batchName: i.batchName,
+              })
         }
       },
       include: { items: { include: { product: true } }, supplier: true, sourceDealer: true }
@@ -176,7 +201,10 @@ router.put('/:id', authRequired, requireRole('DEALER', 'RETAILER'), async (req, 
 // touching anything else. Allowed while the purchase is PENDING or
 // IN_REVIEW — the two stages before inventory gets credited (see the
 // /:id/status route) — so a quick quantity correction doesn't require
-// resubmitting the whole item form via PUT.
+// resubmitting the whole item form via PUT. Deliberately leaves
+// originalQuantity untouched — that's the baseline the UI compares
+// `quantity` against to flag a line that's drifted from what was first
+// asked for (see Purchases.jsx / Sales.jsx).
 router.patch('/:id/quantities', authRequired, requireRole('DEALER', 'RETAILER'), async (req, res) => {
   const scope = ownerScope(req);
   const id = Number(req.params.id);
@@ -231,13 +259,48 @@ router.patch('/:id/status', authRequired, requireRole('DEALER', 'RETAILER'), asy
   if (!owns) return res.status(403).json({ error: 'You can only update your own purchases' });
 
   const currentStatus = existing.status || 'PENDING';
+  // DEALER purchases (from a supplier) move straight to CONFIRMED once
+  // reviewed. RETAILER purchases (from their own dealer) fork instead:
+  // once reviewed, the retailer places the order (ORDERED) and it's then
+  // out of their hands until the dealer dispatches it (IN_TRANSIT — see
+  // sales.js PATCH /:id/dispatch, which is the only route allowed to make
+  // that transition, since it also requires picking a batch per item).
+  // Only once it's IN_TRANSIT can the retailer confirm RECEIVED.
   const nextStatusByRole = {
     DEALER: { PENDING: 'IN_REVIEW', IN_REVIEW: 'CONFIRMED' },
-    RETAILER: { PENDING: 'IN_REVIEW', IN_REVIEW: 'RECEIVED' },
+    RETAILER: { PENDING: 'IN_REVIEW', IN_REVIEW: 'ORDERED', IN_TRANSIT: 'RECEIVED' },
   };
   const expectedNext = nextStatusByRole[scope.ownerType]?.[currentStatus];
   if (!expectedNext || expectedNext !== status) {
     return res.status(400).json({ error: `Cannot move purchase from ${currentStatus} to ${status}` });
+  }
+
+  // Placing the order (RETAILER, IN_REVIEW -> ORDERED) creates a mirror
+  // Sale row on the source dealer's side, in IN_PENDING status, so the
+  // order shows up in that dealer's own Sales screen to be fulfilled.
+  // Each SaleItem is linked back to the PurchaseItem it came from via
+  // purchaseItemId, so sales.js PATCH /:id/dispatch can backfill pricing
+  // onto the right line even if this purchase has two lines for the same
+  // product.
+  if (scope.ownerType === 'RETAILER' && status === 'ORDERED') {
+    const linkedSale = await prisma.sale.create({
+      data: {
+        ownerType: 'DEALER',
+        dealerId: existing.sourceDealerId,
+        customerType: 'RETAILER',
+        customerRetailerId: existing.retailerId,
+        status: 'IN_PENDING',
+        items: {
+          create: existing.items.map((i) => ({
+            productId: i.productId,
+            quantity: i.quantity,
+            originalQuantity: i.originalQuantity,
+            purchaseItemId: i.id,
+          }))
+        }
+      }
+    });
+    await prisma.purchase.update({ where: { id }, data: { linkedSaleId: linkedSale.id } });
   }
 
   const purchase = await prisma.purchase.update({
