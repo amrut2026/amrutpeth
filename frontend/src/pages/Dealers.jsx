@@ -6,8 +6,9 @@ export default function Dealers() {
   const { user } = useAuth();
   const [dealers, setDealers] = useState([]);
   const [divisions, setDivisions] = useState([]);
-  const [organisations, setOrganisations] = useState([]);
-  const [form, setForm] = useState({ name: '', address: '', contactNumber: '', gstNumber: '', divisionId: '', organisationId: '1', username: '', password: '' });
+  // organisationId is no longer picked here - the backend always creates
+  // the dealer under the logged-in ORGANISATION user's own org.
+  const [form, setForm] = useState({ name: '', address: '', contactNumber: '', gstNumber: '', divisionId: '', username: '', password: '' });
   const [bankAccounts, setBankAccounts] = useState([{ accountNumber: '', ifsc: '', bankName: '' }]);
   const [error, setError] = useState('');
   const [credEdit, setCredEdit] = useState(null); // dealer id currently setting/resetting a login
@@ -16,10 +17,10 @@ export default function Dealers() {
 
   async function load() {
     const calls = [api.get('/dealers')];
-    if (user.role === 'ADMIN') { calls.push(api.get('/divisions')); calls.push(api.get('/organisations')); }
+    if (user.role === 'ORGANISATION') calls.push(api.get('/divisions'));
     const results = await Promise.all(calls);
     setDealers(results[0].data);
-    if (user.role === 'ADMIN') { setDivisions(results[1].data); setOrganisations(results[2].data); }
+    if (user.role === 'ORGANISATION') setDivisions(results[1].data);
   }
   useEffect(() => { load(); }, []);
 
@@ -34,7 +35,7 @@ export default function Dealers() {
     setError('');
     try {
       await api.post('/dealers', { ...form, bankAccounts });
-      setForm({ name: '', address: '', contactNumber: '', gstNumber: '', divisionId: '', organisationId: '1', username: '', password: '' });
+      setForm({ name: '', address: '', contactNumber: '', gstNumber: '', divisionId: '', username: '', password: '' });
       setBankAccounts([{ accountNumber: '', ifsc: '', bankName: '' }]);
       load();
     } catch (err) {
@@ -59,7 +60,7 @@ export default function Dealers() {
     <div>
       <h1 className="text-2xl font-semibold mb-4">Dealers</h1>
 
-      {user.role === 'ADMIN' && (
+      {user.role === 'ORGANISATION' && (
         <form onSubmit={submit} className="bg-white p-4 rounded shadow mb-6 space-y-4">
           {error && <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">{error}</div>}
 
@@ -77,17 +78,9 @@ export default function Dealers() {
               <option value="">Division...</option>
               {divisions.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
             </select>
-            <select className="border rounded px-2 py-1" required
-              value={form.organisationId} onChange={(e) => setForm({ ...form, organisationId: e.target.value })}>
-              <option value="">Organisation...</option>
-              {organisations.map((o) => <option key={o.orgId} value={o.orgId}>{o.orgName}</option>)}
-            </select>
           </div>
           {divisions.length === 0 && (
             <p className="text-xs text-amber-600 -mt-2">No divisions yet — add one under Divisions first.</p>
-          )}
-          {organisations.length === 0 && (
-            <p className="text-xs text-amber-600 -mt-2">No organisations yet — a dealer defaults to Organisation #1 once one exists.</p>
           )}
 
           <div>
@@ -135,7 +128,7 @@ export default function Dealers() {
                   <div className="text-sm text-gray-500">Division: {d.division?.name || '—'}</div>
                   <div className="text-sm text-gray-500">Organisation: {d.organisation?.orgName || '—'}</div>
                 </div>
-                {user.role === 'ADMIN' && (
+                {user.role === 'ORGANISATION' && (
                   <div className="text-right">
                     {login ? (
                       <div className="text-sm text-gray-500">Login: <span className="font-medium text-gray-700">{login.username}</span></div>

@@ -5,11 +5,14 @@ import { useAuth } from '../context/AuthContext.jsx';
 export default function Receipts() {
   const { user } = useAuth();
   const canPay = user.role === 'RETAILER';
+  const canConfirm = user.role === 'DEALER';
 
   const [receipts, setReceipts] = useState([]);
   const [vouchers, setVouchers] = useState([]);
   const [form, setForm] = useState({ voucherId: '', amount: '', mode: 'CASH' });
   const [error, setError] = useState('');
+  const [confirmingId, setConfirmingId] = useState(null);
+  const [confirmError, setConfirmError] = useState('');
 
   async function load() {
     const calls = [api.get('/receipts')];
@@ -30,6 +33,25 @@ export default function Receipts() {
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to record payment / देयक नोंदवण्यात अयशस्वी');
     }
+  }
+
+  async function confirmReceipt(id) {
+    setConfirmingId(id);
+    setConfirmError('');
+    try {
+      await api.patch(`/receipts/${id}/confirm`);
+      load();
+    } catch (err) {
+      setConfirmError(err.response?.data?.error || 'Failed to confirm receipt');
+    } finally {
+      setConfirmingId(null);
+    }
+  }
+
+  function statusLabel(status) {
+    if (status === 'PAID') return { text: 'PAID / भरले', className: 'text-green-600' };
+    if (status === 'PARTIALLY_PAID') return { text: 'PARTIALLY PAID / अंशतः भरले', className: 'text-amber-600' };
+    return { text: 'TO BE CONFIRMED / पुष्टीकरण प्रलंबित', className: 'text-red-600' };
   }
 
   return (
@@ -63,6 +85,9 @@ export default function Receipts() {
             Make Payment / देयक करा
           </button>
           {error && <p className="md:col-span-4 text-red-600 text-sm">{error}</p>}
+          <p className="md:col-span-4 text-xs text-gray-400">
+            Your payment will show as "To be confirmed" until your dealer confirms it was received. / डीलरने पुष्टी करेपर्यंत तुमचे देयक "पुष्टीकरण प्रलंबित" असे दिसेल.
+          </p>
         </form>
       )}
 
@@ -74,21 +99,40 @@ export default function Receipts() {
               <th className="text-left p-2">Voucher / व्हाउचर</th>
               <th className="text-left p-2">{canPay ? 'Amount Paid / भरलेली रक्कम' : 'Amount Received / मिळालेली रक्कम'}</th>
               <th className="text-left p-2">Mode / पद्धत</th>
+              <th className="text-left p-2">Status / स्थिती</th>
               <th className="text-left p-2">Date / दिनांक</th>
+              {canConfirm && <th className="text-left p-2"></th>}
             </tr>
           </thead>
           <tbody>
-            {receipts.map((r) => (
-              <tr key={r.id} className="border-t">
-                <td className="p-2">{r.id}</td>
-                <td className="p-2">#{r.voucherId}</td>
-                <td className="p-2">₹{Number(r.amount).toFixed(2)}</td>
-                <td className="p-2">{r.mode}</td>
-                <td className="p-2">{new Date(r.date).toLocaleDateString()}</td>
-              </tr>
-            ))}
+            {confirmError && (
+              <tr><td colSpan={canConfirm ? 7 : 6} className="p-2 text-sm text-red-600 bg-red-50">{confirmError}</td></tr>
+            )}
+            {receipts.map((r) => {
+              const status = statusLabel(r.status);
+              return (
+                <tr key={r.id} className="border-t">
+                  <td className="p-2">{r.id}</td>
+                  <td className="p-2">#{r.voucherId}</td>
+                  <td className="p-2">₹{Number(r.amount).toFixed(2)}</td>
+                  <td className="p-2">{r.mode}</td>
+                  <td className="p-2"><span className={status.className}>{status.text}</span></td>
+                  <td className="p-2">{new Date(r.date).toLocaleDateString()}</td>
+                  {canConfirm && (
+                    <td className="p-2">
+                      {r.status === 'TO_BE_CONFIRMED' && (
+                        <button type="button" disabled={confirmingId === r.id} className="text-emerald-700 text-xs hover:underline disabled:opacity-50"
+                          onClick={() => confirmReceipt(r.id)}>
+                          {confirmingId === r.id ? 'Confirming... / पुष्टी करत आहे...' : 'Mark as Received / मिळाले म्हणून चिन्हांकित करा'}
+                        </button>
+                      )}
+                    </td>
+                  )}
+                </tr>
+              );
+            })}
             {receipts.length === 0 && (
-              <tr><td className="p-3 text-gray-400" colSpan={5}>No payments yet. / अद्याप कोणतेही देयक नाही.</td></tr>
+              <tr><td className="p-3 text-gray-400" colSpan={canConfirm ? 7 : 6}>No payments yet. / अद्याप कोणतेही देयक नाही.</td></tr>
             )}
           </tbody>
         </table>

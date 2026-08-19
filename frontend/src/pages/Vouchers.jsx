@@ -1,7 +1,12 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import api from '../api.js';
 import { useAuth } from '../context/AuthContext.jsx';
 
+// Vouchers is view (+ create, for DEALER) only. Paying down a PAYABLE
+// (supplier) voucher happens on the Payments screen instead — the same
+// split already used on the retailer side, where Vouchers.jsx is
+// view-only and Receipts.jsx ("Payments (Pay Dealer)") is where the
+// actual payment gets recorded against a RECEIVABLE voucher.
 export default function Vouchers() {
   const { user } = useAuth();
   const [vouchers, setVouchers] = useState([]);
@@ -23,6 +28,11 @@ export default function Vouchers() {
     await api.post('/vouchers', form);
     setForm({ retailerId: '', amount: '', description: '' });
     load();
+  }
+
+  function balanceRemaining(v) {
+    const paid = (v.payments || []).reduce((sum, p) => sum + Number(p.amount), 0);
+    return Number(v.amount) - paid;
   }
 
   return (
@@ -54,7 +64,8 @@ export default function Vouchers() {
           <thead className="bg-gray-100">
             <tr>
               <th className="text-left p-2">#</th>
-              <th className="text-left p-2">Retailer / किरकोळ विक्रेता</th>
+              <th className="text-left p-2">Type</th>
+              <th className="text-left p-2">Party</th>
               <th className="text-left p-2">Amount / रक्कम</th>
               <th className="text-left p-2">Description / वर्णन</th>
               <th className="text-left p-2">Status / स्थिती</th>
@@ -62,21 +73,36 @@ export default function Vouchers() {
             </tr>
           </thead>
           <tbody>
-            {vouchers.map((v) => (
-              <tr key={v.id} className="border-t">
-                <td className="p-2">{v.id}</td>
-                <td className="p-2">{v.retailer?.name || v.retailerId}</td>
-                <td className="p-2">₹{Number(v.amount).toFixed(2)}</td>
-                <td className="p-2">{v.description}</td>
-                <td className="p-2">
-                  <span className={
-                    v.status === 'PAID' ? 'text-green-600' : v.status === 'PARTIALLY_PAID' ? 'text-amber-600' : 'text-red-600'
-                  }>{v.status}</span>
-                </td>
-                <td className="p-2">{new Date(v.date).toLocaleDateString()}</td>
-              </tr>
-            ))}
-            {vouchers.length === 0 && <tr><td className="p-3 text-gray-400" colSpan={6}>No vouchers yet. / अद्याप व्हाउचर नाहीत.</td></tr>}
+            {vouchers.map((v) => {
+              const isPayable = v.type === 'PAYABLE';
+              const partyName = isPayable ? (v.supplier?.name || v.supplierId) : (v.retailer?.name || v.retailerId);
+              const remaining = balanceRemaining(v);
+              return (
+                <Fragment key={v.id}>
+                  <tr className="border-t">
+                    <td className="p-2">{v.id}</td>
+                    <td className="p-2">
+                      <span className={isPayable ? 'text-amber-700' : 'text-emerald-700'}>
+                        {isPayable ? 'Payable (Supplier)' : 'Receivable (Retailer)'}
+                      </span>
+                    </td>
+                    <td className="p-2">{partyName}</td>
+                    <td className="p-2">₹{Number(v.amount).toFixed(2)}</td>
+                    <td className="p-2">{v.description}</td>
+                    <td className="p-2">
+                      <span className={
+                        v.status === 'PAID' ? 'text-green-600' : v.status === 'PARTIALLY_PAID' ? 'text-amber-600' : 'text-red-600'
+                      }>{v.status}</span>
+                      {v.status !== 'PAID' && v.status !== 'OPEN' && (
+                        <div className="text-xs text-gray-400">₹{remaining.toFixed(2)} remaining</div>
+                      )}
+                    </td>
+                    <td className="p-2">{new Date(v.date).toLocaleDateString()}</td>
+                  </tr>
+                </Fragment>
+              );
+            })}
+            {vouchers.length === 0 && <tr><td className="p-3 text-gray-400" colSpan={7}>No vouchers yet. / अद्याप व्हाउचर नाहीत.</td></tr>}
           </tbody>
         </table>
       </div>

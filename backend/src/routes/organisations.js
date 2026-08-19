@@ -100,9 +100,10 @@ router.post('/:id/credentials', authRequired, requireRole('ADMIN'), async (req, 
   }
 });
 
-router.delete('/:id', authRequired, requireRole('ADMIN'), async (req, res) => {
-  await prisma.organisation.delete({ where: { orgId: Number(req.params.id) } });
-  res.json({ ok: true });
-});
+// No DELETE route: ADMIN's write access to Organisation is create/update
+// only (see the new dealer-creation boundary this pairs with in
+// dealers.js). If you need a way to deactivate/remove an organisation
+// later, that's a separate decision — flag it and I'll add it back with
+// whatever rule you want (e.g. only when it has no dealers left).
 
 export default router;

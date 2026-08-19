@@ -5,29 +5,21 @@ import api from '../api.js';
 
 // Each entry: [path, English label, Marathi label]
 const NAV = {
-  // Ordered per the hierarchy: organisation, division, supplier, dealer,
-  // retailer, product, purchase, sales, inventory, receipts, payment,
-  // report — anything outside that hierarchy (role-activity-mapping,
-  // categories, vouchers) follows after, in no particular order.
-  //
-  // Note on RETAILER's /receipts route below: despite the path name, it's
-  // the retailer paying their dealer (see Receipts.jsx), so it's classified
-  // under the "payment" slot here, not "receipts".
   ADMIN: [
     ['/organisation', 'Organisation', 'संस्था'],
+    ['/role-activity-mapping', 'Role-Activity Mapping', 'भूमिका-कार्य मॅपिंग'],
     ['/divisions', 'Divisions', 'विभाग'],
+    ['/dealers', 'Dealers', 'डीलर्स'],
+    ['/retailers', 'Retailers', 'किरकोळ विक्रेते'],
     ['/suppliers', 'Suppliers / Manufacturers', 'पुरवठादार / उत्पादक'],
     ['/categories', 'Categories', 'श्रेण्या'],
     ['/products', 'Products', 'उत्पादने'],
-    ['/dealers', 'Dealers', 'डीलर्स'],
-    ['/retailers', 'Retailers', 'किरकोळ विक्रेते'],
-    ['/sales', 'Sales (POS)', 'विक्री (पीओएस)'],
     ['/inventory', 'Inventory', 'साठा'],
+    ['/sales', 'Sales (POS)', 'विक्री (पीओएस)'],
     ['/vouchers', 'Vouchers', 'व्हाउचर'],
     ['/receipts', 'Receipts', 'पावत्या'],
     ['/payments', 'Payments', 'देयके'],
     ['/reports', 'Reports', 'अहवाल'],
-    ['/role-activity-mapping', 'Role-Activity Mapping', 'भूमिका-कार्य मॅपिंग'],
   ],
   // ORGANISATION manages dealers, the division master list, and the
   // supplier/manufacturer master list (see dealers.js / divisions.js /
@@ -35,31 +27,26 @@ const NAV = {
   // read-only oversight — only the write access moved. Add more here as
   // ORGANISATION's remit grows.
   ORGANISATION: [
+    ['/dealers', 'Dealers', 'डीलर्स'],
     ['/divisions', 'Divisions', 'विभाग'],
     ['/suppliers', 'Suppliers / Manufacturers', 'पुरवठादार / उत्पादक'],
-    ['/dealers', 'Dealers', 'डीलर्स'],
   ],
   DEALER: [
     ['/retailers', 'My Retailers', 'माझे किरकोळ विक्रेते'],
     ['/categories', 'Categories', 'श्रेण्या'],
     ['/products', 'Products', 'उत्पादने'],
+    ['/inventory', 'Inventory', 'साठा'],
     ['/purchases', 'Purchases (Inwards)', 'खरेदी (आवक)'],
     ['/sales', 'Sales (POS)', 'विक्री (पीओएस)'],
-    ['/inventory', 'Inventory', 'साठा'],
     ['/vouchers', 'Vouchers', 'व्हाउचर'],
-    // Receipts a retailer has recorded against the dealer's own RECEIVABLE
-    // vouchers — i.e. the dealer's acknowledgement that a retailer paid
-    // them (see receipts.js, already scoped to the dealer's own vouchers;
-    // this route just wasn't reachable from the DEALER nav before).
-    ['/receipts', 'Receipts (from Retailers)', 'पावत्या (किरकोळ विक्रेत्यांकडून)'],
     ['/payments', 'Payments to Manufacturer', 'उत्पादकाला देयक'],
     ['/reports', 'Reports', 'अहवाल'],
   ],
   RETAILER: [
     ['/products', 'Products', 'उत्पादने'],
+    ['/inventory', 'Inventory', 'साठा'],
     ['/purchases', 'Purchases (Inwards)', 'खरेदी (आवक)'],
     ['/sales', 'Sales (POS)', 'विक्री (पीओएस)'],
-    ['/inventory', 'Inventory', 'साठा'],
     ['/vouchers', 'Vouchers Received', 'मिळालेले व्हाउचर'],
     ['/receipts', 'Payments (Pay Dealer)', 'देयके (डीलरला पैसे द्या)'],
     ['/reports', 'Reports', 'अहवाल'],

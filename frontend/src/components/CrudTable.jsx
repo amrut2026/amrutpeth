@@ -12,6 +12,11 @@ export default function CrudTable({
   transformSubmit,
   canWrite = true,
   editable = false,
+  // When true, rows are expected to carry an isActive boolean. Adds a
+  // Status column and a Deactivate/Activate action instead of a hard
+  // delete — see divisions.js PATCH /:id/active for the matching backend
+  // pattern. Opt-in per page rather than a change to every CrudTable user.
+  activatable = false,
   addButtonLabel,
 }) {
   const [rows, setRows] = useState([]);
@@ -19,6 +24,12 @@ export default function CrudTable({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [editingId, setEditingId] = useState(null);
+  const [togglingId, setTogglingId] = useState(null);
+
+  // endpoint may carry a query string (e.g. "/divisions?all=true" so the
+  // management table can see deactivated rows) — the toggle-active route
+  // is always relative to the bare resource path, so strip it off.
+  const baseEndpoint = endpoint.split('?')[0];
 
   async function load() {
     const { data } = await api.get(endpoint);
@@ -61,6 +72,18 @@ export default function CrudTable({
     setForm({});
     setEditingId(null);
     setError('');
+  }
+
+  async function toggleActive(row) {
+    setTogglingId(row.id);
+    try {
+      await api.patch(`${baseEndpoint}/${row.id}/active`, { isActive: !row.isActive });
+      await load();
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to update status');
+    } finally {
+      setTogglingId(null);
+    }
   }
 
   async function submit(e) {
@@ -186,30 +209,58 @@ export default function CrudTable({
           <thead className="bg-gray-100">
             <tr>
               {columns.map((c) => <th key={c.key} className="text-left p-2">{c.label}</th>)}
-              {editable && canWrite && <th className="text-left p-2">Actions / क्रिया</th>}
+              {activatable && <th className="text-left p-2">Status / स्थिती</th>}
+              {(editable || activatable) && canWrite && <th className="text-left p-2">Actions / क्रिया</th>}
             </tr>
           </thead>
           <tbody>
             {rows.map((r) => (
-              <tr key={r.id} className={`border-t ${editingId === r.id ? 'bg-emerald-50' : ''}`}>
+              <tr key={r.id} className={`border-t ${editingId === r.id ? 'bg-emerald-50' : ''} ${activatable && r.isActive === false ? 'opacity-60' : ''}`}>
                 {columns.map((c) => (
                   <td key={c.key} className="p-2">{c.render ? c.render(r) : r[c.key]}</td>
                 ))}
-                {editable && canWrite && (
+                {activatable && (
                   <td className="p-2">
-                    <button
-                      type="button"
-                      onClick={() => startEdit(r)}
-                      className="text-emerald-700 text-sm hover:underline"
-                    >
-                      Modify / सुधारणा करा
-                    </button>
+                    {r.isActive === false ? (
+                      <span className="text-xs bg-gray-100 text-gray-500 font-medium px-2 py-1 rounded border border-gray-200">
+                        Inactive / निष्क्रिय
+                      </span>
+                    ) : (
+                      <span className="text-xs bg-emerald-50 text-emerald-700 font-medium px-2 py-1 rounded border border-emerald-200">
+                        Active / सक्रिय
+                      </span>
+                    )}
+                  </td>
+                )}
+                {(editable || activatable) && canWrite && (
+                  <td className="p-2">
+                    <div className="flex items-center gap-3">
+                      {editable && (
+                        <button
+                          type="button"
+                          onClick={() => startEdit(r)}
+                          className="text-emerald-700 text-sm hover:underline"
+                        >
+                          Modify / सुधारणा करा
+                        </button>
+                      )}
+                      {activatable && (
+                        <button
+                          type="button"
+                          disabled={togglingId === r.id}
+                          onClick={() => toggleActive(r)}
+                          className="text-red-600 text-sm hover:underline disabled:opacity-50"
+                        >
+                          {r.isActive === false ? 'Activate / सक्रिय करा' : 'Deactivate / निष्क्रिय करा'}
+                        </button>
+                      )}
+                    </div>
                   </td>
                 )}
               </tr>
             ))}
             {rows.length === 0 && (
-              <tr><td className="p-3 text-gray-400" colSpan={columns.length + (editable && canWrite ? 1 : 0)}>No records yet. / अद्याप नोंदी नाहीत.</td></tr>
+              <tr><td className="p-3 text-gray-400" colSpan={columns.length + (activatable ? 1 : 0) + ((editable || activatable) && canWrite ? 1 : 0)}>No records yet. / अद्याप नोंदी नाहीत.</td></tr>
             )}
           </tbody>
         </table>

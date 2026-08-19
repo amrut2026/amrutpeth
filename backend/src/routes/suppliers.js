@@ -4,9 +4,11 @@ import { authRequired, requireRole } from '../middleware/auth.js';
 
 const router = Router();
 
-// Any logged-in dealer/retailer needs to see suppliers to record purchases against them.
-// DEALER accounts only see suppliers in their own division; ADMIN sees everything
-// (needed to manage the master list under Suppliers).
+// Any logged-in dealer/retailer needs to see suppliers to record purchases
+// against them. DEALER accounts only see suppliers in their own division;
+// everyone else (ORGANISATION, RETAILER) sees the full master list — same
+// shared-master-data shape as Divisions, since a supplier/manufacturer
+// isn't owned by any one organisation the way a Dealer is.
 router.get('/', authRequired, async (req, res) => {
   let where = {};
   if (req.user.role === 'DEALER') {
@@ -24,8 +26,10 @@ router.get('/:id', authRequired, async (req, res) => {
   res.json(supplier);
 });
 
-// Only ADMIN manages the supplier/manufacturer master list
-router.post('/', authRequired, requireRole('ADMIN'), async (req, res) => {
+// Only ORGANISATION manages the supplier/manufacturer master list — same
+// migration as Dealer and Division: ADMIN's write access no longer touches
+// this at all, it's narrowed to Organisation itself (see organisations.js).
+router.post('/', authRequired, requireRole('ORGANISATION'), async (req, res) => {
   const { name, address, contactNumber, gstNumber, divisionId, bankAccounts } = req.body;
   const supplier = await prisma.supplier.create({
     data: {
@@ -40,14 +44,14 @@ router.post('/', authRequired, requireRole('ADMIN'), async (req, res) => {
   res.json(supplier);
 });
 
-router.post('/:id/bank-accounts', authRequired, requireRole('ADMIN'), async (req, res) => {
+router.post('/:id/bank-accounts', authRequired, requireRole('ORGANISATION'), async (req, res) => {
   const supplierId = Number(req.params.id);
   const { accountNumber, ifsc, bankName } = req.body;
   const acc = await prisma.supplierBankAccount.create({ data: { supplierId, accountNumber, ifsc, bankName } });
   res.json(acc);
 });
 
-router.put('/:id', authRequired, requireRole('ADMIN'), async (req, res) => {
+router.put('/:id', authRequired, requireRole('ORGANISATION'), async (req, res) => {
   const { name, address, contactNumber, gstNumber, divisionId } = req.body;
   const data = { name, address, contactNumber, gstNumber };
   if (divisionId !== undefined) data.divisionId = divisionId ? Number(divisionId) : null;
@@ -58,7 +62,7 @@ router.put('/:id', authRequired, requireRole('ADMIN'), async (req, res) => {
   res.json(supplier);
 });
 
-router.delete('/:id', authRequired, requireRole('ADMIN'), async (req, res) => {
+router.delete('/:id', authRequired, requireRole('ORGANISATION'), async (req, res) => {
   await prisma.supplier.delete({ where: { id: Number(req.params.id) } });
   res.json({ ok: true });
 });

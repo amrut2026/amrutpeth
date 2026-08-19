@@ -367,6 +367,29 @@ router.patch('/:id/status', authRequired, requireRole('DEALER', 'RETAILER'), asy
     }
   }
 
+  // A dealer's purchase from a supplier is the mirror of a supplier "selling"
+  // to the dealer — auto-raise a payable voucher for the supplier, the same
+  // way a dealer -> retailer sale auto-raises a receivable voucher (see
+  // sales.js). It's created OPEN just like that one — nothing is assumed
+  // paid at receipt time; the dealer settles it afterwards via
+  // POST /vouchers/:id/payments (see payments.js/vouchers.js), which moves
+  // it to PARTIALLY_PAID or PAID depending on how much has been paid in so
+  // far. Fires exactly once, on the same CONFIRMED transition that credits
+  // inventory above (see the isTerminal comment — this path can't be
+  // re-entered for the same purchase).
+  if (scope.ownerType === 'DEALER' && status === 'CONFIRMED') {
+    const totalAmount = purchase.items.reduce((sum, i) => sum + Number(i.rate) * i.quantity, 0);
+    await prisma.voucher.create({
+      data: {
+        type: 'PAYABLE',
+        dealerId: scope.dealerId,
+        supplierId: purchase.supplierId,
+        amount: totalAmount,
+        description: `Auto-voucher for Purchase #${id}`,
+      }
+    });
+  }
+
   res.json(purchase);
 });
 

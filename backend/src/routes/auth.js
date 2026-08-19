@@ -15,17 +15,22 @@ router.post('/login', async (req, res) => {
   if (!ok) return res.status(401).json({ error: 'Invalid credentials' });
 
   const token = jwt.sign(
-    { id: user.id, username: user.username, role: user.role, dealerId: user.dealerId, retailerId: user.retailerId },
+    { id: user.id, username: user.username, role: user.role, dealerId: user.dealerId, retailerId: user.retailerId, organisationId: user.organisationId },
     process.env.JWT_SECRET,
     { expiresIn: '12h' }
   );
-  res.json({ token, user: { id: user.id, username: user.username, role: user.role, dealerId: user.dealerId, retailerId: user.retailerId } });
+  res.json({ token, user: { id: user.id, username: user.username, role: user.role, dealerId: user.dealerId, retailerId: user.retailerId, organisationId: user.organisationId } });
 });
 
-// POST /api/auth/users - ADMIN creates login for a dealer/retailer; DEALER creates login for their retailer
-router.post('/users', authRequired, requireRole('ADMIN', 'DEALER'), async (req, res) => {
+// POST /api/auth/users - DEALER creates a login for their own retailer.
+// ADMIN deliberately excluded: ADMIN's write access no longer touches
+// Dealer at all (see dealers.js), and Organisation logins are created via
+// organisations.js (bundled at creation, or POST /organisations/:id/credentials)
+// - leaving ADMIN able to create a DEALER-role login here would silently
+// route around that boundary.
+router.post('/users', authRequired, requireRole('DEALER'), async (req, res) => {
   const { username, password, role, dealerId, retailerId } = req.body;
-  if (req.user.role === 'DEALER' && role !== 'RETAILER') {
+  if (role !== 'RETAILER') {
     return res.status(403).json({ error: 'Dealers can only create retailer logins' });
   }
   const hash = await bcrypt.hash(password, 10);

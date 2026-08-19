@@ -1,6 +1,6 @@
 // ============================================================
 // FoodMart PoC - Prisma schema (PostgreSQL)
-// Run: npx prisma migrate dev --name retailer_purchase_order_workflow
+// Run: npx prisma migrate dev --name receipt_confirmation_workflow
 // ============================================================
 
 generator client {
@@ -8,12 +8,12 @@ generator client {
 }
 
 datasource db {
-  provider  = "postgresql"
+  provider = "postgresql"
 }
 
 enum Role {
-  ADMIN         // manufacturer / platform owner
-  ORGANISATION  // login tied to an Organisation (Mahamandal/Federation/Association) itself
+  ADMIN // manufacturer / platform owner
+  ORGANISATION // login tied to an Organisation (Mahamandal/Federation/Association) itself
   DEALER
   RETAILER
 }
@@ -38,6 +38,32 @@ enum VoucherStatus {
   OPEN
   PARTIALLY_PAID
   PAID
+}
+
+// A Receipt starts TO_BE_CONFIRMED the moment a retailer submits a payment
+// (see receipts.js POST /) and only becomes PARTIALLY_PAID or PAID once
+// the dealer confirms it actually arrived (PATCH /:id/confirm) — mirrors
+// the terminal values of VoucherStatus deliberately (the receipt's final
+// status and the voucher's resulting status are set to the same value in
+// that same confirm step), but is a separate enum because a Receipt can
+// additionally sit in the pending TO_BE_CONFIRMED state, which a Voucher
+// itself never does.
+enum ReceiptStatus {
+  TO_BE_CONFIRMED
+  PARTIALLY_PAID
+  PAID
+}
+
+// RECEIVABLE: dealer -> retailer (retailer owes the dealer for a sale, see
+// sales.js). PAYABLE: supplier -> dealer (dealer owes the supplier for a
+// purchase, see purchases.js) — mirrors a RECEIVABLE voucher from the
+// supplier's side (supplier "sold", dealer "bought"), but is always raised
+// already PAID: the dealer is assumed to settle with the supplier directly
+// and hand back a receipt outside this system, so there's no Receipt-style
+// confirmation step for this type (Receipt stays scoped to retailers only).
+enum VoucherType {
+  RECEIVABLE
+  PAYABLE
 }
 
 // Purchase review workflow forks by role after IN_REVIEW:
@@ -80,17 +106,17 @@ enum SaleStatus {
 
 // ---------------- Users / Auth ----------------
 model User {
-  id         Int      @id @default(autoincrement())
-  username   String   @unique
-  password   String   // bcrypt hash
-  role       Role
-  dealerId   Int?
-  retailerId Int?
+  id             Int           @id @default(autoincrement())
+  username       String        @unique
+  password       String // bcrypt hash
+  role           Role
+  dealerId       Int?
+  retailerId     Int?
   organisationId Int?
-  dealer     Dealer?   @relation(fields: [dealerId], references: [id])
-  retailer   Retailer? @relation(fields: [retailerId], references: [id])
-  organisation Organisation? @relation(fields: [organisationId], references: [orgId])
-  createdAt  DateTime @default(now())
+  dealer         Dealer?       @relation(fields: [dealerId], references: [id])
+  retailer       Retailer?     @relation(fields: [retailerId], references: [id])
+  organisation   Organisation? @relation(fields: [organisationId], references: [orgId])
+  createdAt      DateTime      @default(now())
 }
 
 // ---------------- Divisions (geographic/business areas) ----------------
@@ -99,36 +125,39 @@ model Division {
   id          Int      @id @default(autoincrement())
   name        String   @unique
   description String?
+  // Soft-delete flag — divisions are never hard-deleted (dealers/suppliers
+  // reference them), just deactivated. See divisions.js PATCH /:id/active.
+  isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
 
-  dealers     Dealer[]
-  suppliers   Supplier[]
+  dealers   Dealer[]
+  suppliers Supplier[]
 }
 
 // ---------------- Dealer ----------------
 model Dealer {
-  id            Int      @id @default(autoincrement())
-  name          String
-  address       String
-  contactNumber String
-  gstNumber     String
-  divisionId    Int?
-  division      Division? @relation(fields: [divisionId], references: [id])
-  organisationId Int      @default(1)
+  id             Int          @id @default(autoincrement())
+  name           String
+  address        String
+  contactNumber  String
+  gstNumber      String
+  divisionId     Int?
+  division       Division?    @relation(fields: [divisionId], references: [id])
+  organisationId Int          @default(1)
   organisation   Organisation @relation(fields: [organisationId], references: [orgId])
-  createdAt     DateTime @default(now())
+  createdAt      DateTime     @default(now())
 
-  bankAccounts  DealerBankAccount[]
-  retailers     Retailer[]
-  users         User[]
-  products      Product[]
-  productCategories ProductCategory[]
-  inventory     Inventory[]    @relation("DealerInventory")
-  purchases     Purchase[]     @relation("DealerPurchases")
-  purchasesFromRetailers Purchase[] @relation("PurchaseFromDealer")
-  sales         Sale[]         @relation("DealerSales")
-  vouchers      Voucher[]
-  payments      Payment[]
+  bankAccounts           DealerBankAccount[]
+  retailers              Retailer[]
+  users                  User[]
+  products               Product[]
+  productCategories      ProductCategory[]
+  inventory              Inventory[]         @relation("DealerInventory")
+  purchases              Purchase[]          @relation("DealerPurchases")
+  purchasesFromRetailers Purchase[]          @relation("PurchaseFromDealer")
+  sales                  Sale[]              @relation("DealerSales")
+  vouchers               Voucher[]
+  payments               Payment[]
 }
 
 model DealerBankAccount {
@@ -151,13 +180,14 @@ model Retailer {
   dealer          Dealer   @relation(fields: [primaryDealerId], references: [id])
   createdAt       DateTime @default(now())
 
-  bankAccounts    RetailerBankAccount[]
-  users           User[]
-  inventory       Inventory[]  @relation("RetailerInventory")
-  purchases       Purchase[]   @relation("RetailerPurchases")
-  sales           Sale[]       @relation("RetailerSales")
-  vouchers        Voucher[]
-  receipts        Receipt[]
+  bankAccounts RetailerBankAccount[]
+  users        User[]
+  inventory    Inventory[]           @relation("RetailerInventory")
+  purchases    Purchase[]            @relation("RetailerPurchases")
+  sales        Sale[]                @relation("RetailerSales")
+  vouchers     Voucher[]
+  receipts     Receipt[]
+  payments     Payment[]
 }
 
 model RetailerBankAccount {
@@ -189,40 +219,42 @@ model ProductCategory {
 // batch purchased and live on PurchaseItem instead. The barcode identifies
 // the product itself and stays the same across every purchase/batch.
 model Product {
-  id               Int      @id @default(autoincrement())
-  categoryId       Int
-  category         ProductCategory @relation(fields: [categoryId], references: [id])
-  supplierId       Int?
-  supplier         Supplier? @relation(fields: [supplierId], references: [id])
-  dealerId         Int      // the dealer that created/owns this product — retailers may
-  dealer           Dealer   @relation(fields: [dealerId], references: [id])
+  id         Int             @id @default(autoincrement())
+  categoryId Int
+  category   ProductCategory @relation(fields: [categoryId], references: [id])
+  supplierId Int?
+  supplier   Supplier?       @relation(fields: [supplierId], references: [id])
+  dealerId   Int // the dealer that created/owns this product — retailers may
+  dealer     Dealer          @relation(fields: [dealerId], references: [id])
   // only purchase or sell it via that dealer, and other dealers can't see it
-  name             String
-  sizeWeight       String
-  fssaiCode        String
-  barcode          String   @unique  // encoded value for barcode/QR - stable, never regenerated
+  name       String
+  sizeWeight String
+  fssaiCode  String
+  barcode    String          @unique // encoded value for barcode/QR - stable, never regenerated
 
-  createdAt        DateTime @default(now())
-  inventory        Inventory[]
-  saleItems        SaleItem[]
-  purchaseItems    PurchaseItem[]
+  createdAt     DateTime       @default(now())
+  inventory     Inventory[]
+  saleItems     SaleItem[]
+  purchaseItems PurchaseItem[]
 }
 
 // Suppliers / manufacturers that dealers (or retailers) purchase stock from.
 // Managed centrally by ADMIN.
 model Supplier {
-  id            Int      @id @default(autoincrement())
+  id            Int       @id @default(autoincrement())
   name          String
   address       String
   contactNumber String
   gstNumber     String
   divisionId    Int?
   division      Division? @relation(fields: [divisionId], references: [id])
-  createdAt     DateTime @default(now())
+  createdAt     DateTime  @default(now())
 
-  bankAccounts  SupplierBankAccount[]
-  purchases     Purchase[]
-  products      Product[]
+  bankAccounts SupplierBankAccount[]
+  purchases    Purchase[]
+  products     Product[]
+  vouchers     Voucher[]
+  payments     Payment[]
 }
 
 model SupplierBankAccount {
@@ -243,29 +275,29 @@ model SupplierBankAccount {
 // batch to sell from at sale time (see sales.js) rather than always selling
 // at "whatever the latest purchase price was."
 model Inventory {
-  id            Int       @id @default(autoincrement())
-  productId     Int
-  product       Product   @relation(fields: [productId], references: [id])
-  ownerType     OwnerType
-  dealerId      Int?
-  retailerId    Int?
-  dealer        Dealer?   @relation("DealerInventory", fields: [dealerId], references: [id])
-  retailer      Retailer? @relation("RetailerInventory", fields: [retailerId], references: [id])
-  quantity      Int       @default(0)
-  reorderLevel  Int       @default(10)
+  id           Int       @id @default(autoincrement())
+  productId    Int
+  product      Product   @relation(fields: [productId], references: [id])
+  ownerType    OwnerType
+  dealerId     Int?
+  retailerId   Int?
+  dealer       Dealer?   @relation("DealerInventory", fields: [dealerId], references: [id])
+  retailer     Retailer? @relation("RetailerInventory", fields: [retailerId], references: [id])
+  quantity     Int       @default(0)
+  reorderLevel Int       @default(10)
 
   // -- pricing/batch fields, carried from this specific PurchaseItem --
-  rate                 Decimal   @db.Decimal(10,2) @default(0) // cost price paid per unit, this batch
-  dealerCommission     Decimal   @db.Decimal(5,2)  @default(0) // % used to derive sellingPrice
-  sellingPrice         Decimal   @db.Decimal(10,2) @default(0) // dealer -> retailer price
-  discount             Decimal   @db.Decimal(10,2) @default(0) // % used to derive retailerSellingPrice
-  mrp                  Decimal   @db.Decimal(10,2) @default(0)
-  retailerSellingPrice Decimal   @db.Decimal(10,2) @default(0) // retailer -> end customer / dealer cash-sale price
+  rate                 Decimal   @default(0) @db.Decimal(10, 2) // cost price paid per unit, this batch
+  dealerCommission     Decimal   @default(0) @db.Decimal(5, 2) // % used to derive sellingPrice
+  sellingPrice         Decimal   @default(0) @db.Decimal(10, 2) // dealer -> retailer price
+  discount             Decimal   @default(0) @db.Decimal(10, 2) // % used to derive retailerSellingPrice
+  mrp                  Decimal   @default(0) @db.Decimal(10, 2)
+  retailerSellingPrice Decimal   @default(0) @db.Decimal(10, 2) // retailer -> end customer / dealer cash-sale price
   manufacturingDate    DateTime?
   expiryDate           DateTime?
   batchName            String    @default("")
 
-  updatedAt     DateTime  @updatedAt
+  updatedAt DateTime @updatedAt
 
   // batchName is part of the identity now — same product+owner can have
   // multiple batch rows. batchName defaults to "" rather than being
@@ -279,17 +311,17 @@ model Inventory {
 // sourceDealerId is set when a RETAILER buys from their primary dealer.
 // Exactly one of the two is populated, depending on ownerType.
 model Purchase {
-  id             Int       @id @default(autoincrement())
+  id             Int            @id @default(autoincrement())
   ownerType      OwnerType
   dealerId       Int?
   retailerId     Int?
-  dealer         Dealer?   @relation("DealerPurchases", fields: [dealerId], references: [id])
-  retailer       Retailer? @relation("RetailerPurchases", fields: [retailerId], references: [id])
+  dealer         Dealer?        @relation("DealerPurchases", fields: [dealerId], references: [id])
+  retailer       Retailer?      @relation("RetailerPurchases", fields: [retailerId], references: [id])
   supplierId     Int?
-  supplier       Supplier? @relation(fields: [supplierId], references: [id])
+  supplier       Supplier?      @relation(fields: [supplierId], references: [id])
   sourceDealerId Int?
-  sourceDealer   Dealer?   @relation("PurchaseFromDealer", fields: [sourceDealerId], references: [id])
-  date           DateTime  @default(now())
+  sourceDealer   Dealer?        @relation("PurchaseFromDealer", fields: [sourceDealerId], references: [id])
+  date           DateTime       @default(now())
   status         PurchaseStatus @default(PENDING)
   items          PurchaseItem[]
 
@@ -298,8 +330,8 @@ model Purchase {
   // table (see purchases.js PATCH /:id/status and sales.js PATCH
   // /:id/dispatch). Stays null for a dealer's own purchase from a
   // supplier, and null for a retailer purchase that hasn't been placed yet.
-  linkedSaleId   Int?      @unique
-  linkedSale     Sale?     @relation(fields: [linkedSaleId], references: [id])
+  linkedSaleId Int?  @unique
+  linkedSale   Sale? @relation(fields: [linkedSaleId], references: [id])
 }
 
 // Each line item captures the batch-specific details of what was actually
@@ -317,12 +349,12 @@ model Purchase {
 // RECEIVED-time inventory-crediting logic in purchases.js works unchanged
 // either way.
 model PurchaseItem {
-  id                Int      @id @default(autoincrement())
-  purchaseId        Int
-  purchase          Purchase @relation(fields: [purchaseId], references: [id])
-  productId         Int
-  product           Product  @relation(fields: [productId], references: [id])
-  quantity          Int
+  id                   Int       @id @default(autoincrement())
+  purchaseId           Int
+  purchase             Purchase  @relation(fields: [purchaseId], references: [id])
+  productId            Int
+  product              Product   @relation(fields: [productId], references: [id])
+  quantity             Int
   // Snapshot of `quantity` taken when this line was (re)declared — set at
   // POST / and PUT /:id (a full resubmission of the purchase form), and
   // left untouched by PATCH /:id/quantities (the surgical quantity-only
@@ -333,39 +365,39 @@ model PurchaseItem {
   // manual backfill migration; every row created through the app (POST /
   // and PUT /:id) always sets it explicitly to match quantity, so a real
   // 0 should never actually appear outside of old pre-migration rows.
-  originalQuantity  Int @default(0)
-  rate              Decimal? @db.Decimal(10,2) // cost price paid per unit for this batch
-  dealerCommission  Decimal? @db.Decimal(5,2)  // dealer commission %, used to derive sellingPrice
-  sellingPrice      Decimal? @db.Decimal(10,2) // = rate + (dealerCommission * rate / 100), rounded to 1 decimal
-  discount          Decimal  @db.Decimal(10,2) @default(0) // product discount %, used to derive retailerSellingPrice
-  mrp               Decimal? @db.Decimal(10,2)
-  retailerSellingPrice Decimal? @db.Decimal(10,2) // = mrp - (discount * mrp / 100), rounded to 2 decimals
-  manufacturingDate DateTime?
-  expiryDate        DateTime?
-  batchName         String?
+  originalQuantity     Int       @default(0)
+  rate                 Decimal?  @db.Decimal(10, 2) // cost price paid per unit for this batch
+  dealerCommission     Decimal?  @db.Decimal(5, 2) // dealer commission %, used to derive sellingPrice
+  sellingPrice         Decimal?  @db.Decimal(10, 2) // = rate + (dealerCommission * rate / 100), rounded to 1 decimal
+  discount             Decimal   @default(0) @db.Decimal(10, 2) // product discount %, used to derive retailerSellingPrice
+  mrp                  Decimal?  @db.Decimal(10, 2)
+  retailerSellingPrice Decimal?  @db.Decimal(10, 2) // = mrp - (discount * mrp / 100), rounded to 2 decimals
+  manufacturingDate    DateTime?
+  expiryDate           DateTime?
+  batchName            String?
 
-  saleItem          SaleItem? // inverse of SaleItem.purchaseItemId, for a retailer-order line
+  saleItem SaleItem? // inverse of SaleItem.purchaseItemId, for a retailer-order line
 }
 
 // ---------------- Sales / POS ----------------
 model Sale {
-  id             Int          @id @default(autoincrement())
-  ownerType      OwnerType
-  dealerId       Int?
-  retailerId     Int?
-  dealer         Dealer?      @relation("DealerSales", fields: [dealerId], references: [id])
-  retailer       Retailer?    @relation("RetailerSales", fields: [retailerId], references: [id])
-  customerType   CustomerType
-  customerRetailerId Int?     // when dealer sells to a retailer
-  date           DateTime     @default(now())
+  id                 Int          @id @default(autoincrement())
+  ownerType          OwnerType
+  dealerId           Int?
+  retailerId         Int?
+  dealer             Dealer?      @relation("DealerSales", fields: [dealerId], references: [id])
+  retailer           Retailer?    @relation("RetailerSales", fields: [retailerId], references: [id])
+  customerType       CustomerType
+  customerRetailerId Int? // when dealer sells to a retailer
+  date               DateTime     @default(now())
   // COMPLETED for every ordinary POS sale. IN_PENDING / DISPATCHED only
   // apply to a Sale auto-created from a retailer's purchase order — see
   // SaleStatus above.
-  status         SaleStatus   @default(COMPLETED)
-  totalAmount    Decimal?     @db.Decimal(10,2) // null until DISPATCHED for an order-linked Sale
-  paymentMode    PaymentMode?                   // null until DISPATCHED for an order-linked Sale
-  posTransactionRef String?
-  items          SaleItem[]
+  status             SaleStatus   @default(COMPLETED)
+  totalAmount        Decimal?     @db.Decimal(10, 2) // null until DISPATCHED for an order-linked Sale
+  paymentMode        PaymentMode? // null until DISPATCHED for an order-linked Sale
+  posTransactionRef  String?
+  items              SaleItem[]
 
   // Inverse of Purchase.linkedSale — set when this Sale was auto-created
   // from a retailer's purchase order rather than entered directly at POS.
@@ -373,12 +405,12 @@ model Sale {
 }
 
 model SaleItem {
-  id        Int     @id @default(autoincrement())
-  saleId    Int
-  sale      Sale    @relation(fields: [saleId], references: [id])
-  productId Int
-  product   Product @relation(fields: [productId], references: [id])
-  quantity  Int
+  id               Int      @id @default(autoincrement())
+  saleId           Int
+  sale             Sale     @relation(fields: [saleId], references: [id])
+  productId        Int
+  product          Product  @relation(fields: [productId], references: [id])
+  quantity         Int
   // Copied from the originating PurchaseItem.originalQuantity when this line
   // is created (see purchases.js PATCH /:id/status, ORDERED transition).
   // Null for an ordinary POS sale item, which has no retailer order behind
@@ -396,15 +428,15 @@ model SaleItem {
   // sales.js PATCH /:id/dispatch. Always set immediately for an ordinary
   // POS sale (createSale resolves it from the chosen Inventory batch
   // before the Sale/SaleItem rows are even created).
-  price     Decimal? @db.Decimal(10,2)
-  discount  Decimal @db.Decimal(10,2) @default(0)
+  price            Decimal? @db.Decimal(10, 2)
+  discount         Decimal  @default(0) @db.Decimal(10, 2)
   // Snapshot of MRP from the Inventory batch at sale time — printed on the
   // bill alongside the sale price so "you saved" can be shown per line.
-  mrp       Decimal? @db.Decimal(10,2)
+  mrp              Decimal? @db.Decimal(10, 2)
   // Snapshot of which Inventory batch this line was sold from, captured at
   // sale time — printed on the bill for traceability. Not a live FK to
   // Inventory, since that row's quantity keeps changing after the sale.
-  batchName String?
+  batchName        String?
 
   // Set only for a line that mirrors a retailer's purchase-order item
   // (see purchases.js PATCH /:id/status, ORDERED transition). Lets
@@ -412,45 +444,97 @@ model SaleItem {
   // pricing/batch fields directly by id, rather than matching on
   // productId (which could be ambiguous if a purchase has two lines for
   // the same product).
-  purchaseItemId Int? @unique
+  purchaseItemId Int?          @unique
   purchaseItem   PurchaseItem? @relation(fields: [purchaseItemId], references: [id])
 }
 
-// ---------------- Vouchers (Dealer -> Retailer receivable) ----------------
+// ---------------- Vouchers (Dealer <-> Retailer/Supplier) ----------------
+// type RECEIVABLE: retailerId is set, supplierId is null (dealer sold to
+// retailer — see sales.js createSale/dispatch, unchanged from before).
+// type PAYABLE: supplierId is set, retailerId is null (dealer bought from
+// supplier — see purchases.js PATCH /:id/status, CONFIRMED transition).
+// dealerId is always set either way, since every voucher is on some
+// dealer's books.
 model Voucher {
   id          Int           @id @default(autoincrement())
+  type        VoucherType   @default(RECEIVABLE)
   dealerId    Int
   dealer      Dealer        @relation(fields: [dealerId], references: [id])
-  retailerId  Int
-  retailer    Retailer      @relation(fields: [retailerId], references: [id])
-  amount      Decimal       @db.Decimal(10,2)
+  retailerId  Int?
+  retailer    Retailer?     @relation(fields: [retailerId], references: [id])
+  supplierId  Int?
+  supplier    Supplier?     @relation(fields: [supplierId], references: [id])
+  amount      Decimal       @db.Decimal(10, 2)
   description String?
   date        DateTime      @default(now())
   status      VoucherStatus @default(OPEN)
   receipts    Receipt[]
+  payments    Payment[]
 }
 
 // ---------------- Receipts (money received against vouchers) ----------------
+// A retailer's payment (receipts.js POST /) creates this row as
+// TO_BE_CONFIRMED and does NOT touch the parent Voucher's status — the
+// voucher is left exactly as it was until the dealer confirms. The dealer
+// confirming (PATCH /:id/confirm) is what actually settles anything: it
+// computes whether this receipt (plus any already-confirmed receipts
+// against the same voucher) covers the voucher in full or only in part,
+// stamps this row PAID or PARTIALLY_PAID accordingly, and pushes that
+// same status onto the Voucher.
 model Receipt {
-  id         Int         @id @default(autoincrement())
-  voucherId  Int
-  voucher    Voucher     @relation(fields: [voucherId], references: [id])
-  retailerId Int
-  retailer   Retailer    @relation(fields: [retailerId], references: [id])
-  amount     Decimal     @db.Decimal(10,2)
-  mode       PaymentMode
-  date       DateTime    @default(now())
+  id          Int           @id @default(autoincrement())
+  voucherId   Int
+  voucher     Voucher       @relation(fields: [voucherId], references: [id])
+  retailerId  Int
+  retailer    Retailer      @relation(fields: [retailerId], references: [id])
+  // The Payment row created in the same transaction as this Receipt (see
+  // receipts.js POST /) — the real ledger entry this receipt is the
+  // confirmation-workflow wrapper around. One-to-one; nullable since
+  // receipts created before this change have no linked Payment.
+  paymentId   Int?          @unique
+  payment     Payment?      @relation(fields: [paymentId], references: [id])
+  amount      Decimal       @db.Decimal(10, 2)
+  mode        PaymentMode
+  status      ReceiptStatus @default(TO_BE_CONFIRMED)
+  confirmedAt DateTime?
+  date        DateTime      @default(now())
 }
 
-// ---------------- Payments (Dealer -> Manufacturer) ----------------
+// ---------------- Payments (Dealer -> Manufacturer, Dealer -> Supplier
+// against a PAYABLE voucher, or Retailer -> Dealer against a RECEIVABLE
+// voucher) ----------------
+// voucherId/supplierId/retailerId all stay null for the original generic
+// dealer -> manufacturer payment (nothing here changes for that use). When
+// supplierId is set, this is money the dealer paid a specific supplier
+// against one of their PAYABLE vouchers (see purchases.js). When
+// retailerId is set instead, this is money a retailer paid the dealer
+// against one of their RECEIVABLE vouchers, created alongside a Receipt
+// (see receipts.js) — the confirmation-workflow wrapper around it.
 model Payment {
-  id        Int         @id @default(autoincrement())
-  dealerId  Int
-  dealer    Dealer      @relation(fields: [dealerId], references: [id])
-  amount    Decimal     @db.Decimal(10,2)
-  mode      PaymentMode
-  reference String?
-  date      DateTime    @default(now())
+  id         Int         @id @default(autoincrement())
+  dealerId   Int
+  dealer     Dealer      @relation(fields: [dealerId], references: [id])
+  supplierId Int?
+  supplier   Supplier?   @relation(fields: [supplierId], references: [id])
+  // Set when this Payment is a retailer paying the dealer (the RECEIVABLE-
+  // voucher direction — created alongside a Receipt in receipts.js POST /)
+  // rather than the dealer paying a supplier (the PAYABLE-voucher
+  // direction, supplierId above). Exactly one of supplierId / retailerId
+  // should be set on any given Payment, mirroring Voucher.type.
+  retailerId Int?
+  retailer   Retailer?   @relation(fields: [retailerId], references: [id])
+  voucherId  Int?
+  voucher    Voucher?    @relation(fields: [voucherId], references: [id])
+  amount     Decimal     @db.Decimal(10, 2)
+  mode       PaymentMode
+  reference  String?
+  date       DateTime    @default(now())
+
+  // Inverse of Receipt.paymentId — the Receipt created in the same
+  // transaction as this Payment when it's the retailer -> dealer
+  // direction. Null for every other Payment (dealer -> supplier, or the
+  // original generic dealer -> manufacturer payment).
+  receipt    Receipt?
 }
 
 // ============================================================
@@ -470,8 +554,8 @@ model Organisation {
   orgType    String   @default("MAHAMANDAL")
   createdAt  DateTime @default(now())
 
-  dealers    Dealer[]
-  users      User[]
+  dealers Dealer[]
+  users   User[]
 }
 
 // Roles from user_roles.json: Super User, Administrator, Owner, User
@@ -480,7 +564,7 @@ model UserRole {
   roleName  String   @unique
   createdAt DateTime @default(now())
 
-  mappings  RoleActivityMapping[]
+  mappings RoleActivityMapping[]
 }
 
 // Activities (app modules/permissions) from activities.json
@@ -489,7 +573,7 @@ model Activity {
   activityName String   @unique
   createdAt    DateTime @default(now())
 
-  mappings     RoleActivityMapping[]
+  mappings RoleActivityMapping[]
 }
 
 // Which roles are allowed to perform which activities

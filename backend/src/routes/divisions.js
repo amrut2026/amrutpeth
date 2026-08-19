@@ -4,9 +4,14 @@ import { authRequired, requireRole } from '../middleware/auth.js';
 
 const router = Router();
 
-// Any logged-in user needs to see divisions to pick one when creating a dealer/supplier
+// Any logged-in user needs to see divisions to pick one when creating a
+// dealer/supplier — that use case only ever wants active ones, so it's the
+// default. The ORGANISATION management table (Divisions.jsx) needs to see
+// deactivated divisions too, so it can reactivate them — it opts in with
+// ?all=true.
 router.get('/', authRequired, async (req, res) => {
-  res.json(await prisma.division.findMany({ orderBy: { name: 'asc' } }));
+  const where = req.query.all === 'true' ? {} : { isActive: true };
+  res.json(await prisma.division.findMany({ where, orderBy: { name: 'asc' } }));
 });
 
 router.get('/:id', authRequired, async (req, res) => {
@@ -14,8 +19,8 @@ router.get('/:id', authRequired, async (req, res) => {
   res.json(division);
 });
 
-// Only ADMIN manages the division master list
-router.post('/', authRequired, requireRole('ADMIN'), async (req, res) => {
+// Only ORGANISATION manages the division master list
+router.post('/', authRequired, requireRole('ORGANISATION'), async (req, res) => {
   const { name, description } = req.body;
   try {
     const division = await prisma.division.create({ data: { name, description: description || null } });
@@ -26,7 +31,7 @@ router.post('/', authRequired, requireRole('ADMIN'), async (req, res) => {
   }
 });
 
-router.put('/:id', authRequired, requireRole('ADMIN'), async (req, res) => {
+router.put('/:id', authRequired, requireRole('ORGANISATION'), async (req, res) => {
   const { name, description } = req.body;
   try {
     const division = await prisma.division.update({
@@ -40,9 +45,18 @@ router.put('/:id', authRequired, requireRole('ADMIN'), async (req, res) => {
   }
 });
 
-router.delete('/:id', authRequired, requireRole('ADMIN'), async (req, res) => {
-  await prisma.division.delete({ where: { id: Number(req.params.id) } });
-  res.json({ ok: true });
+// Soft delete / reactivate. Divisions are never hard-deleted — dealers and
+// suppliers reference them, and a hard delete would either cascade-break
+// those records or fail outright. Deactivating (and, symmetrically,
+// reactivating) is a toggle through this one route rather than two.
+router.patch('/:id/active', authRequired, requireRole('ORGANISATION'), async (req, res) => {
+  const { isActive } = req.body;
+  if (typeof isActive !== 'boolean') return res.status(400).json({ error: 'isActive must be true or false' });
+  const division = await prisma.division.update({
+    where: { id: Number(req.params.id) },
+    data: { isActive }
+  });
+  res.json(division);
 });
 
 export default router;

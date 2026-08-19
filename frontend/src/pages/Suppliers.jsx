@@ -15,7 +15,7 @@ export default function Suppliers() {
     <CrudTable
       title="Suppliers / Manufacturers"
       endpoint="/suppliers"
-      canWrite={user.role === 'ADMIN'}
+      canWrite={user.role === 'ORGANISATION'}
       fields={[
         { key: 'name', label: 'Name', required: true },
         { key: 'address', label: 'Address', required: true },

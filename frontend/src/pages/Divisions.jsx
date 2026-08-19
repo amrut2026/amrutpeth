@@ -11,8 +11,14 @@ export default function Divisions() {
           <span className="text-base font-normal text-gray-500">(विभाग)</span>
         </>
       }
-      endpoint="/divisions"
-      canWrite={user.role === 'ADMIN'}
+      // ?all=true so this management view also sees deactivated divisions
+      // (needed to reactivate them) — every other consumer of GET /divisions
+      // (e.g. picking one when creating a dealer/supplier) keeps seeing
+      // active-only by default.
+      endpoint="/divisions?all=true"
+      canWrite={user.role === 'ORGANISATION'}
+      editable
+      activatable
       addButtonLabel="Add Division / विभाग जोडा"
       fields={[
         { key: 'name', label: 'Name / नाव', required: true },
