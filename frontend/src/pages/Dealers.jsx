@@ -71,7 +71,7 @@ export default function Dealers() {
               value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} />
             <input placeholder="Contact Number" className="border rounded px-2 py-1" required
               value={form.contactNumber} onChange={(e) => setForm({ ...form, contactNumber: e.target.value })} />
-            <input placeholder="GST Number" className="border rounded px-2 py-1" required
+            <input placeholder="GST Number (optional)" className="border rounded px-2 py-1"
               value={form.gstNumber} onChange={(e) => setForm({ ...form, gstNumber: e.target.value })} />
             <select className="border rounded px-2 py-1" required
               value={form.divisionId} onChange={(e) => setForm({ ...form, divisionId: e.target.value })}>
@@ -124,7 +124,7 @@ export default function Dealers() {
                 <div>
                   <div className="font-semibold">{d.name} <span className="text-xs text-gray-400">#{d.id}</span></div>
                   <div className="text-sm text-gray-500">{d.address}</div>
-                  <div className="text-sm text-gray-500">Ph: {d.contactNumber} · GST: {d.gstNumber}</div>
+                  <div className="text-sm text-gray-500">Ph: {d.contactNumber} · GST: {d.gstNumber || '—'}</div>
                   <div className="text-sm text-gray-500">Division: {d.division?.name || '—'}</div>
                   <div className="text-sm text-gray-500">Organisation: {d.organisation?.orgName || '—'}</div>
                 </div>

@@ -5,6 +5,11 @@ const STATUS_LABELS = {
   PENDING: 'Pending / प्रलंबित',
   IN_REVIEW: 'In Review / पुनरावलोकनात',
   CONFIRMED: 'Confirmed / पुष्टी झाली',
+  // MODIFIED is never its own group below (see groupPurchasesByStatus) —
+  // this entry only exists as a fallback in case a MODIFIED purchase ever
+  // renders somewhere that shows p.status directly rather than a group
+  // label.
+  MODIFIED: 'Confirmed / पुष्टी झाली',
   ORDERED: 'Ordered / ऑर्डर केले',
   IN_TRANSIT: 'In Transit / वाहतुकीत',
   RECEIVED: 'Received / प्राप्त झाले',
@@ -39,8 +44,15 @@ function groupPurchasesByStatus(purchases, context) {
   const order = purchaseStatusOrder(context);
   const groups = Object.fromEntries(order.map((s) => [s, []]));
   for (const p of purchases) {
-    if (!groups[p.status]) groups[p.status] = [];
-    groups[p.status].push(p);
+    // MODIFIED only ever happens to an already-CONFIRMED dealer purchase
+    // that's had its pricing corrected (see purchases.js PATCH
+    // /:id/prices) — it's the same purchase in the same terminal state,
+    // just flagged. DEALER_PURCHASE_STATUS_ORDER above has no MODIFIED
+    // entry of its own, so without this it would silently vanish from
+    // this report instead of counting as CONFIRMED.
+    const bucketStatus = p.status === 'MODIFIED' ? 'CONFIRMED' : p.status;
+    if (!groups[bucketStatus]) groups[bucketStatus] = [];
+    groups[bucketStatus].push(p);
   }
   return order.map((status) => ({ status, items: groups[status] }));
 }

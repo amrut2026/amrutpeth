@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { prisma } from '../prisma.js';
 import { authRequired, ownerScope, requireRole } from '../middleware/auth.js';
+import { generatePurchaseOrderPdf } from '../lib/purchaseOrderPdf.js';
 
 const router = Router();
 
@@ -444,7 +445,9 @@ router.patch('/:id/status', authRequired, requireRole('DEALER', 'RETAILER'), asy
 //      untouched — see PATCH /:id/quantities for that axis instead).
 //   3. This purchase's PAYABLE voucher (Purchase.payableVoucher) — amount
 //      recomputed from the corrected rate across the whole purchase, status
-//      re-derived against whatever's already been paid against it.
+//      re-derived against whatever's already been paid against it. If no
+//      voucher exists yet (a legacy purchase, or one that never got one),
+//      it's raised now instead of being left without one.
 //   4. Every SaleItem this dealer has already sold from that exact batch
 //      (productId + batchName) — CASH sales and RETAILER sales alike —
 //      re-snapshotted with the corrected rate/sellingPrice/price/mrp/
@@ -454,7 +457,9 @@ router.patch('/:id/status', authRequired, requireRole('DEALER', 'RETAILER'), asy
 //      would have written, and — if that retailer has already marked the
 //      purchase RECEIVED — their own Inventory row for the batch too.
 //   6. That sale's own RECEIVABLE voucher (Sale.receivableVoucher), amount
-//      and status recomputed the same way as the payable voucher above.
+//      and status recomputed the same way as the payable voucher above —
+//      and raised now if it's missing, same reasoning, but never for a
+//      CASH sale (which never has one).
 //   7. The purchase itself moves to MODIFIED (from CONFIRMED, or staying
 //      MODIFIED on a second correction) — see PurchaseStatus in
 //      schema.prisma — so it's visibly distinct from an untouched
@@ -524,15 +529,31 @@ router.patch('/:id/prices', authRequired, requireRole('DEALER'), async (req, res
 
       // 3. Recompute this purchase's own PAYABLE voucher from ALL of its
       // items (not just the ones just edited), since a partial correction
-      // still changes the purchase's total.
+      // still changes the purchase's total. If no voucher exists yet —
+      // either a legacy purchase from before Voucher.purchaseId existed, or
+      // one that for whatever reason never got its CONFIRMED-time voucher —
+      // treat this correction the same as that original CONFIRMED
+      // transition would have and raise it now, rather than silently
+      // leaving the purchase with no payable voucher at all.
       const allItems = await tx.purchaseItem.findMany({ where: { purchaseId: id } });
+      const newAmount = allItems.reduce((sum, i) => sum + Number(i.rate) * i.quantity, 0);
       const voucher = await tx.voucher.findUnique({ where: { purchaseId: id }, include: { payments: true } });
       if (voucher) {
-        const newAmount = allItems.reduce((sum, i) => sum + Number(i.rate) * i.quantity, 0);
         const alreadyPaid = voucher.payments.reduce((sum, p) => sum + Number(p.amount), 0);
         await tx.voucher.update({
           where: { id: voucher.id },
           data: { amount: newAmount, status: voucherStatusFor(newAmount, alreadyPaid) }
+        });
+      } else {
+        await tx.voucher.create({
+          data: {
+            type: 'PAYABLE',
+            dealerId: scope.dealerId,
+            supplierId: purchase.supplierId,
+            purchaseId: id,
+            amount: newAmount,
+            description: `Auto-voucher for Purchase #${id} (raised at price correction — none existed)`,
+          }
         });
       }
 
@@ -622,7 +643,7 @@ router.patch('/:id/prices', authRequired, requireRole('DEALER'), async (req, res
       for (const saleId of affectedSaleIds) {
         const freshItems = await tx.saleItem.findMany({ where: { saleId } });
         const newTotal = freshItems.reduce((sum, i) => sum + Number(i.price) * i.quantity, 0);
-        await tx.sale.update({ where: { id: saleId }, data: { totalAmount: newTotal } });
+        const affectedSale = await tx.sale.update({ where: { id: saleId }, data: { totalAmount: newTotal } });
 
         const saleVoucher = await tx.voucher.findUnique({ where: { saleId }, include: { payments: true } });
         if (saleVoucher) {
@@ -630,6 +651,21 @@ router.patch('/:id/prices', authRequired, requireRole('DEALER'), async (req, res
           await tx.voucher.update({
             where: { id: saleVoucher.id },
             data: { amount: newTotal, status: voucherStatusFor(newTotal, alreadyPaid) }
+          });
+        } else if (affectedSale.customerType === 'RETAILER' && affectedSale.customerRetailerId) {
+          // Same reasoning as the payable voucher above — a legacy sale
+          // from before Voucher.saleId existed, or one that otherwise never
+          // got its RECEIVABLE voucher, gets it raised now rather than
+          // being left with none. Never applies to a CASH sale, which
+          // never has a voucher at all.
+          await tx.voucher.create({
+            data: {
+              dealerId: scope.dealerId,
+              retailerId: affectedSale.customerRetailerId,
+              saleId,
+              amount: newTotal,
+              description: `Auto-voucher for Sale #${saleId} (raised at price correction — none existed)`,
+            }
           });
         }
       }
@@ -652,6 +688,37 @@ router.patch('/:id/prices', authRequired, requireRole('DEALER'), async (req, res
   } catch (err) {
     console.error('purchase price correction failed:', err);
     res.status(500).json({ error: 'Failed to update pricing', detail: err.message });
+  }
+});
+
+// GET /api/purchases/:id/bill — printable A4 Purchase Order PDF, same
+// naming convention as GET /sales/:id/bill even though this one renders a
+// "PURCHASE ORDER" (see purchaseOrderPdf.js). DEALER only: this purchase's
+// header is dealer-name/address/contact/GST + supplier name — a retailer's
+// own purchase is from a dealer, not a supplier, and would need a
+// different header layout that isn't implemented here.
+router.get('/:id/bill', authRequired, requireRole('DEALER'), async (req, res) => {
+  try {
+    const scope = ownerScope(req);
+    const id = Number(req.params.id);
+    const purchase = await prisma.purchase.findUnique({
+      where: { id },
+      include: { items: { include: { product: true } }, supplier: true }
+    });
+    if (!purchase) return res.status(404).json({ error: 'Purchase not found' });
+    if (purchase.ownerType !== 'DEALER' || purchase.dealerId !== scope.dealerId) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    const dealer = await prisma.dealer.findUnique({ where: { id: scope.dealerId } });
+    const pdfBuffer = await generatePurchaseOrderPdf(purchase, dealer);
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="purchase-order-${purchase.id}.pdf"`);
+    res.send(pdfBuffer);
+  } catch (err) {
+    console.error('purchase order PDF generation failed:', err);
+    res.status(500).json({ error: 'Failed to generate purchase order', detail: err.message });
   }
 });
 

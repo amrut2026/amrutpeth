@@ -48,7 +48,8 @@ router.post('/', authRequired, requireRole('DEALER'), async (req, res) => {
   // dealer's own GET / list above.
   const supplier = await prisma.supplier.create({
     data: {
-      name, address, contactNumber, gstNumber,
+      name, address, contactNumber,
+      gstNumber: gstNumber ? gstNumber.trim() || null : null,
       divisionId,
       bankAccounts: { create: (bankAccounts || []).map(b => ({
         accountNumber: b.accountNumber, ifsc: b.ifsc, bankName: b.bankName
@@ -88,7 +89,7 @@ router.put('/:id', authRequired, requireRole('DEALER'), async (req, res) => {
   const { name, address, contactNumber, gstNumber } = req.body;
   const supplier = await prisma.supplier.update({
     where: { id: supplierId },
-    data: { name, address, contactNumber, gstNumber }
+    data: { name, address, contactNumber, gstNumber: gstNumber ? gstNumber.trim() || null : null }
   });
   res.json(supplier);
 });

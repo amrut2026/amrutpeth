@@ -13,7 +13,7 @@ export default function Suppliers() {
         { key: 'name', label: 'Name', required: true },
         { key: 'address', label: 'Address', required: true },
         { key: 'contactNumber', label: 'Contact Number', required: true },
-        { key: 'gstNumber', label: 'GST Number', required: true },
+        { key: 'gstNumber', label: 'GST Number (optional)' },
         // No divisionId field here — the backend always assigns a new
         // supplier to the logged-in dealer's own division (see
         // suppliers.js POST /), so it's not something to pick in this form.

@@ -89,8 +89,8 @@ export default function Retailers() {
                 value={form.contactNumber} onChange={(e) => setForm({ ...form, contactNumber: e.target.value })} />
             </div>
             <div className="flex flex-col gap-1">
-              <FieldLabel en="GST Number" mr="जीएसटी क्रमांक" />
-              <input placeholder="GST Number" className="border rounded px-2 py-1" required
+              <FieldLabel en="GST Number (optional)" mr="जीएसटी क्रमांक (ऐच्छिक)" />
+              <input placeholder="GST Number" className="border rounded px-2 py-1"
                 value={form.gstNumber} onChange={(e) => setForm({ ...form, gstNumber: e.target.value })} />
             </div>
           </div>
@@ -162,8 +162,8 @@ export default function Retailers() {
                   <div className="font-semibold">{r.name} <span className="text-xs text-gray-400">#{r.id}</span></div>
                   <div className="text-sm text-gray-500">{r.address}</div>
                   <div className="text-sm text-gray-500">
-                    Ph: {r.contactNumber} · GST: {r.gstNumber}
-                    <span className="block text-xs text-orange-700">फोन: {r.contactNumber} · जीएसटी: {r.gstNumber}</span>
+                    Ph: {r.contactNumber} · GST: {r.gstNumber || '—'}
+                    <span className="block text-xs text-orange-700">फोन: {r.contactNumber} · जीएसटी: {r.gstNumber || '—'}</span>
                   </div>
                   <div className="text-sm text-gray-500">
                     Dealer: {r.dealer?.name || '—'}

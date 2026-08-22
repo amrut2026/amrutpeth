@@ -45,7 +45,9 @@ router.post('/', authRequired, requireRole('DEALER'), async (req, res) => {
     const retailer = await prisma.$transaction(async (tx) => {
       const created = await tx.retailer.create({
         data: {
-          name, address, contactNumber, gstNumber, primaryDealerId,
+          name, address, contactNumber,
+          gstNumber: gstNumber ? gstNumber.trim() || null : null,
+          primaryDealerId,
           bankAccounts: { create: (bankAccounts || []).map(b => ({
             accountNumber: b.accountNumber, ifsc: b.ifsc, bankName: b.bankName
           })) }
@@ -79,7 +81,10 @@ router.put('/:id', authRequired, requireRole('DEALER'), async (req, res) => {
     return res.status(403).json({ error: 'You can only edit your own retailers' });
   }
   const { name, address, contactNumber, gstNumber } = req.body;
-  const retailer = await prisma.retailer.update({ where: { id }, data: { name, address, contactNumber, gstNumber } });
+  const retailer = await prisma.retailer.update({
+    where: { id },
+    data: { name, address, contactNumber, gstNumber: gstNumber ? gstNumber.trim() || null : null }
+  });
   res.json(retailer);
 });
 

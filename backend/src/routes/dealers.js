@@ -56,7 +56,8 @@ router.post('/', authRequired, requireRole('ORGANISATION'), async (req, res) => 
     const dealer = await prisma.$transaction(async (tx) => {
       const created = await tx.dealer.create({
         data: {
-          name, address, contactNumber, gstNumber,
+          name, address, contactNumber,
+          gstNumber: gstNumber ? gstNumber.trim() || null : null,
           divisionId: divisionId ? Number(divisionId) : null,
           organisationId,
           bankAccounts: { create: (bankAccounts || []).map(b => ({
@@ -94,7 +95,10 @@ router.put('/:id', authRequired, requireRole('DEALER'), async (req, res) => {
   const id = Number(req.params.id);
   if (req.user.dealerId !== id) return res.status(403).json({ error: 'Forbidden' });
   const { name, address, contactNumber, gstNumber } = req.body;
-  const dealer = await prisma.dealer.update({ where: { id }, data: { name, address, contactNumber, gstNumber } });
+  const dealer = await prisma.dealer.update({
+    where: { id },
+    data: { name, address, contactNumber, gstNumber: gstNumber ? gstNumber.trim() || null : null }
+  });
   res.json(dealer);
 });
 

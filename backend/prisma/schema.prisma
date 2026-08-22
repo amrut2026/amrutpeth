@@ -165,7 +165,8 @@ model Dealer {
   name           String
   address        String
   contactNumber  String
-  gstNumber      String
+  // Optional — a dealer may not be GST-registered.
+  gstNumber      String?
   divisionId     Int?
   division       Division?    @relation(fields: [divisionId], references: [id])
   organisationId Int          @default(1)
@@ -201,7 +202,8 @@ model Retailer {
   name            String
   address         String
   contactNumber   String
-  gstNumber       String
+  // Optional — a retailer may not be GST-registered.
+  gstNumber       String?
   primaryDealerId Int
   dealer          Dealer   @relation(fields: [primaryDealerId], references: [id])
   createdAt       DateTime @default(now())
@@ -243,6 +245,7 @@ model ProductCategory {
   dealer       Dealer        @relation(fields: [dealerId], references: [id])
   products     Product[]
   productNames ProductName[]
+  flavours     Flavour[]
 }
 
 // Curated vocabularies for the product creation form's Name and Size/Weight
@@ -286,9 +289,13 @@ model Unit {
 // A flavour ("Mango", "Original") or brand ("Tata") can reasonably apply
 // under more than one category, unlike ProductName above.
 model Flavour {
-  id        Int      @id @default(autoincrement())
-  value     String   @unique
-  createdAt DateTime @default(now())
+  id         Int             @id @default(autoincrement())
+  value      String
+  categoryId Int
+  category   ProductCategory @relation(fields: [categoryId], references: [id])
+  createdAt  DateTime        @default(now())
+
+  @@unique([categoryId, value])
 }
 
 model Brand {
@@ -362,7 +369,8 @@ model Supplier {
   name          String
   address       String
   contactNumber String
-  gstNumber     String
+  // Optional — a supplier may not be GST-registered.
+  gstNumber     String?
   divisionId    Int?
   division      Division? @relation(fields: [divisionId], references: [id])
   createdAt     DateTime  @default(now())

@@ -94,10 +94,10 @@ router.put('/names/:id', authRequired, requireRole('DEALER'), async (req, res) =
 
 // Factory for a flat (non-category-scoped) lookup vocabulary: GET the list,
 // POST to add (upsert-based, so a fast double-submit can't error out), PUT
-// to rename an existing entry. Used for Unit, Flavour, and Brand below —
-// identical shape, differing only in which Prisma model and which field
-// holds the value. Same "not a foreign key on Product" relationship as
-// ProductName above — renaming here doesn't touch existing products.
+// to rename an existing entry. Used for Unit and Brand below — identical
+// shape, differing only in which Prisma model and which field holds the
+// value. Same "not a foreign key on Product" relationship as ProductName
+// above — renaming here doesn't touch existing products.
 function flatLookupRoutes(path, prismaModel, valueField) {
   router.get(`/${path}`, authRequired, async (req, res) => {
     const rows = await prismaModel.findMany({ orderBy: { [valueField]: 'asc' } });
@@ -130,11 +130,74 @@ function flatLookupRoutes(path, prismaModel, valueField) {
   });
 }
 
-// Unit/sizeWeight, Flavour, and Brand all have no category tie ("1kg",
-// "Mango", "Tata" can apply under more than one category), so they stay
-// flat lists shared across every dealer, unlike names above.
+// GET /api/products/flavours?categoryId=X, POST, and PUT /:id — same shape
+// and same reasoning as /names above (see schema.prisma Flavour
+// @@unique([categoryId, value])): a flavour is scoped to the category it
+// was added under, not a single global list shared by every category (e.g.
+// "Mango" under Beverages is a separate entry from "Mango" under Snacks).
+// Registered ahead of GET/PUT/DELETE /:id below for the same Express
+// path-matching reason as /names.
+router.get('/flavours', authRequired, async (req, res) => {
+  const categoryId = Number(req.query.categoryId);
+  if (!categoryId) return res.status(400).json({ error: 'categoryId is required' });
+  const flavours = await prisma.flavour.findMany({ where: { categoryId }, orderBy: { value: 'asc' } });
+  res.json(flavours);
+});
+
+router.post('/flavours', authRequired, requireRole('DEALER'), async (req, res) => {
+  const categoryId = Number(req.body.categoryId);
+  const trimmed = (req.body.value || '').trim();
+  if (!categoryId) return res.status(400).json({ error: 'categoryId is required' });
+  if (!trimmed) return res.status(400).json({ error: 'Flavour is required' });
+
+  const category = await prisma.productCategory.findUnique({ where: { id: categoryId } });
+  if (!category || category.dealerId !== req.user.dealerId) {
+    return res.status(403).json({ error: 'You can only add flavours under your own categories' });
+  }
+
+  // upsert, not create — de-dupes case-for-case within this category (see
+  // schema.prisma Flavour @@unique([categoryId, value])) and just returns
+  // the existing row instead of erroring if someone else already added
+  // this exact flavour a moment ago.
+  const created = await prisma.flavour.upsert({
+    where: { categoryId_value: { categoryId, value: trimmed } },
+    update: {},
+    create: { categoryId, value: trimmed },
+  });
+  res.json(created);
+});
+
+// PUT /api/products/flavours/:id — rename an existing entry (the "!"
+// button next to the Flavour dropdown in Products.jsx). This only changes
+// the dropdown's vocabulary going forward — Product.flavour is a plain
+// string snapshot, not a foreign key (see schema.prisma Flavour), so
+// existing products already using the old spelling keep it until edited
+// themselves.
+router.put('/flavours/:id', authRequired, requireRole('DEALER'), async (req, res) => {
+  const id = Number(req.params.id);
+  const trimmed = (req.body.value || '').trim();
+  if (!trimmed) return res.status(400).json({ error: 'Flavour is required' });
+
+  const existing = await prisma.flavour.findUnique({ where: { id } });
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  const category = await prisma.productCategory.findUnique({ where: { id: existing.categoryId } });
+  if (!category || category.dealerId !== req.user.dealerId) {
+    return res.status(403).json({ error: 'You can only edit flavours under your own categories' });
+  }
+
+  try {
+    const updated = await prisma.flavour.update({ where: { id }, data: { value: trimmed } });
+    res.json(updated);
+  } catch (err) {
+    if (err.code === 'P2002') return res.status(409).json({ error: `"${trimmed}" already exists in this category` });
+    throw err;
+  }
+});
+
+// Unit/sizeWeight and Brand still have no category tie ("1kg", "Tata" can
+// apply under more than one category), so they stay flat lists shared
+// across every dealer, unlike ProductName/Flavour above.
 flatLookupRoutes('units', prisma.unit, 'value');
-flatLookupRoutes('flavours', prisma.flavour, 'value');
 flatLookupRoutes('brands', prisma.brand, 'value');
 
 router.get('/:id', authRequired, async (req, res) => {

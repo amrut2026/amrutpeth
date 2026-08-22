@@ -219,6 +219,18 @@ export default function Purchases() {
     }
   }
 
+  async function printPurchaseOrder(purchaseId) {
+    try {
+      const res = await api.get(`/purchases/${purchaseId}/bill`, { responseType: 'blob' });
+      const blobUrl = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+      window.open(blobUrl, '_blank');
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 30000);
+    } catch (err) {
+      console.error('Failed to load purchase order:', err);
+      alert('Could not load the purchase order PDF.');
+    }
+  }
+
   async function saveQuantities() {
     if (!selectedPurchase) return;
     setQuantityError('');
@@ -343,6 +355,8 @@ export default function Purchases() {
       printPrompt.purchase.items.map((it) => ({
         name: it.product?.name,
         sizeWeight: it.product?.sizeWeight,
+        flavour: it.product?.flavour,
+        brand: it.product?.brand,
         barcode: it.product?.barcode,
         quantity: Number(printPrompt.quantities[it.id]) || 1,
         mrp: it.mrp,
@@ -839,6 +853,12 @@ export default function Purchases() {
                     <div className="text-xs text-gray-400">{new Date(selectedPurchase.date).toLocaleString()}</div>
                   </div>
                   <div className="flex items-center gap-2">
+                    {user.role === 'DEALER' && (
+                      <button type="button" onClick={() => printPurchaseOrder(selectedPurchase.id)}
+                        className="text-xs bg-white border border-gray-400 text-gray-700 px-3 py-1.5 rounded hover:bg-gray-50">
+                        Print Purchase Order<span className="block">खरेदी ऑर्डर छापा</span>
+                      </button>
+                    )}
                     {user.role === 'DEALER' && (selectedPurchase.status === 'CONFIRMED' || selectedPurchase.status === 'MODIFIED') && !editingPrices && (
                       <button type="button" onClick={startEditPrices}
                         className="text-xs bg-white border border-emerald-700 text-emerald-700 px-3 py-1.5 rounded hover:bg-emerald-50">

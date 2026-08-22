@@ -1,14 +1,33 @@
 import { useEffect, useRef } from 'react';
 import JsBarcode from 'jsbarcode';
 
-export default function Barcode({ value, width = 1.4, height = 40 }) {
+// name/flavour/sizeWeight/brand are all optional — pass them to show a
+// product-detail line above the barcode (mirrors what gets printed on the
+// physical label below, so what's on screen matches the sticker). Omit
+// them for a bare barcode, same as before this was added.
+export default function Barcode({ value, width = 1.4, height = 40, name, flavour, sizeWeight, brand }) {
   const ref = useRef(null);
   useEffect(() => {
     if (ref.current && value) {
       JsBarcode(ref.current, value, { format: 'CODE128', width, height, displayValue: true, fontSize: 12, margin: 4 });
     }
   }, [value, width, height]);
-  return <svg ref={ref}></svg>;
+
+  const mainLine = [name, sizeWeight ? `(${sizeWeight})` : null].filter(Boolean).join(' ');
+  const subLine = [flavour, brand].filter(Boolean).join(' \u00b7 ');
+  const hasDetails = mainLine || subLine;
+
+  return (
+    <div className="inline-flex flex-col items-center">
+      {hasDetails && (
+        <div className="text-center mb-1">
+          {mainLine && <div className="text-xs font-semibold leading-tight">{mainLine}</div>}
+          {subLine && <div className="text-xs text-gray-500 leading-tight">{subLine}</div>}
+        </div>
+      )}
+      <svg ref={ref}></svg>
+    </div>
+  );
 }
 
 // Renders the label markup for one product repeated `quantity` times.
@@ -18,7 +37,9 @@ export default function Barcode({ value, width = 1.4, height = 40 }) {
 // not a description of who they are.
 // Sized to fit a 1.44in x 1in label (see openLabelPrintWindow) — smaller
 // barcode/font than the on-screen <Barcode> component uses.
-function renderLabelGroup({ name, sizeWeight, barcode, quantity = 1, priceInfo }) {
+function renderLabelGroup({ name, sizeWeight, flavour, brand, barcode, quantity = 1, priceInfo }) {
+  const line1 = [name, flavour, brand].filter(Boolean).join(' &middot; ');
+  const line2 = sizeWeight ? `<div class="sub">${sizeWeight}</div>` : '';
   const priceLine = priceInfo
     ? `<div class="price">${priceInfo.mrp != null ? `MRP: ₹${priceInfo.mrp}` : ''}${
         priceInfo.mrp != null && priceInfo.retailerSellingPrice != null ? ' &nbsp;|&nbsp; ' : ''
@@ -26,8 +47,9 @@ function renderLabelGroup({ name, sizeWeight, barcode, quantity = 1, priceInfo }
     : '';
   return Array.from({ length: Math.max(1, Number(quantity) || 1) }).map(() => `
     <div class="label">
-      <div class="name">${name} (${sizeWeight})</div>
-      <svg class="bc" jsbarcode-value="${barcode}" jsbarcode-width="1" jsbarcode-height="28" jsbarcode-fontsize="8" jsbarcode-margin="2"></svg>
+      <div class="name">${line1}</div>
+      ${line2}
+      <svg class="bc" jsbarcode-value="${barcode}" jsbarcode-width="1" jsbarcode-height="26" jsbarcode-fontsize="8" jsbarcode-margin="2"></svg>
       ${priceLine}
     </div>`).join('');
 }
@@ -54,6 +76,7 @@ function openLabelPrintWindow(title, labelsHtml) {
             text-align: center; overflow: hidden;
           }
           .name { font-size: 9px; font-weight: bold; line-height: 1.15; }
+          .sub { font-size: 7px; color: #333; line-height: 1.1; }
           .price { font-size: 8px; margin-top: 1px; color: #000; }
           .bc { max-width: 100%; }
           @media print { .label { page-break-inside: avoid; } }
@@ -79,6 +102,8 @@ export function printBarcodeLabelsBatch(entries, title = 'Print Barcodes') {
   const labels = entries.map((entry) => renderLabelGroup({
     name: entry.name,
     sizeWeight: entry.sizeWeight,
+    flavour: entry.flavour,
+    brand: entry.brand,
     barcode: entry.barcode,
     quantity: entry.quantity,
     priceInfo: { mrp: entry.mrp, retailerSellingPrice: entry.retailerSellingPrice },

@@ -95,30 +95,31 @@ export default function Products() {
   const [formKey, setFormKey] = useState(0);
 
   async function load() {
-    const [p, c, s, u, f, b] = await Promise.all([
+    const [p, c, s, u, b] = await Promise.all([
       api.get('/products'), api.get('/categories'), api.get('/suppliers'),
-      api.get('/products/units'), api.get('/products/flavours'), api.get('/products/brands'),
+      api.get('/products/units'), api.get('/products/brands'),
     ]);
     setProducts(p.data);
     setCategories(c.data);
     setSuppliers(s.data);
     setUnits(u.data);
-    setFlavours(f.data);
     setBrands(b.data);
   }
   useEffect(() => { load(); }, []);
 
-  // Product Name is scoped to a category (see schema.prisma ProductName) —
-  // refetch the dropdown's vocabulary whenever the selected category
-  // changes, instead of loading every category's names up front.
+  // Product Name and Flavour are both scoped to a category (see
+  // schema.prisma ProductName/Flavour) — refetch both dropdowns' vocabulary
+  // whenever the selected category changes, instead of loading every
+  // category's names/flavours up front.
   useEffect(() => {
-    if (!form.categoryId) { setProductNames([]); return; }
+    if (!form.categoryId) { setProductNames([]); setFlavours([]); return; }
     api.get('/products/names', { params: { categoryId: form.categoryId } }).then((res) => setProductNames(res.data));
+    api.get('/products/flavours', { params: { categoryId: form.categoryId } }).then((res) => setFlavours(res.data));
   }, [form.categoryId]);
 
   // Generic add/rename handlers for a lookup dropdown — see LookupField
   // above. `extraBody` carries whatever the create endpoint needs beyond
-  // the value itself (categoryId, for names).
+  // the value itself (categoryId, for names/flavours).
   function lookupHandlers(endpoint, valueField, list, setList, formField, extraBody = {}) {
     return {
       add: async (text) => {
@@ -137,7 +138,7 @@ export default function Products() {
   }
   const nameHandlers = lookupHandlers('/products/names', 'name', productNames, setProductNames, 'name', { categoryId: form.categoryId });
   const unitHandlers = lookupHandlers('/products/units', 'value', units, setUnits, 'sizeWeight');
-  const flavourHandlers = lookupHandlers('/products/flavours', 'value', flavours, setFlavours, 'flavour');
+  const flavourHandlers = lookupHandlers('/products/flavours', 'value', flavours, setFlavours, 'flavour', { categoryId: form.categoryId });
   const brandHandlers = lookupHandlers('/products/brands', 'value', brands, setBrands, 'brand');
 
   // A product saved before a dropdown existed (or holding a value that's
@@ -278,9 +279,11 @@ export default function Products() {
                 const cat = categories.find((c) => String(c.id) === String(categoryId));
                 // CGST/SGST default to the newly selected category's own
                 // rate — editable below if that default isn't right for
-                // this particular product.
+                // this particular product. Name and Flavour are both
+                // category-scoped vocabularies, so a value picked under the
+                // old category doesn't carry over.
                 setForm({
-                  ...form, categoryId, name: '',
+                  ...form, categoryId, name: '', flavour: '',
                   cgst: cat ? String(cat.cgst) : '',
                   sgst: cat ? String(cat.sgst) : '',
                 });
@@ -290,36 +293,50 @@ export default function Products() {
             </select>
 
             {!form.categoryId ? (
-              <select className="border rounded px-2 py-1 w-full text-gray-400" disabled>
+              <select className="border rounded px-2 py-1 w-full text-gray-400 md:col-span-2" disabled>
                 <option>Select a category first / प्रथम श्रेणी निवडा</option>
               </select>
             ) : (
-              <LookupField key={`name-${formKey}-${form.categoryId}`}
-                options={nameOptions} valueField="name" value={form.name}
-                onChange={(v) => setForm({ ...form, name: v })}
-                onAdd={nameHandlers.add} onEdit={nameHandlers.edit}
-                selectPlaceholder="Product Name... / उत्पादनाचे नाव..." addPlaceholder="New product name / नवीन उत्पादनाचे नाव"
-                required />
+              <div className="md:col-span-2">
+                <LookupField key={`name-${formKey}-${form.categoryId}`}
+                  options={nameOptions} valueField="name" value={form.name}
+                  onChange={(v) => setForm({ ...form, name: v })}
+                  onAdd={nameHandlers.add} onEdit={nameHandlers.edit}
+                  selectPlaceholder="Product Name... / उत्पादनाचे नाव..." addPlaceholder="New product name / नवीन उत्पादनाचे नाव"
+                  required />
+              </div>
             )}
 
-            <LookupField key={`unit-${formKey}`}
-              options={unitOptions} valueField="value" value={form.sizeWeight}
-              onChange={(v) => setForm({ ...form, sizeWeight: v })}
-              onAdd={unitHandlers.add} onEdit={unitHandlers.edit}
-              selectPlaceholder="Size / Weight... / आकार / वजन..." addPlaceholder="New size/weight (e.g. 200g)"
-              required />
+            {!form.categoryId ? (
+              <select className="border rounded px-2 py-1 w-full text-gray-400 md:col-span-2" disabled>
+                <option>Select a category first / प्रथम श्रेणी निवडा</option>
+              </select>
+            ) : (
+              <div className="md:col-span-2">
+                <LookupField key={`flavour-${formKey}-${form.categoryId}`}
+                  options={flavourOptions} valueField="value" value={form.flavour}
+                  onChange={(v) => setForm({ ...form, flavour: v })}
+                  onAdd={flavourHandlers.add} onEdit={flavourHandlers.edit}
+                  selectPlaceholder="Flavour (optional) / फ्लेवर (ऐच्छिक)" addPlaceholder="New flavour / नवीन फ्लेवर" />
+              </div>
+            )}
 
-            <LookupField key={`flavour-${formKey}`}
-              options={flavourOptions} valueField="value" value={form.flavour}
-              onChange={(v) => setForm({ ...form, flavour: v })}
-              onAdd={flavourHandlers.add} onEdit={flavourHandlers.edit}
-              selectPlaceholder="Flavour (optional) / फ्लेवर (ऐच्छिक)" addPlaceholder="New flavour / नवीन फ्लेवर" />
+            <div className="md:col-span-2">
+              <LookupField key={`unit-${formKey}`}
+                options={unitOptions} valueField="value" value={form.sizeWeight}
+                onChange={(v) => setForm({ ...form, sizeWeight: v })}
+                onAdd={unitHandlers.add} onEdit={unitHandlers.edit}
+                selectPlaceholder="Size / Weight... / आकार / वजन..." addPlaceholder="New size/weight (e.g. 200g)"
+                required />
+            </div>
 
-            <LookupField key={`brand-${formKey}`}
-              options={brandOptions} valueField="value" value={form.brand}
-              onChange={(v) => setForm({ ...form, brand: v })}
-              onAdd={brandHandlers.add} onEdit={brandHandlers.edit}
-              selectPlaceholder="Brand (optional) / ब्रँड (ऐच्छिक)" addPlaceholder="New brand / नवीन ब्रँड" />
+            <div className="md:col-span-2">
+              <LookupField key={`brand-${formKey}`}
+                options={brandOptions} valueField="value" value={form.brand}
+                onChange={(v) => setForm({ ...form, brand: v })}
+                onAdd={brandHandlers.add} onEdit={brandHandlers.edit}
+                selectPlaceholder="Brand (optional) / ब्रँड (ऐच्छिक)" addPlaceholder="New brand / नवीन ब्रँड" />
+            </div>
 
             <input placeholder="FSSAI Code / एफएसएसएआय कोड" className="border rounded px-2 py-1 md:col-span-2" required
               value={form.fssaiCode} onChange={(e) => setForm({ ...form, fssaiCode: e.target.value })} />
@@ -342,7 +359,9 @@ export default function Products() {
 
             {isEditing && selectedProduct && (
               <div className="md:col-span-2 flex items-center gap-3 bg-gray-50 rounded p-2">
-                <Barcode value={selectedProduct.barcode} />
+                <Barcode value={selectedProduct.barcode}
+                  name={selectedProduct.name} sizeWeight={selectedProduct.sizeWeight}
+                  flavour={selectedProduct.flavour} brand={selectedProduct.brand} />
                 <p className="text-xs text-gray-500">
                   Barcode labels are printed from Purchases, once a purchase carrying this
                   product's MRP and retailer price is confirmed. /
