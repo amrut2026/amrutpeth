@@ -28,11 +28,11 @@ router.get('/', authRequired, async (req, res) => {
   res.json(products);
 });
 
-// GET /api/products/names?categoryId=X and POST /api/products/names — the
-// shared vocabulary behind the product creation form's Name dropdown (see
+// GET /api/products/names?categoryId=X, POST, and PUT /:id — the shared
+// vocabulary behind the product creation form's Name dropdown (see
 // schema.prisma ProductName). Scoped to a category — the dropdown only
 // makes sense once a category is picked, so GET requires categoryId and
-// POST validates the category exists before attaching a name to it.
+// POST/PUT validate the category exists before touching a name under it.
 // Registered here, ahead of GET/PUT/DELETE /:id below, because "names" is a
 // single path segment just like an :id would be — Express would otherwise
 // try to match it against /:id first and blow up on Number("names").
@@ -66,24 +66,76 @@ router.post('/names', authRequired, requireRole('DEALER'), async (req, res) => {
   res.json(created);
 });
 
-// GET/POST /api/products/units — the Size/Weight dropdown's vocabulary.
-// Unlike names above, this has no category tie ("1kg", "500ml" apply
-// everywhere) and stays a single flat list shared across every dealer.
-router.get('/units', authRequired, async (req, res) => {
-  const units = await prisma.unit.findMany({ orderBy: { value: 'asc' } });
-  res.json(units);
+// PUT /api/products/names/:id — rename an existing entry (the "!" button
+// next to the Name dropdown in Products.jsx). This only changes the
+// dropdown's vocabulary going forward — Product.name is a plain string
+// snapshot, not a foreign key (see schema.prisma ProductName), so existing
+// products already using the old spelling keep it until edited themselves.
+router.put('/names/:id', authRequired, requireRole('DEALER'), async (req, res) => {
+  const id = Number(req.params.id);
+  const trimmed = (req.body.name || '').trim();
+  if (!trimmed) return res.status(400).json({ error: 'Name is required' });
+
+  const existing = await prisma.productName.findUnique({ where: { id } });
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  const category = await prisma.productCategory.findUnique({ where: { id: existing.categoryId } });
+  if (!category || category.dealerId !== req.user.dealerId) {
+    return res.status(403).json({ error: 'You can only edit names under your own categories' });
+  }
+
+  try {
+    const updated = await prisma.productName.update({ where: { id }, data: { name: trimmed } });
+    res.json(updated);
+  } catch (err) {
+    if (err.code === 'P2002') return res.status(409).json({ error: `"${trimmed}" already exists in this category` });
+    throw err;
+  }
 });
 
-router.post('/units', authRequired, requireRole('DEALER'), async (req, res) => {
-  const trimmed = (req.body.value || '').trim();
-  if (!trimmed) return res.status(400).json({ error: 'Value is required' });
-  const created = await prisma.unit.upsert({
-    where: { value: trimmed },
-    update: {},
-    create: { value: trimmed },
+// Factory for a flat (non-category-scoped) lookup vocabulary: GET the list,
+// POST to add (upsert-based, so a fast double-submit can't error out), PUT
+// to rename an existing entry. Used for Unit, Flavour, and Brand below —
+// identical shape, differing only in which Prisma model and which field
+// holds the value. Same "not a foreign key on Product" relationship as
+// ProductName above — renaming here doesn't touch existing products.
+function flatLookupRoutes(path, prismaModel, valueField) {
+  router.get(`/${path}`, authRequired, async (req, res) => {
+    const rows = await prismaModel.findMany({ orderBy: { [valueField]: 'asc' } });
+    res.json(rows);
   });
-  res.json(created);
-});
+
+  router.post(`/${path}`, authRequired, requireRole('DEALER'), async (req, res) => {
+    const trimmed = (req.body[valueField] || '').trim();
+    if (!trimmed) return res.status(400).json({ error: `${valueField} is required` });
+    const created = await prismaModel.upsert({
+      where: { [valueField]: trimmed },
+      update: {},
+      create: { [valueField]: trimmed },
+    });
+    res.json(created);
+  });
+
+  router.put(`/${path}/:id`, authRequired, requireRole('DEALER'), async (req, res) => {
+    const id = Number(req.params.id);
+    const trimmed = (req.body[valueField] || '').trim();
+    if (!trimmed) return res.status(400).json({ error: `${valueField} is required` });
+    try {
+      const updated = await prismaModel.update({ where: { id }, data: { [valueField]: trimmed } });
+      res.json(updated);
+    } catch (err) {
+      if (err.code === 'P2002') return res.status(409).json({ error: `"${trimmed}" already exists` });
+      if (err.code === 'P2025') return res.status(404).json({ error: 'Not found' });
+      throw err;
+    }
+  });
+}
+
+// Unit/sizeWeight, Flavour, and Brand all have no category tie ("1kg",
+// "Mango", "Tata" can apply under more than one category), so they stay
+// flat lists shared across every dealer, unlike names above.
+flatLookupRoutes('units', prisma.unit, 'value');
+flatLookupRoutes('flavours', prisma.flavour, 'value');
+flatLookupRoutes('brands', prisma.brand, 'value');
 
 router.get('/:id', authRequired, async (req, res) => {
   const product = await prisma.product.findUnique({ where: { id: Number(req.params.id) }, include: { category: true, supplier: true, dealer: true } });
@@ -98,21 +150,32 @@ router.get('/:id', authRequired, async (req, res) => {
 // Pricing, MRP, dates, and batch name are NOT set here — they're captured per
 // batch when the product is purchased (see purchases.js).
 //
-// supplier + category + name + sizeWeight together identify one product —
-// see schema.prisma Product @@unique. Checked here first for a clean error
-// message; the schema constraint (caught below as P2002) is the real
-// guarantee against a race between two near-simultaneous creates.
+// supplier + category + name + sizeWeight + flavour + brand together
+// identify one product — see schema.prisma Product @@unique. Checked here
+// first for a clean error message; the schema constraint (caught below as
+// P2002) is the real guarantee against a race between two
+// near-simultaneous creates.
 router.post('/', authRequired, requireRole('DEALER'), async (req, res) => {
-  const { categoryId, supplierId, name, sizeWeight, fssaiCode } = req.body;
+  const { categoryId, supplierId, name, sizeWeight, flavour, brand, cgst, sgst, fssaiCode } = req.body;
 
   if (!supplierId) return res.status(400).json({ error: 'Supplier is required' });
 
   const duplicate = await prisma.product.findFirst({
-    where: { supplierId: Number(supplierId), categoryId: Number(categoryId), name, sizeWeight },
+    where: {
+      supplierId: Number(supplierId), categoryId: Number(categoryId), name, sizeWeight,
+      flavour: flavour || null, brand: brand || null,
+    },
   });
   if (duplicate) {
-    return res.status(409).json({ error: 'A product with this supplier, category, name, and size/weight already exists' });
+    return res.status(409).json({ error: 'A product with this supplier, category, name, size/weight, flavour, and brand already exists' });
   }
+
+  // cgst/sgst default to the selected category's own rate (Products.jsx
+  // pre-fills them from there, editable before submit) — falling back to
+  // the category here too, in case the client omits them for any reason,
+  // rather than silently landing on the schema's generic 2.5 default.
+  const category = await prisma.productCategory.findUnique({ where: { id: Number(categoryId) } });
+  if (!category) return res.status(400).json({ error: 'Category not found' });
 
   const barcode = generateBarcode();
 
@@ -120,6 +183,9 @@ router.post('/', authRequired, requireRole('DEALER'), async (req, res) => {
     const product = await prisma.product.create({
       data: {
         categoryId: Number(categoryId), supplierId: Number(supplierId), dealerId: req.user.dealerId, name, sizeWeight,
+        flavour: flavour || null, brand: brand || null,
+        cgst: cgst !== undefined && cgst !== '' ? Number(cgst) : category.cgst,
+        sgst: sgst !== undefined && sgst !== '' ? Number(sgst) : category.sgst,
         fssaiCode, barcode,
       },
       include: { category: true, supplier: true, dealer: true }
@@ -127,7 +193,7 @@ router.post('/', authRequired, requireRole('DEALER'), async (req, res) => {
     res.json(product);
   } catch (err) {
     if (err.code === 'P2002') {
-      return res.status(409).json({ error: 'A product with this supplier, category, name, and size/weight already exists' });
+      return res.status(409).json({ error: 'A product with this supplier, category, name, size/weight, flavour, and brand already exists' });
     }
     throw err;
   }
@@ -137,7 +203,7 @@ router.put('/:id', authRequired, requireRole('DEALER'), async (req, res) => {
   const id = Number(req.params.id);
   const existing = await prisma.product.findUnique({ where: { id } });
   if (!existing || existing.dealerId !== req.user.dealerId) return res.status(403).json({ error: 'You can only edit your own products' });
-  const { categoryId, supplierId, name, sizeWeight, fssaiCode } = req.body;
+  const { categoryId, supplierId, name, sizeWeight, flavour, brand, cgst, sgst, fssaiCode } = req.body;
 
   // Same duplicate check as POST, against the combination this edit would
   // leave the product with (falling back to its current values for
@@ -146,11 +212,16 @@ router.put('/:id', authRequired, requireRole('DEALER'), async (req, res) => {
   const nextCategoryId = categoryId ? Number(categoryId) : existing.categoryId;
   const nextName = name !== undefined ? name : existing.name;
   const nextSizeWeight = sizeWeight !== undefined ? sizeWeight : existing.sizeWeight;
+  const nextFlavour = flavour !== undefined ? (flavour || null) : existing.flavour;
+  const nextBrand = brand !== undefined ? (brand || null) : existing.brand;
   const duplicate = await prisma.product.findFirst({
-    where: { id: { not: id }, supplierId: nextSupplierId, categoryId: nextCategoryId, name: nextName, sizeWeight: nextSizeWeight },
+    where: {
+      id: { not: id }, supplierId: nextSupplierId, categoryId: nextCategoryId, name: nextName, sizeWeight: nextSizeWeight,
+      flavour: nextFlavour, brand: nextBrand,
+    },
   });
   if (duplicate) {
-    return res.status(409).json({ error: 'A product with this supplier, category, name, and size/weight already exists' });
+    return res.status(409).json({ error: 'A product with this supplier, category, name, size/weight, flavour, and brand already exists' });
   }
 
   try {
@@ -159,14 +230,19 @@ router.put('/:id', authRequired, requireRole('DEALER'), async (req, res) => {
       data: {
         categoryId: categoryId ? Number(categoryId) : undefined,
         supplierId: supplierId !== undefined ? (supplierId ? Number(supplierId) : null) : undefined,
-        name, sizeWeight, fssaiCode
+        name, sizeWeight,
+        flavour: flavour !== undefined ? (flavour || null) : undefined,
+        brand: brand !== undefined ? (brand || null) : undefined,
+        cgst: cgst !== undefined && cgst !== '' ? Number(cgst) : undefined,
+        sgst: sgst !== undefined && sgst !== '' ? Number(sgst) : undefined,
+        fssaiCode
       },
       include: { category: true, supplier: true, dealer: true }
     });
     res.json(product);
   } catch (err) {
     if (err.code === 'P2002') {
-      return res.status(409).json({ error: 'A product with this supplier, category, name, and size/weight already exists' });
+      return res.status(409).json({ error: 'A product with this supplier, category, name, size/weight, flavour, and brand already exists' });
     }
     throw err;
   }

@@ -86,6 +86,12 @@ enum PurchaseStatus {
   ORDERED
   IN_TRANSIT
   RECEIVED
+  // A DEALER's own purchase, already CONFIRMED, that's since had its
+  // pricing corrected via PATCH /:id/prices — inventory/vouchers/downstream
+  // sales are cascaded to match, but the purchase itself is flagged so it's
+  // visibly distinct from an untouched CONFIRMED purchase. Never applies to
+  // a RETAILER's own purchase (that side has no price-correction route).
+  MODIFIED
 }
 
 // A regular POS sale (walk-in cash sale, a dealer selling on the spot to a
@@ -227,6 +233,12 @@ model ProductCategory {
   id           Int           @id @default(autoincrement())
   name         String
   description  String?
+  // Tax rates in percent, applied to products under this category — e.g.
+  // 2.5 means 2.5%. Defaulted to 2.5 each so a new category is usable
+  // immediately without the dealer having to know the exact GST slab up
+  // front; they're free to change it per category.
+  cgst         Decimal       @default(2.5) @db.Decimal(5, 2)
+  sgst         Decimal       @default(2.5) @db.Decimal(5, 2)
   dealerId     Int
   dealer       Dealer        @relation(fields: [dealerId], references: [id])
   products     Product[]
@@ -270,6 +282,21 @@ model Unit {
   createdAt DateTime @default(now())
 }
 
+// Same pattern as Unit — flat, global vocabularies with no category tie.
+// A flavour ("Mango", "Original") or brand ("Tata") can reasonably apply
+// under more than one category, unlike ProductName above.
+model Flavour {
+  id        Int      @id @default(autoincrement())
+  value     String   @unique
+  createdAt DateTime @default(now())
+}
+
+model Brand {
+  id        Int      @id @default(autoincrement())
+  value     String   @unique
+  createdAt DateTime @default(now())
+}
+
 // Product master catalog. Created by dealers (see products.js POST / —
 // DEALER only, dealerId always taken from the logged-in user, never the
 // client) — each product belongs to exactly one dealer, and retailers may
@@ -286,12 +313,24 @@ model Product {
   dealerId   Int // the dealer that created/owns this product — retailers may
   dealer     Dealer          @relation(fields: [dealerId], references: [id])
   // only purchase or sell it via that dealer, and other dealers can't see it
-  // Free-text, but sourced from the ProductName/Unit dropdowns at creation
-  // time (see products.js) — not a foreign key, so they stay ordinary
-  // strings here and every existing read of product.name/sizeWeight is
-  // unaffected. See ProductName/Unit above for why.
+  // Free-text, but sourced from the ProductName/Unit/Flavour/Brand
+  // dropdowns at creation time (see products.js) — not foreign keys, so
+  // they stay ordinary strings here and every existing read of
+  // product.name/sizeWeight is unaffected. See ProductName/Unit above for
+  // why. flavour and brand are optional — not every product has either.
   name       String
   sizeWeight String
+  flavour    String?
+  brand      String?
+  // Snapshot of the category's cgst/sgst (see ProductCategory) at the
+  // moment this product is created — pre-filled from the selected
+  // category in Products.jsx, but editable per product if that default
+  // doesn't apply (e.g. an item taxed differently from its category's
+  // usual rate). Not a live reference — changing the category's own rate
+  // later doesn't retroactively change already-created products, same
+  // reasoning as name/sizeWeight/flavour/brand above.
+  cgst       Decimal         @default(2.5) @db.Decimal(5, 2)
+  sgst       Decimal         @default(2.5) @db.Decimal(5, 2)
   fssaiCode  String
   barcode    String          @unique // encoded value for barcode/QR - stable, never regenerated
 
@@ -301,16 +340,19 @@ model Product {
   purchaseItems PurchaseItem[]
   soldProducts  SoldProduct[]
 
-  // The same supplier+category+name+sizeWeight combination is one product —
-  // this is what "Clone to another supplier" (Products.jsx) exists for,
-  // rather than letting the same item get re-entered under the same
-  // supplier by mistake. Enforced here (not just in products.js) so it
-  // holds regardless of entry path. supplierId is nullable, and standard
-  // SQL unique-index semantics treat each NULL as distinct from every other
-  // NULL — POST /products already requires a supplierId, so this only
-  // matters for a product edited down to no supplier, which stays
-  // unconstrained against other no-supplier products.
-  @@unique([supplierId, categoryId, name, sizeWeight])
+  // The same supplier+category+name+sizeWeight+flavour+brand combination is
+  // one product — this is what "Clone to another supplier" (Products.jsx)
+  // exists for, rather than letting the same item get re-entered under the
+  // same supplier by mistake. flavour/brand are part of the key because two
+  // flavour variants of the same base product (e.g. Mango vs Original) are
+  // legitimately different products, not duplicates. Enforced here (not
+  // just in products.js) so it holds regardless of entry path. supplierId
+  // is nullable, and standard SQL unique-index semantics treat each NULL as
+  // distinct from every other NULL — POST /products already requires a
+  // supplierId, so this only matters for a product edited down to no
+  // supplier, which stays unconstrained against other no-supplier products.
+  // The same is true of flavour/brand being null.
+  @@unique([supplierId, categoryId, name, sizeWeight, flavour, brand])
 }
 
 // Suppliers / manufacturers that dealers (or retailers) purchase stock from.
@@ -416,6 +458,14 @@ model Purchase {
   // supplier, and null for a retailer purchase that hasn't been placed yet.
   linkedSaleId Int?  @unique
   linkedSale   Sale? @relation(fields: [linkedSaleId], references: [id])
+
+  // Inverse of Voucher.purchaseId — the PAYABLE voucher auto-raised when
+  // this purchase reached CONFIRMED (see purchases.js PATCH /:id/status).
+  // Lets a later price correction (PATCH /:id/prices) find and recompute
+  // the right voucher directly, instead of matching on the free-text
+  // description. Null for a retailer's own purchase (never raises a
+  // voucher of its own) and null before CONFIRMED.
+  payableVoucher Voucher?
 }
 
 // Each line item captures the batch-specific details of what was actually
@@ -498,6 +548,14 @@ model Sale {
   // Inverse of Purchase.linkedSale — set when this Sale was auto-created
   // from a retailer's purchase order rather than entered directly at POS.
   linkedPurchase Purchase?
+
+  // Inverse of Voucher.saleId — the RECEIVABLE voucher auto-raised for a
+  // dealer -> retailer sale, whether a direct POS sale (createSale) or an
+  // order fulfilled via dispatch. Lets a purchase price correction that
+  // cascades into this sale (see purchases.js PATCH /:id/prices) find and
+  // recompute the right voucher directly. Null for a CASH sale (no
+  // voucher at all) and null before the voucher is raised.
+  receivableVoucher Voucher?
 
   // One row per CASH-sale line item — see SoldProduct. Empty for a sale to
   // a RETAILER customer.
@@ -623,6 +681,19 @@ model Voucher {
   status      VoucherStatus @default(OPEN)
   receipts    Receipt[]
   payments    Payment[]
+
+  // Set only for a PAYABLE voucher auto-raised from a dealer's own
+  // purchase (see purchases.js PATCH /:id/status, CONFIRMED transition) —
+  // lets a later price correction on that purchase find this voucher
+  // directly and recompute its amount (see PATCH /:id/prices).
+  purchaseId Int?      @unique
+  purchase   Purchase? @relation(fields: [purchaseId], references: [id])
+
+  // Set only for a RECEIVABLE voucher auto-raised from a dealer -> retailer
+  // Sale (direct POS or dispatch-fulfilled order) — same purpose as
+  // purchaseId above, for the sale side of a price-correction cascade.
+  saleId Int?  @unique
+  sale   Sale? @relation(fields: [saleId], references: [id])
 }
 
 // ---------------- Receipts (money received against vouchers) ----------------

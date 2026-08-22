@@ -4,8 +4,72 @@ import Barcode from '../components/Barcode.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 
 const empty = {
-  categoryId: '', supplierId: '', name: '', sizeWeight: '', fssaiCode: '',
+  categoryId: '', supplierId: '', name: '', sizeWeight: '', flavour: '', brand: '', cgst: '', sgst: '', fssaiCode: '',
 };
+
+// A dropdown backed by a shared vocabulary (ProductName/Unit/Flavour/Brand —
+// see schema.prisma and products.js), with inline "+" (add a value not yet
+// in the list) and "!" (rename the currently selected value) controls. Used
+// for all four of Product Name, Size/Weight, Flavour, and Brand below — the
+// only differences between them are which list/field/endpoint they're
+// backed by, handled by the onAdd/onEdit callbacks the caller supplies.
+// Internal add/edit mode resets on remount — callers force that by keying
+// this component on whatever identifies the current form session (see
+// formKey in Products() below), so leftover "add" or "rename" state from
+// one product doesn't leak into the next.
+function LookupField({ options, valueField, value, onChange, onAdd, onEdit, selectPlaceholder, addPlaceholder, required, disabled, disabledMessage }) {
+  const [mode, setMode] = useState('view'); // 'view' | 'add' | 'edit'
+  const [text, setText] = useState('');
+
+  if (disabled) {
+    return (
+      <select className="border rounded px-2 py-1 w-full text-gray-400" disabled>
+        <option>{disabledMessage}</option>
+      </select>
+    );
+  }
+
+  function startAdd() { setText(''); setMode('add'); }
+  function startEdit() { if (!value) return; setText(value); setMode('edit'); }
+  function cancel() { setMode('view'); setText(''); }
+  async function confirm() {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    if (mode === 'add') await onAdd(trimmed);
+    else await onEdit(value, trimmed);
+    setMode('view');
+    setText('');
+  }
+
+  if (mode !== 'view') {
+    return (
+      <div className="flex gap-1">
+        <input autoFocus className="border rounded px-2 py-1 flex-1"
+          placeholder={mode === 'add' ? addPlaceholder : `Rename "${value}"`}
+          value={text} onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); confirm(); } }} />
+        <button type="button" onClick={confirm} className="border rounded px-3 text-emerald-700 hover:bg-emerald-50">
+          {mode === 'add' ? 'Add' : 'Save'}
+        </button>
+        <button type="button" onClick={cancel} className="border rounded px-3 text-gray-500 hover:bg-gray-50">✕</button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex gap-1">
+      <select className="border rounded px-2 py-1 flex-1" required={required}
+        value={value} onChange={(e) => onChange(e.target.value)}>
+        <option value="">{selectPlaceholder}</option>
+        {options.map((o) => <option key={o.id} value={o[valueField]}>{o[valueField]}</option>)}
+      </select>
+      <button type="button" title="Add new / नवीन जोडा" onClick={startAdd}
+        className="border rounded px-3 text-emerald-700 font-semibold hover:bg-emerald-50">+</button>
+      <button type="button" title="Rename selected / निवडलेले नाव बदला" onClick={startEdit} disabled={!value}
+        className="border rounded px-3 text-amber-700 font-semibold hover:bg-amber-50 disabled:opacity-30 disabled:cursor-not-allowed">!</button>
+    </div>
+  );
+}
 
 export default function Products() {
   const { user } = useAuth();
@@ -15,6 +79,8 @@ export default function Products() {
   const [suppliers, setSuppliers] = useState([]);
   const [productNames, setProductNames] = useState([]);
   const [units, setUnits] = useState([]);
+  const [flavours, setFlavours] = useState([]);
+  const [brands, setBrands] = useState([]);
   const [form, setForm] = useState(empty);
   const [selectedId, setSelectedId] = useState(null);
   const [cloneSource, setCloneSource] = useState(null); // product being cloned from, if any
@@ -22,23 +88,23 @@ export default function Products() {
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
   const [supplierFilter, setSupplierFilter] = useState('');
-  // "+" button state — a name/unit not yet in the dropdown gets typed here,
-  // then POSTed to /products/names or /products/units (see products.js) so
-  // it joins the shared vocabulary and is available for every future
-  // product, not just this one.
-  const [addingName, setAddingName] = useState(false);
-  const [newName, setNewName] = useState('');
-  const [addingUnit, setAddingUnit] = useState(false);
-  const [newUnit, setNewUnit] = useState('');
+  // Bumped on every selectProduct/cloneProduct/startNew — used as a React
+  // `key` on each LookupField below so its internal add/edit mode resets
+  // when the form switches to a different product, instead of leaking a
+  // half-finished "rename" across products.
+  const [formKey, setFormKey] = useState(0);
 
   async function load() {
-    const [p, c, s, u] = await Promise.all([
-      api.get('/products'), api.get('/categories'), api.get('/suppliers'), api.get('/products/units'),
+    const [p, c, s, u, f, b] = await Promise.all([
+      api.get('/products'), api.get('/categories'), api.get('/suppliers'),
+      api.get('/products/units'), api.get('/products/flavours'), api.get('/products/brands'),
     ]);
     setProducts(p.data);
     setCategories(c.data);
     setSuppliers(s.data);
     setUnits(u.data);
+    setFlavours(f.data);
+    setBrands(b.data);
   }
   useEffect(() => { load(); }, []);
 
@@ -50,36 +116,43 @@ export default function Products() {
     api.get('/products/names', { params: { categoryId: form.categoryId } }).then((res) => setProductNames(res.data));
   }, [form.categoryId]);
 
-  async function addName() {
-    const trimmed = newName.trim();
-    if (!trimmed || !form.categoryId) return;
-    const { data } = await api.post('/products/names', { name: trimmed, categoryId: form.categoryId });
-    setProductNames((prev) => (prev.some((n) => n.id === data.id) ? prev : [...prev, data].sort((a, b) => a.name.localeCompare(b.name))));
-    setForm((f) => ({ ...f, name: data.name }));
-    setNewName('');
-    setAddingName(false);
+  // Generic add/rename handlers for a lookup dropdown — see LookupField
+  // above. `extraBody` carries whatever the create endpoint needs beyond
+  // the value itself (categoryId, for names).
+  function lookupHandlers(endpoint, valueField, list, setList, formField, extraBody = {}) {
+    return {
+      add: async (text) => {
+        const { data } = await api.post(endpoint, { [valueField]: text, ...extraBody });
+        setList((prev) => (prev.some((x) => x.id === data.id) ? prev : [...prev, data].sort((a, b) => a[valueField].localeCompare(b[valueField]))));
+        setForm((f) => ({ ...f, [formField]: data[valueField] }));
+      },
+      edit: async (oldValue, text) => {
+        const row = list.find((x) => x[valueField] === oldValue);
+        if (!row) return;
+        const { data } = await api.put(`${endpoint}/${row.id}`, { [valueField]: text });
+        setList((prev) => prev.map((x) => (x.id === row.id ? data : x)).sort((a, b) => a[valueField].localeCompare(b[valueField])));
+        setForm((f) => (f[formField] === oldValue ? { ...f, [formField]: data[valueField] } : f));
+      },
+    };
   }
+  const nameHandlers = lookupHandlers('/products/names', 'name', productNames, setProductNames, 'name', { categoryId: form.categoryId });
+  const unitHandlers = lookupHandlers('/products/units', 'value', units, setUnits, 'sizeWeight');
+  const flavourHandlers = lookupHandlers('/products/flavours', 'value', flavours, setFlavours, 'flavour');
+  const brandHandlers = lookupHandlers('/products/brands', 'value', brands, setBrands, 'brand');
 
-  async function addUnit() {
-    const trimmed = newUnit.trim();
-    if (!trimmed) return;
-    const { data } = await api.post('/products/units', { value: trimmed });
-    setUnits((prev) => (prev.some((u) => u.id === data.id) ? prev : [...prev, data].sort((a, b) => a.value.localeCompare(b.value))));
-    setForm((f) => ({ ...f, sizeWeight: data.value }));
-    setNewUnit('');
-    setAddingUnit(false);
+  // A product saved before a dropdown existed (or holding a value that's
+  // since been renamed elsewhere) might carry a value that isn't in the
+  // fetched list — keep it selectable rather than silently blanking the
+  // field out.
+  function withFallback(list, valueField, currentValue) {
+    return currentValue && !list.some((x) => x[valueField] === currentValue)
+      ? [{ id: 'current', [valueField]: currentValue }, ...list]
+      : list;
   }
-
-  // A product saved before this dropdown existed (or created with a name
-  // that's since been edited elsewhere) might hold a name/sizeWeight that
-  // isn't in the fetched list — keep it selectable rather than silently
-  // blanking the field out.
-  const nameOptions = form.name && !productNames.some((n) => n.name === form.name)
-    ? [{ id: 'current', name: form.name }, ...productNames]
-    : productNames;
-  const unitOptions = form.sizeWeight && !units.some((u) => u.value === form.sizeWeight)
-    ? [{ id: 'current', value: form.sizeWeight }, ...units]
-    : units;
+  const nameOptions = withFallback(productNames, 'name', form.name);
+  const unitOptions = withFallback(units, 'value', form.sizeWeight);
+  const flavourOptions = withFallback(flavours, 'value', form.flavour);
+  const brandOptions = withFallback(brands, 'value', form.brand);
 
   const isEditing = selectedId !== null;
   const selectedProduct = products.find((p) => p.id === selectedId);
@@ -88,13 +161,16 @@ export default function Products() {
     setSelectedId(p.id);
     setCloneSource(null);
     setError('');
-    setAddingName(false); setNewName('');
-    setAddingUnit(false); setNewUnit('');
+    setFormKey((k) => k + 1);
     setForm({
       categoryId: p.categoryId,
       supplierId: p.supplierId || '',
       name: p.name,
       sizeWeight: p.sizeWeight,
+      flavour: p.flavour || '',
+      brand: p.brand || '',
+      cgst: String(p.cgst),
+      sgst: String(p.sgst),
       fssaiCode: p.fssaiCode,
     });
   }
@@ -107,13 +183,16 @@ export default function Products() {
     setSelectedId(null);
     setCloneSource(p);
     setError('');
-    setAddingName(false); setNewName('');
-    setAddingUnit(false); setNewUnit('');
+    setFormKey((k) => k + 1);
     setForm({
       categoryId: p.categoryId,
       supplierId: '',
       name: p.name,
       sizeWeight: p.sizeWeight,
+      flavour: p.flavour || '',
+      brand: p.brand || '',
+      cgst: String(p.cgst),
+      sgst: String(p.sgst),
       fssaiCode: p.fssaiCode,
     });
   }
@@ -123,8 +202,7 @@ export default function Products() {
     setCloneSource(null);
     setForm(empty);
     setError('');
-    setAddingName(false); setNewName('');
-    setAddingUnit(false); setNewUnit('');
+    setFormKey((k) => k + 1);
   }
 
   async function submit(e) {
@@ -194,60 +272,68 @@ export default function Products() {
               {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
             <select className="border rounded px-2 py-1 md:col-span-2" required
-              value={form.categoryId} onChange={(e) => setForm({ ...form, categoryId: e.target.value, name: '' })}>
+              value={form.categoryId}
+              onChange={(e) => {
+                const categoryId = e.target.value;
+                const cat = categories.find((c) => String(c.id) === String(categoryId));
+                // CGST/SGST default to the newly selected category's own
+                // rate — editable below if that default isn't right for
+                // this particular product.
+                setForm({
+                  ...form, categoryId, name: '',
+                  cgst: cat ? String(cat.cgst) : '',
+                  sgst: cat ? String(cat.sgst) : '',
+                });
+              }}>
               <option value="">Category... / श्रेणी...</option>
               {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
-            <div>
-              {!form.categoryId ? (
-                <select className="border rounded px-2 py-1 w-full text-gray-400" disabled>
-                  <option>Select a category first / प्रथम श्रेणी निवडा</option>
-                </select>
-              ) : !addingName ? (
-                <div className="flex gap-1">
-                  <select className="border rounded px-2 py-1 flex-1" required
-                    value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })}>
-                    <option value="">Product Name... / उत्पादनाचे नाव...</option>
-                    {nameOptions.map((n) => <option key={n.id} value={n.name}>{n.name}</option>)}
-                  </select>
-                  <button type="button" title="Add new product name / नवीन उत्पादनाचे नाव जोडा"
-                    onClick={() => setAddingName(true)}
-                    className="border rounded px-3 text-emerald-700 font-semibold hover:bg-emerald-50">+</button>
-                </div>
-              ) : (
-                <div className="flex gap-1">
-                  <input autoFocus placeholder="New product name / नवीन उत्पादनाचे नाव" className="border rounded px-2 py-1 flex-1"
-                    value={newName} onChange={(e) => setNewName(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addName(); } }} />
-                  <button type="button" onClick={addName} className="border rounded px-3 text-emerald-700 hover:bg-emerald-50">Add</button>
-                  <button type="button" onClick={() => { setAddingName(false); setNewName(''); }} className="border rounded px-3 text-gray-500 hover:bg-gray-50">✕</button>
-                </div>
-              )}
-            </div>
-            <div>
-              {!addingUnit ? (
-                <div className="flex gap-1">
-                  <select className="border rounded px-2 py-1 flex-1" required
-                    value={form.sizeWeight} onChange={(e) => setForm({ ...form, sizeWeight: e.target.value })}>
-                    <option value="">Size / Weight... / आकार / वजन...</option>
-                    {unitOptions.map((u) => <option key={u.id} value={u.value}>{u.value}</option>)}
-                  </select>
-                  <button type="button" title="Add new size/weight / नवीन आकार/वजन जोडा"
-                    onClick={() => setAddingUnit(true)}
-                    className="border rounded px-3 text-emerald-700 font-semibold hover:bg-emerald-50">+</button>
-                </div>
-              ) : (
-                <div className="flex gap-1">
-                  <input autoFocus placeholder="New size/weight (e.g. 200g)" className="border rounded px-2 py-1 flex-1"
-                    value={newUnit} onChange={(e) => setNewUnit(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addUnit(); } }} />
-                  <button type="button" onClick={addUnit} className="border rounded px-3 text-emerald-700 hover:bg-emerald-50">Add</button>
-                  <button type="button" onClick={() => { setAddingUnit(false); setNewUnit(''); }} className="border rounded px-3 text-gray-500 hover:bg-gray-50">✕</button>
-                </div>
-              )}
-            </div>
+
+            {!form.categoryId ? (
+              <select className="border rounded px-2 py-1 w-full text-gray-400" disabled>
+                <option>Select a category first / प्रथम श्रेणी निवडा</option>
+              </select>
+            ) : (
+              <LookupField key={`name-${formKey}-${form.categoryId}`}
+                options={nameOptions} valueField="name" value={form.name}
+                onChange={(v) => setForm({ ...form, name: v })}
+                onAdd={nameHandlers.add} onEdit={nameHandlers.edit}
+                selectPlaceholder="Product Name... / उत्पादनाचे नाव..." addPlaceholder="New product name / नवीन उत्पादनाचे नाव"
+                required />
+            )}
+
+            <LookupField key={`unit-${formKey}`}
+              options={unitOptions} valueField="value" value={form.sizeWeight}
+              onChange={(v) => setForm({ ...form, sizeWeight: v })}
+              onAdd={unitHandlers.add} onEdit={unitHandlers.edit}
+              selectPlaceholder="Size / Weight... / आकार / वजन..." addPlaceholder="New size/weight (e.g. 200g)"
+              required />
+
+            <LookupField key={`flavour-${formKey}`}
+              options={flavourOptions} valueField="value" value={form.flavour}
+              onChange={(v) => setForm({ ...form, flavour: v })}
+              onAdd={flavourHandlers.add} onEdit={flavourHandlers.edit}
+              selectPlaceholder="Flavour (optional) / फ्लेवर (ऐच्छिक)" addPlaceholder="New flavour / नवीन फ्लेवर" />
+
+            <LookupField key={`brand-${formKey}`}
+              options={brandOptions} valueField="value" value={form.brand}
+              onChange={(v) => setForm({ ...form, brand: v })}
+              onAdd={brandHandlers.add} onEdit={brandHandlers.edit}
+              selectPlaceholder="Brand (optional) / ब्रँड (ऐच्छिक)" addPlaceholder="New brand / नवीन ब्रँड" />
+
             <input placeholder="FSSAI Code / एफएसएसएआय कोड" className="border rounded px-2 py-1 md:col-span-2" required
               value={form.fssaiCode} onChange={(e) => setForm({ ...form, fssaiCode: e.target.value })} />
+
+            <div>
+              <label className="text-xs text-gray-500 block mb-1">CGST % (from category, editable) / सीजीएसटी %</label>
+              <input type="number" step="0.01" min="0" className="border rounded px-2 py-1 w-full" required
+                value={form.cgst} onChange={(e) => setForm({ ...form, cgst: e.target.value })} />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 block mb-1">SGST % (from category, editable) / एसजीएसटी %</label>
+              <input type="number" step="0.01" min="0" className="border rounded px-2 py-1 w-full" required
+                value={form.sgst} onChange={(e) => setForm({ ...form, sgst: e.target.value })} />
+            </div>
 
             <p className="md:col-span-2 text-xs text-gray-500">
               Pricing, MRP, dates, and batch name are set when this product is purchased, not here — see Purchases. /
@@ -313,7 +399,11 @@ export default function Products() {
                   isDealer ? 'cursor-pointer' : ''
                 } ${selectedId === p.id ? 'border-emerald-600' : 'border-transparent hover:border-gray-200'}`}>
                 <div>
-                  <div className="font-semibold">{p.name} <span className="text-xs text-gray-400">({p.sizeWeight})</span></div>
+                  <div className="font-semibold">
+                    {p.name} <span className="text-xs text-gray-400">({p.sizeWeight})</span>
+                    {p.brand && <span className="text-xs text-gray-400"> · {p.brand}</span>}
+                    {p.flavour && <span className="text-xs text-gray-400"> · {p.flavour}</span>}
+                  </div>
                   <div className="text-sm text-gray-500">{p.category?.name}</div>
                   <div className="text-xs text-gray-400">
                     Supplier / पुरवठादार: {p.supplier?.name || '—'} · Dealer / डीलर: {p.dealer?.name || '—'} · Barcode / बारकोड: {p.barcode}

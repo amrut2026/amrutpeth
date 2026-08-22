@@ -56,6 +56,28 @@ function computeRetailerPrice(it) {
     : '';
 }
 
+// Summary for a recorded purchase's item table: item count, total quantity,
+// and total amount. The price used for the total depends on who's looking
+// at it, not the purchase itself — a DEALER's total is their own cost
+// (rate, from the supplier); a RETAILER's total is THEIR cost (sellingPrice
+// on the PurchaseItem, which is the dealer's wholesale price to them — see
+// purchases.js/sales.js comments on PurchaseItem.sellingPrice). For a
+// RETAILER, that field stays null until the dealer actually dispatches the
+// order (a retailer only ever submits productId+quantity up front), so the
+// total is reported as incomplete/pending until every line has it.
+function purchaseTotals(purchase, role) {
+  const items = purchase?.items || [];
+  const priceKey = role === 'DEALER' ? 'rate' : 'sellingPrice';
+  const itemCount = items.length;
+  const totalQuantity = items.reduce((sum, it) => sum + Number(it.quantity || 0), 0);
+  const totalAmount = items.reduce((sum, it) => {
+    const price = it[priceKey];
+    return sum + (price != null ? Number(price) * Number(it.quantity || 0) : 0);
+  }, 0);
+  const isComplete = itemCount > 0 && items.every((it) => it[priceKey] != null);
+  return { itemCount, totalQuantity, totalAmount, isComplete };
+}
+
 export default function Purchases() {
   const { user } = useAuth();
   const [purchases, setPurchases] = useState([]);
@@ -77,6 +99,20 @@ export default function Purchases() {
   const [quantityEdits, setQuantityEdits] = useState({});
   const [quantityError, setQuantityError] = useState('');
   const [savingQuantities, setSavingQuantities] = useState(false);
+
+  // DEALER-only: correct Cost Price / Dealer Commission / MRP / Discount on
+  // an already-CONFIRMED purchase (a mistake caught after inventory's
+  // already been credited and the voucher already raised — see
+  // purchases.js PATCH /:id/prices, which also cascades the correction
+  // into any retailer sale already fulfilled from the same batch).
+  // sellingPrice/retailerSellingPrice are shown recalculated live from
+  // these edits, same formulas as the create form, but the server always
+  // recomputes them itself rather than trusting what's submitted.
+  const [editingPrices, setEditingPrices] = useState(false);
+  const [priceEdits, setPriceEdits] = useState({});
+  const [priceError, setPriceError] = useState('');
+  const [savingPrices, setSavingPrices] = useState(false);
+  const [priceSuccessMessage, setPriceSuccessMessage] = useState('');
 
   // Set right after a dealer confirms a purchase (and reopenable from a
   // confirmed purchase's card) to ask how many labels to print per item,
@@ -117,8 +153,71 @@ export default function Purchases() {
     selectedPurchase.items.forEach((it) => { edits[it.id] = String(it.quantity); });
     setQuantityEdits(edits);
     setQuantityError('');
+    setEditingPrices(false);
+    setPriceEdits({});
+    setPriceError('');
+    setPriceSuccessMessage('');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedPurchaseId]);
+
+  function startEditPrices() {
+    if (!selectedPurchase) return;
+    const edits = {};
+    selectedPurchase.items.forEach((it) => {
+      edits[it.id] = {
+        rate: it.rate != null ? String(it.rate) : '',
+        dealerCommission: it.dealerCommission != null ? String(it.dealerCommission) : '',
+        mrp: it.mrp != null ? String(it.mrp) : '',
+        discount: it.discount != null ? String(it.discount) : '0',
+      };
+    });
+    setPriceEdits(edits);
+    setPriceError('');
+    setPriceSuccessMessage('');
+    setEditingPrices(true);
+  }
+
+  function updatePriceEdit(itemId, key, val) {
+    setPriceEdits((prev) => ({ ...prev, [itemId]: { ...prev[itemId], [key]: val } }));
+  }
+
+  function cancelEditPrices() {
+    setEditingPrices(false);
+    setPriceEdits({});
+    setPriceError('');
+  }
+
+  async function savePrices() {
+    if (!selectedPurchase) return;
+    setPriceError('');
+    const payloadItems = selectedPurchase.items.map((it) => ({
+      id: it.id,
+      rate: priceEdits[it.id]?.rate,
+      dealerCommission: priceEdits[it.id]?.dealerCommission,
+      mrp: priceEdits[it.id]?.mrp,
+      discount: priceEdits[it.id]?.discount,
+    }));
+    if (payloadItems.some((it) => it.rate === '' || it.dealerCommission === '' || it.mrp === '' || it.discount === '')) {
+      setPriceError('Cost Price, Dealer Commission, MRP, and Discount % are required for every item / प्रत्येक वस्तूसाठी क्रय किंमत, डीलर कमिशन, एमआरपी आणि सवलत % आवश्यक आहे');
+      return;
+    }
+    setSavingPrices(true);
+    try {
+      const { data } = await api.patch(`/purchases/${selectedPurchase.id}/prices`, { items: payloadItems });
+      await load();
+      setEditingPrices(false);
+      setPriceEdits({});
+      setPriceSuccessMessage(
+        data.affectedSaleCount > 0
+          ? `Prices updated — also corrected ${data.affectedSaleCount} downstream retailer sale(s) and their voucher(s). / किंमती अद्ययावत केल्या — ${data.affectedSaleCount} किरकोळ विक्रेत्यांच्या विक्री आणि व्हाउचरमध्येही दुरुस्ती केली.`
+          : 'Prices updated. / किंमती अद्ययावत केल्या.'
+      );
+    } catch (err) {
+      setPriceError(err.response?.data?.error || 'Failed to update pricing / किंमत अद्ययावत करण्यात अयशस्वी');
+    } finally {
+      setSavingPrices(false);
+    }
+  }
 
   async function saveQuantities() {
     if (!selectedPurchase) return;
@@ -303,10 +402,14 @@ export default function Purchases() {
     }
     return (
       <div className="flex items-center gap-2">
-        <span className="text-xs bg-emerald-50 text-emerald-700 font-medium px-3 py-1.5 rounded border border-emerald-200">
-          {status === 'CONFIRMED' ? 'Confirmed / पुष्टी झाली' : 'Received / प्राप्त झाले'}
+        <span className={`text-xs font-medium px-3 py-1.5 rounded border ${
+          status === 'MODIFIED' ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+        }`}>
+          {status === 'CONFIRMED' ? 'Confirmed / पुष्टी झाली'
+            : status === 'MODIFIED' ? 'Modified / सुधारित'
+            : 'Received / प्राप्त झाले'}
         </span>
-        {user.role === 'DEALER' && status === 'CONFIRMED' && (
+        {user.role === 'DEALER' && (status === 'CONFIRMED' || status === 'MODIFIED') && (
           <button type="button" onClick={() => openPrintPrompt(p)}
             className="text-xs bg-white border border-gray-400 text-gray-700 px-3 py-1.5 rounded hover:bg-gray-50">
             Print Labels<span className="block">लेबल छापा</span>
@@ -735,8 +838,46 @@ export default function Purchases() {
                     <div className="font-semibold">{selectedPurchase.supplier?.name || selectedPurchase.sourceDealer?.name}</div>
                     <div className="text-xs text-gray-400">{new Date(selectedPurchase.date).toLocaleString()}</div>
                   </div>
-                  {statusAction(selectedPurchase)}
+                  <div className="flex items-center gap-2">
+                    {user.role === 'DEALER' && (selectedPurchase.status === 'CONFIRMED' || selectedPurchase.status === 'MODIFIED') && !editingPrices && (
+                      <button type="button" onClick={startEditPrices}
+                        className="text-xs bg-white border border-emerald-700 text-emerald-700 px-3 py-1.5 rounded hover:bg-emerald-50">
+                        Correct Prices<span className="block">किंमती दुरुस्त करा</span>
+                      </button>
+                    )}
+                    {statusAction(selectedPurchase)}
+                  </div>
                 </div>
+
+                {priceSuccessMessage && (
+                  <div className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-3 py-2 mb-2">{priceSuccessMessage}</div>
+                )}
+
+                {(() => {
+                  const { itemCount, totalQuantity, totalAmount, isComplete } = purchaseTotals(selectedPurchase, user.role);
+                  return (
+                    <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm bg-gray-50 border border-gray-200 rounded px-3 py-2 mb-2">
+                      <div>
+                        <span className="text-gray-500">Items</span> <span className="text-gray-400">/ वस्तू:</span>{' '}
+                        <span className="font-medium">{itemCount}</span>
+                      </div>
+                      <div>
+                        <span className="text-gray-500">Total Qty</span> <span className="text-gray-400">/ एकूण प्रमाण:</span>{' '}
+                        <span className="font-medium">{totalQuantity}</span>
+                      </div>
+                      <div>
+                        <span className="text-gray-500">Total</span> <span className="text-gray-400">/ एकूण:</span>{' '}
+                        {isComplete ? (
+                          <span className="font-medium">₹{totalAmount.toFixed(2)}</span>
+                        ) : (
+                          <span className="font-medium text-amber-700">
+                            Pending dealer fulfillment <span className="text-amber-600">/ डीलरच्या पूर्ततेची प्रतीक्षा</span>
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {user.role === 'RETAILER' ? (
                   <div className="overflow-x-auto">
@@ -805,29 +946,75 @@ export default function Purchases() {
                         </tr>
                       </thead>
                       <tbody>
-                        {selectedPurchase.items.map((it) => (
-                          <tr key={it.id} className="border-t">
-                            <td className="p-1">{it.product?.name}</td>
-                            <td className="p-1">
-                              {isSelectedEditable ? (
-                                <input type="number" min="1" className="border rounded px-1 py-0.5 w-20"
-                                  value={quantityEdits[it.id] ?? ''}
-                                  onChange={(e) => setQuantityEdits((prev) => ({ ...prev, [it.id]: e.target.value }))} />
-                              ) : it.quantity}
-                            </td>
-                            <td className="p-1">{it.batchName}</td>
-                            <td className="p-1">₹{it.rate}</td>
-                            <td className="p-1">{it.dealerCommission}%</td>
-                            <td className="p-1">₹{it.sellingPrice}</td>
-                            <td className="p-1">₹{it.mrp}</td>
-                            <td className="p-1">{it.discount}%</td>
-                            <td className="p-1">₹{it.retailerSellingPrice ?? computeRetailerPrice(it)}</td>
-                            <td className="p-1">{formatMMYYYY(it.manufacturingDate)}</td>
-                            <td className="p-1">{formatMMYYYY(it.expiryDate)}</td>
-                          </tr>
-                        ))}
+                        {selectedPurchase.items.map((it) => {
+                          const edit = priceEdits[it.id];
+                          const liveSellingPrice = editingPrices && edit ? computeSellingPrice(edit) : null;
+                          const liveRetailerPrice = editingPrices && edit ? computeRetailerPrice(edit) : null;
+                          return (
+                            <tr key={it.id} className="border-t">
+                              <td className="p-1">{it.product?.name}</td>
+                              <td className="p-1">
+                                {isSelectedEditable ? (
+                                  <input type="number" min="1" className="border rounded px-1 py-0.5 w-20"
+                                    value={quantityEdits[it.id] ?? ''}
+                                    onChange={(e) => setQuantityEdits((prev) => ({ ...prev, [it.id]: e.target.value }))} />
+                                ) : it.quantity}
+                              </td>
+                              <td className="p-1">{it.batchName}</td>
+                              <td className="p-1">
+                                {editingPrices ? (
+                                  <input type="number" step="0.01" min="0" className="border rounded px-1 py-0.5 w-20"
+                                    value={edit?.rate ?? ''}
+                                    onChange={(e) => updatePriceEdit(it.id, 'rate', e.target.value)} />
+                                ) : `₹${it.rate}`}
+                              </td>
+                              <td className="p-1">
+                                {editingPrices ? (
+                                  <input type="number" step="0.01" min="0" className="border rounded px-1 py-0.5 w-16"
+                                    value={edit?.dealerCommission ?? ''}
+                                    onChange={(e) => updatePriceEdit(it.id, 'dealerCommission', e.target.value)} />
+                                ) : `${it.dealerCommission}%`}
+                              </td>
+                              <td className="p-1">₹{editingPrices ? (liveSellingPrice || '—') : it.sellingPrice}</td>
+                              <td className="p-1">
+                                {editingPrices ? (
+                                  <input type="number" step="0.01" min="0" className="border rounded px-1 py-0.5 w-20"
+                                    value={edit?.mrp ?? ''}
+                                    onChange={(e) => updatePriceEdit(it.id, 'mrp', e.target.value)} />
+                                ) : `₹${it.mrp}`}
+                              </td>
+                              <td className="p-1">
+                                {editingPrices ? (
+                                  <input type="number" step="0.01" min="0" className="border rounded px-1 py-0.5 w-16"
+                                    value={edit?.discount ?? ''}
+                                    onChange={(e) => updatePriceEdit(it.id, 'discount', e.target.value)} />
+                                ) : `${it.discount}%`}
+                              </td>
+                              <td className="p-1">₹{editingPrices ? (liveRetailerPrice || '—') : (it.retailerSellingPrice ?? computeRetailerPrice(it))}</td>
+                              <td className="p-1">{formatMMYYYY(it.manufacturingDate)}</td>
+                              <td className="p-1">{formatMMYYYY(it.expiryDate)}</td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
+                  </div>
+                )}
+
+                {priceError && (
+                  <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2 mt-2">{priceError}</div>
+                )}
+
+                {editingPrices && (
+                  <div className="flex items-center gap-3 mt-2">
+                    <button type="button" onClick={savePrices} disabled={savingPrices}
+                      className="text-xs bg-emerald-700 text-white px-3 py-1.5 rounded hover:bg-emerald-800 disabled:opacity-50">
+                      {savingPrices ? 'Saving... / जतन करत आहे...' : 'Save Price Changes / किंमत बदल जतन करा'}
+                    </button>
+                    <button type="button" onClick={cancelEditPrices} disabled={savingPrices}
+                      className="text-xs text-gray-600 px-2 py-1.5 rounded hover:bg-gray-100">
+                      Cancel / रद्द करा
+                    </button>
                   </div>
                 )}
 

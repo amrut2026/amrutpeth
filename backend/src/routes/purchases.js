@@ -23,6 +23,34 @@ function minimalItemFieldsError(items) {
   return null;
 }
 
+// Validation + recompute for PATCH /:id/prices below — mirrors the same
+// formulas Purchases.jsx uses client-side (computeSellingPrice /
+// computeRetailerPrice), so a correction here always lands on the same
+// numbers the dealer would see on screen while entering it.
+function priceEditFieldsError(items) {
+  for (const i of items) {
+    if (i.rate === undefined || i.rate === '' || Number(i.rate) <= 0) return 'Cost price is required and must be greater than zero for every item';
+    if (i.dealerCommission === undefined || i.dealerCommission === '' || Number(i.dealerCommission) < 0) return 'Dealer commission is required for every item';
+    if (i.mrp === undefined || i.mrp === '' || Number(i.mrp) <= 0) return 'MRP is required and must be greater than zero for every item';
+    if (i.discount === undefined || i.discount === '' || Number(i.discount) < 0) return 'Discount % is required for every item';
+  }
+  return null;
+}
+function computeSellingPrice(rate, dealerCommission) {
+  return Number((Number(rate) + (Number(dealerCommission) * Number(rate)) / 100).toFixed(1));
+}
+function computeRetailerPrice(mrp, discount) {
+  return Number((Number(mrp) - (Number(discount) * Number(mrp)) / 100).toFixed(2));
+}
+// Same PAID / PARTIALLY_PAID / OPEN determination vouchers.js POST
+// /:id/payments already uses, applied here after a price correction
+// changes a voucher's amount out from under however much has already
+// been paid against it.
+function voucherStatusFor(amount, alreadyPaid) {
+  if (alreadyPaid <= 0) return 'OPEN';
+  return alreadyPaid >= amount ? 'PAID' : 'PARTIALLY_PAID';
+}
+
 // Purchase of product is a Dealer/Retailer activity only — Admin (and any other
 // role) is blocked from both viewing and recording purchases.
 router.get('/', authRequired, requireRole('DEALER', 'RETAILER'), async (req, res) => {
@@ -392,6 +420,7 @@ router.patch('/:id/status', authRequired, requireRole('DEALER', 'RETAILER'), asy
         type: 'PAYABLE',
         dealerId: scope.dealerId,
         supplierId: purchase.supplierId,
+        purchaseId: id,
         amount: totalAmount,
         description: `Auto-voucher for Purchase #${id}`,
       }
@@ -399,6 +428,231 @@ router.patch('/:id/status', authRequired, requireRole('DEALER', 'RETAILER'), asy
   }
 
   res.json(purchase);
+});
+
+// PATCH /api/purchases/:id/prices — DEALER only. Corrects Cost Price,
+// Dealer Commission, MRP, and Discount % on one or more items of an
+// already-CONFIRMED purchase (a mistake caught after the fact, not the
+// pre-confirmation edit PUT /:id already covers). sellingPrice and
+// retailerSellingPrice are always recalculated here from the corrected
+// values, never trusted from the client — same formulas Purchases.jsx uses
+// on screen (see computeSellingPrice/computeRetailerPrice above).
+//
+// Cascades everywhere this batch's pricing already flowed to:
+//   1. This purchase's own PurchaseItem rows.
+//   2. This dealer's own Inventory row for that exact batch (quantity is
+//      untouched — see PATCH /:id/quantities for that axis instead).
+//   3. This purchase's PAYABLE voucher (Purchase.payableVoucher) — amount
+//      recomputed from the corrected rate across the whole purchase, status
+//      re-derived against whatever's already been paid against it.
+//   4. Every SaleItem this dealer has already sold from that exact batch
+//      (productId + batchName) — CASH sales and RETAILER sales alike —
+//      re-snapshotted with the corrected rate/sellingPrice/price/mrp/
+//      discount, and the parent Sale's totalAmount recomputed.
+//   5. For a RETAILER-sale line, the downstream retailer's own PurchaseItem
+//      (linked via SaleItem.purchaseItemId) gets the same backfill dispatch
+//      would have written, and — if that retailer has already marked the
+//      purchase RECEIVED — their own Inventory row for the batch too.
+//   6. That sale's own RECEIVABLE voucher (Sale.receivableVoucher), amount
+//      and status recomputed the same way as the payable voucher above.
+//   7. The purchase itself moves to MODIFIED (from CONFIRMED, or staying
+//      MODIFIED on a second correction) — see PurchaseStatus in
+//      schema.prisma — so it's visibly distinct from an untouched
+//      CONFIRMED purchase. Can be re-run on an already-MODIFIED purchase.
+//
+// Deliberately does NOT reach further than a retailer's own Inventory —
+// any SoldProduct settlement a retailer has already raised (or paid) by
+// reselling this stock to their own customers is left alone. Those are a
+// periodic, independent settlement (see schema.prisma SoldProduct) and
+// retroactively rewriting an obligation that may already be
+// TO_BE_CONFIRMED or PAID would silently disagree with money already in
+// motion — a correction that deep needs a human to reconcile it, not this
+// endpoint.
+router.patch('/:id/prices', authRequired, requireRole('DEALER'), async (req, res) => {
+  try {
+    const scope = ownerScope(req);
+    const id = Number(req.params.id);
+    const { items } = req.body; // [{ id: purchaseItemId, rate, dealerCommission, mrp, discount }]
+
+    const purchase = await prisma.purchase.findUnique({ where: { id }, include: { items: true } });
+    if (!purchase) return res.status(404).json({ error: 'Purchase not found' });
+    if (purchase.ownerType !== 'DEALER' || purchase.dealerId !== scope.dealerId) {
+      return res.status(403).json({ error: 'You can only edit your own purchases' });
+    }
+    if (purchase.status !== 'CONFIRMED' && purchase.status !== 'MODIFIED') {
+      return res.status(400).json({ error: 'Only a confirmed purchase can have its pricing corrected — use the regular edit form before then' });
+    }
+
+    if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'No items to update' });
+    const itemsError = priceEditFieldsError(items);
+    if (itemsError) return res.status(400).json({ error: itemsError });
+
+    const itemById = new Map(purchase.items.map((i) => [i.id, i]));
+    for (const i of items) {
+      if (!itemById.has(Number(i.id))) return res.status(400).json({ error: 'Item does not belong to this purchase' });
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      // 1 & 2. Update each corrected PurchaseItem and its Inventory row.
+      const correctedById = new Map();
+      for (const i of items) {
+        const existingItem = itemById.get(Number(i.id));
+        const rate = Number(i.rate);
+        const dealerCommission = Number(i.dealerCommission);
+        const mrp = Number(i.mrp);
+        const discount = Number(i.discount);
+        const sellingPrice = computeSellingPrice(rate, dealerCommission);
+        const retailerSellingPrice = computeRetailerPrice(mrp, discount);
+        correctedById.set(existingItem.id, { rate, dealerCommission, mrp, discount, sellingPrice, retailerSellingPrice, batchName: existingItem.batchName, productId: existingItem.productId });
+
+        await tx.purchaseItem.update({
+          where: { id: existingItem.id },
+          data: { rate, dealerCommission, mrp, discount, sellingPrice, retailerSellingPrice }
+        });
+
+        await tx.inventory.updateMany({
+          where: {
+            productId: existingItem.productId,
+            ownerType: 'DEALER',
+            dealerId: scope.dealerId,
+            retailerId: null,
+            batchName: existingItem.batchName,
+          },
+          data: { rate, dealerCommission, sellingPrice, discount, mrp, retailerSellingPrice }
+        });
+      }
+
+      // 3. Recompute this purchase's own PAYABLE voucher from ALL of its
+      // items (not just the ones just edited), since a partial correction
+      // still changes the purchase's total.
+      const allItems = await tx.purchaseItem.findMany({ where: { purchaseId: id } });
+      const voucher = await tx.voucher.findUnique({ where: { purchaseId: id }, include: { payments: true } });
+      if (voucher) {
+        const newAmount = allItems.reduce((sum, i) => sum + Number(i.rate) * i.quantity, 0);
+        const alreadyPaid = voucher.payments.reduce((sum, p) => sum + Number(p.amount), 0);
+        await tx.voucher.update({
+          where: { id: voucher.id },
+          data: { amount: newAmount, status: voucherStatusFor(newAmount, alreadyPaid) }
+        });
+      }
+
+      // 4 & 5 & 6. Cascade into every dealer -> retailer sale already
+      // fulfilled from one of the corrected batches.
+      const affectedSaleIds = new Set();
+      for (const corrected of correctedById.values()) {
+        if (!corrected.batchName) continue; // no batch, nothing could have been sold from it yet
+
+        const saleItems = await tx.saleItem.findMany({
+          where: {
+            productId: corrected.productId,
+            batchName: corrected.batchName,
+            sale: { ownerType: 'DEALER', dealerId: scope.dealerId },
+          },
+          include: { sale: true },
+        });
+
+        for (const saleItem of saleItems) {
+          const isRetailerSale = saleItem.sale.customerType === 'RETAILER';
+          const newPrice = isRetailerSale ? corrected.sellingPrice : corrected.retailerSellingPrice;
+
+          await tx.saleItem.update({
+            where: { id: saleItem.id },
+            data: {
+              price: newPrice,
+              mrp: corrected.mrp,
+              discount: corrected.discount,
+              rate: corrected.rate,
+              sellingPrice: corrected.sellingPrice,
+            }
+          });
+          affectedSaleIds.add(saleItem.sale.id);
+
+          // 5. Backfill the downstream retailer's own PurchaseItem exactly
+          // like dispatch would have, if this line came from a retailer's
+          // placed order.
+          if (saleItem.purchaseItemId) {
+            await tx.purchaseItem.update({
+              where: { id: saleItem.purchaseItemId },
+              data: {
+                rate: corrected.sellingPrice,
+                dealerCommission: 0,
+                sellingPrice: corrected.sellingPrice,
+                discount: corrected.discount,
+                mrp: corrected.mrp,
+                retailerSellingPrice: corrected.retailerSellingPrice,
+                originDealerRate: corrected.rate,
+              }
+            });
+
+            // If that retailer already marked the purchase RECEIVED, their
+            // own Inventory batch is already credited from this line —
+            // correct it too.
+            const retailerPurchaseItem = await tx.purchaseItem.findUnique({
+              where: { id: saleItem.purchaseItemId },
+              include: { purchase: true }
+            });
+            if (retailerPurchaseItem?.purchase?.status === 'RECEIVED') {
+              await tx.inventory.updateMany({
+                where: {
+                  productId: corrected.productId,
+                  ownerType: 'RETAILER',
+                  dealerId: null,
+                  retailerId: retailerPurchaseItem.purchase.retailerId,
+                  batchName: corrected.batchName,
+                },
+                data: {
+                  rate: corrected.sellingPrice,
+                  dealerCommission: 0,
+                  sellingPrice: corrected.sellingPrice,
+                  discount: corrected.discount,
+                  mrp: corrected.mrp,
+                  retailerSellingPrice: corrected.retailerSellingPrice,
+                  originDealerRate: corrected.rate,
+                }
+              });
+            }
+          }
+        }
+      }
+
+      // 6. Recompute totalAmount and the RECEIVABLE voucher for every
+      // affected sale, from that sale's own full (post-update) item list —
+      // a sale can carry lines from more than one batch, only some of
+      // which this correction touched.
+      for (const saleId of affectedSaleIds) {
+        const freshItems = await tx.saleItem.findMany({ where: { saleId } });
+        const newTotal = freshItems.reduce((sum, i) => sum + Number(i.price) * i.quantity, 0);
+        await tx.sale.update({ where: { id: saleId }, data: { totalAmount: newTotal } });
+
+        const saleVoucher = await tx.voucher.findUnique({ where: { saleId }, include: { payments: true } });
+        if (saleVoucher) {
+          const alreadyPaid = saleVoucher.payments.reduce((sum, p) => sum + Number(p.amount), 0);
+          await tx.voucher.update({
+            where: { id: saleVoucher.id },
+            data: { amount: newTotal, status: voucherStatusFor(newTotal, alreadyPaid) }
+          });
+        }
+      }
+
+      // Flag the purchase itself as MODIFIED — everything above (inventory,
+      // vouchers, downstream sales) has already been brought in line with
+      // the correction; this just makes the correction visible on the
+      // purchase's own record, distinct from an untouched CONFIRMED one.
+      await tx.purchase.update({ where: { id }, data: { status: 'MODIFIED' } });
+
+      return { affectedSaleCount: affectedSaleIds.size };
+    });
+
+    const updated = await prisma.purchase.findUnique({
+      where: { id },
+      include: { items: { include: { product: true } }, supplier: true, sourceDealer: true }
+    });
+
+    res.json({ ...updated, affectedSaleCount: result.affectedSaleCount });
+  } catch (err) {
+    console.error('purchase price correction failed:', err);
+    res.status(500).json({ error: 'Failed to update pricing', detail: err.message });
+  }
 });
 
 export default router;

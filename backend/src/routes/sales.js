@@ -217,6 +217,7 @@ async function createSale(req, res) {
           data: {
             dealerId: scope.dealerId,
             retailerId: Number(customerRetailerId),
+            saleId: created.id,
             amount: totalAmount,
             description: `Auto-voucher for Sale #${created.id}`,
           }
@@ -328,6 +329,7 @@ router.patch('/:id/dispatch', authRequired, requireRole('DEALER'), async (req, r
           data: {
             dealerId: scope.dealerId,
             retailerId: sale.customerRetailerId,
+            saleId: sale.id,
             amount: totalAmount,
             description: `Auto-voucher for Sale #${sale.id}`,
           }

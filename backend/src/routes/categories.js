@@ -22,11 +22,16 @@ router.get('/', authRequired, async (req, res) => {
 
 // Create category - DEALER only. dealerId is always taken from the logged-in
 // dealer's own id, never from the client, so a dealer can't create a category
-// under someone else's name.
+// under someone else's name. cgst/sgst are optional — if omitted, Prisma
+// applies the schema default (2.5% each, see schema.prisma ProductCategory).
 router.post('/', authRequired, requireRole('DEALER'), async (req, res) => {
-  const { name, description } = req.body;
+  const { name, description, cgst, sgst } = req.body;
   const category = await prisma.productCategory.create({
-    data: { name, description, dealerId: req.user.dealerId },
+    data: {
+      name, description, dealerId: req.user.dealerId,
+      cgst: cgst !== undefined && cgst !== '' ? Number(cgst) : undefined,
+      sgst: sgst !== undefined && sgst !== '' ? Number(sgst) : undefined,
+    },
     include: { dealer: true }
   });
   res.json(category);
@@ -38,8 +43,16 @@ router.put('/:id', authRequired, requireRole('DEALER'), async (req, res) => {
   if (!existing || existing.dealerId !== req.user.dealerId) {
     return res.status(403).json({ error: 'You can only edit your own categories' });
   }
-  const { name, description } = req.body;
-  const category = await prisma.productCategory.update({ where: { id }, data: { name, description }, include: { dealer: true } });
+  const { name, description, cgst, sgst } = req.body;
+  const category = await prisma.productCategory.update({
+    where: { id },
+    data: {
+      name, description,
+      cgst: cgst !== undefined && cgst !== '' ? Number(cgst) : undefined,
+      sgst: sgst !== undefined && sgst !== '' ? Number(sgst) : undefined,
+    },
+    include: { dealer: true }
+  });
   res.json(category);
 });
 
