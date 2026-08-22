@@ -13,7 +13,18 @@ const router = Router();
 router.get('/', authRequired, requireRole('RETAILER', 'DEALER', 'ADMIN'), async (req, res) => {
   let where = {};
   if (req.user.role === 'RETAILER') where = { retailerId: req.user.retailerId };
-  if (req.user.role === 'DEALER') where = { voucher: { dealerId: req.user.dealerId } };
+  // A DEALER's receipts include the usual voucher-backed ones (voucher.dealerId)
+  // PLUS sold-products settlements, which have no voucher at all — those
+  // are matched via the linked Payment's dealerId instead (see
+  // soldProducts.js PATCH /pay/:paymentId/confirm, schema.prisma Receipt).
+  if (req.user.role === 'DEALER') {
+    where = {
+      OR: [
+        { voucher: { dealerId: req.user.dealerId } },
+        { voucherId: null, payment: { dealerId: req.user.dealerId } },
+      ],
+    };
+  }
   const receipts = await prisma.receipt.findMany({ where, include: { voucher: true, payment: true }, orderBy: { date: 'desc' } });
   res.json(receipts);
 });
@@ -104,6 +115,11 @@ router.patch('/:id/confirm', authRequired, requireRole('DEALER'), async (req, re
     include: { voucher: { include: { receipts: true } } }
   });
   if (!receipt) return res.status(404).json({ error: 'Receipt not found' });
+  // A sold-products settlement receipt (voucherId null) is always created
+  // already PAID — see schema.prisma Receipt — so it should never reach
+  // here in TO_BE_CONFIRMED status. Guard anyway rather than crash on
+  // receipt.voucher.dealerId below.
+  if (!receipt.voucherId) return res.status(400).json({ error: 'This receipt has no voucher to confirm against' });
   if (receipt.voucher.dealerId !== req.user.dealerId) return res.status(403).json({ error: 'Forbidden' });
   if (receipt.status !== 'TO_BE_CONFIRMED') return res.status(400).json({ error: 'This receipt has already been confirmed' });
 

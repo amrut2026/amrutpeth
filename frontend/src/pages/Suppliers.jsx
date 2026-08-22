@@ -1,33 +1,22 @@
-import { useEffect, useState } from 'react';
-import api from '../api.js';
 import CrudTable from '../components/CrudTable.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 
 export default function Suppliers() {
   const { user } = useAuth();
-  const [divisions, setDivisions] = useState([]);
-
-  useEffect(() => {
-    api.get('/divisions').then(({ data }) => setDivisions(data));
-  }, []);
 
   return (
     <CrudTable
       title="Suppliers / Manufacturers"
       endpoint="/suppliers"
-      canWrite={user.role === 'ORGANISATION'}
+      canWrite={user.role === 'DEALER'}
       fields={[
         { key: 'name', label: 'Name', required: true },
         { key: 'address', label: 'Address', required: true },
         { key: 'contactNumber', label: 'Contact Number', required: true },
         { key: 'gstNumber', label: 'GST Number', required: true },
-        {
-          key: 'divisionId',
-          label: 'Division',
-          type: 'select',
-          required: true,
-          options: divisions.map((d) => ({ value: d.id, label: d.name })),
-        },
+        // No divisionId field here — the backend always assigns a new
+        // supplier to the logged-in dealer's own division (see
+        // suppliers.js POST /), so it's not something to pick in this form.
         { key: 'bankAccounts', label: 'Bank accounts', type: 'bankAccounts' },
       ]}
       columns={[

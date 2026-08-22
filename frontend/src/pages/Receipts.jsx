@@ -113,7 +113,11 @@ export default function Receipts() {
               return (
                 <tr key={r.id} className="border-t">
                   <td className="p-2">{r.id}</td>
-                  <td className="p-2">#{r.voucherId}</td>
+                  <td className="p-2">
+                    {r.voucherId
+                      ? `#${r.voucherId}`
+                      : <span className="text-xs text-gray-500">Sold products settlement / विकलेल्या उत्पादनांची देयक</span>}
+                  </td>
                   <td className="p-2">₹{Number(r.amount).toFixed(2)}</td>
                   <td className="p-2">{r.mode}</td>
                   <td className="p-2"><span className={status.className}>{status.text}</span></td>
@@ -137,6 +141,7 @@ export default function Receipts() {
           </tbody>
         </table>
       </div>
+
     </div>
   );
 }

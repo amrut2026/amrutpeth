@@ -104,6 +104,25 @@ enum SaleStatus {
   DISPATCHED
 }
 
+// OPEN the moment a CASH-sale line item is recorded (see sales.js
+// createSale), PAID once the seller settles up with their own
+// dealer/supplier for it (see soldProducts.js POST /pay).
+// A SoldProduct row settled by a RETAILER (owedBy: RETAILER) starts
+// TO_BE_CONFIRMED the moment they submit a payment (see soldProducts.js
+// POST /pay) and only becomes PAID once their dealer confirms it actually
+// arrived (PATCH /sold-products/pay/:paymentId/confirm) — mirrors
+// ReceiptStatus's confirmation step deliberately. A DEALER's own
+// settlement to their supplier — both their own cash sales (owedBy:
+// DEALER, dealerId: null) and the second, dealer-owed-to-supplier row for
+// stock a retailer resold (owedBy: DEALER, dealerId set) — is always
+// marked PAID directly with no confirmation step, same as a PAYABLE
+// Voucher.
+enum SoldProductStatus {
+  OPEN
+  TO_BE_CONFIRMED
+  PAID
+}
+
 // ---------------- Users / Auth ----------------
 model User {
   id             Int           @id @default(autoincrement())
@@ -158,6 +177,7 @@ model Dealer {
   sales                  Sale[]              @relation("DealerSales")
   vouchers               Voucher[]
   payments               Payment[]
+  soldProductSettlements SoldProduct[]
 }
 
 model DealerBankAccount {
@@ -204,17 +224,56 @@ model RetailerBankAccount {
 // and manages their own categories, while ADMIN can see every dealer's
 // categories (read-only) across the whole platform.
 model ProductCategory {
-  id          Int       @id @default(autoincrement())
-  name        String
-  description String?
-  dealerId    Int
-  dealer      Dealer    @relation(fields: [dealerId], references: [id])
-  products    Product[]
+  id           Int           @id @default(autoincrement())
+  name         String
+  description  String?
+  dealerId     Int
+  dealer       Dealer        @relation(fields: [dealerId], references: [id])
+  products     Product[]
+  productNames ProductName[]
 }
 
-// Product master catalog. Managed centrally by ADMIN only — dealers and
-// retailers get stock into their own inventory via the Purchases module,
-// they do not own or edit catalog entries themselves.
+// Curated vocabularies for the product creation form's Name and Size/Weight
+// dropdowns — not a foreign key on Product itself (Product.name and
+// Product.sizeWeight stay plain strings, unchanged, so every existing query
+// that reads product.name/product.sizeWeight directly keeps working as-is).
+// Purely a growing, de-duplicated list of values a dealer has already used,
+// so the same product can't accidentally get created twice under slightly
+// different spellings ("Refined Oil" vs "refined oil ").
+//
+// ProductName is scoped to a ProductCategory — a name only makes sense
+// within the category it was created under (e.g. "Refined Oil" under
+// Edible Oils), so the product form's Name dropdown only offers names
+// belonging to whichever category is currently selected. Since
+// ProductCategory itself is already dealer-scoped (see below), this
+// transitively scopes ProductName to a single dealer's own categories too
+// — there's no separate dealerId needed here. The same name string can
+// still exist under more than one category as separate entries (@@unique
+// is per-category, not global).
+//
+// Unit/sizeWeight has no such natural category tie ("1kg", "500ml" apply
+// everywhere), so it stays a single flat list shared across every dealer.
+// See products.js GET/POST /names, /units.
+model ProductName {
+  id         Int             @id @default(autoincrement())
+  name       String
+  categoryId Int
+  category   ProductCategory @relation(fields: [categoryId], references: [id])
+  createdAt  DateTime        @default(now())
+
+  @@unique([categoryId, name])
+}
+
+model Unit {
+  id        Int      @id @default(autoincrement())
+  value     String   @unique
+  createdAt DateTime @default(now())
+}
+
+// Product master catalog. Created by dealers (see products.js POST / —
+// DEALER only, dealerId always taken from the logged-in user, never the
+// client) — each product belongs to exactly one dealer, and retailers may
+// only purchase/sell it via their own primary dealer.
 // Note: pricing, MRP, dates, and batch name are NOT here — those vary per
 // batch purchased and live on PurchaseItem instead. The barcode identifies
 // the product itself and stays the same across every purchase/batch.
@@ -227,6 +286,10 @@ model Product {
   dealerId   Int // the dealer that created/owns this product — retailers may
   dealer     Dealer          @relation(fields: [dealerId], references: [id])
   // only purchase or sell it via that dealer, and other dealers can't see it
+  // Free-text, but sourced from the ProductName/Unit dropdowns at creation
+  // time (see products.js) — not a foreign key, so they stay ordinary
+  // strings here and every existing read of product.name/sizeWeight is
+  // unaffected. See ProductName/Unit above for why.
   name       String
   sizeWeight String
   fssaiCode  String
@@ -236,6 +299,18 @@ model Product {
   inventory     Inventory[]
   saleItems     SaleItem[]
   purchaseItems PurchaseItem[]
+  soldProducts  SoldProduct[]
+
+  // The same supplier+category+name+sizeWeight combination is one product —
+  // this is what "Clone to another supplier" (Products.jsx) exists for,
+  // rather than letting the same item get re-entered under the same
+  // supplier by mistake. Enforced here (not just in products.js) so it
+  // holds regardless of entry path. supplierId is nullable, and standard
+  // SQL unique-index semantics treat each NULL as distinct from every other
+  // NULL — POST /products already requires a supplierId, so this only
+  // matters for a product edited down to no supplier, which stays
+  // unconstrained against other no-supplier products.
+  @@unique([supplierId, categoryId, name, sizeWeight])
 }
 
 // Suppliers / manufacturers that dealers (or retailers) purchase stock from.
@@ -296,6 +371,15 @@ model Inventory {
   manufacturingDate    DateTime?
   expiryDate           DateTime?
   batchName            String    @default("")
+
+  // Only ever set on a RETAILER-owned batch — carried from
+  // PurchaseItem.originDealerRate when the purchase is marked RECEIVED (see
+  // purchases.js). The dealer's own cost from THEIR supplier for this exact
+  // batch, so that once the retailer resells it, the dealer's obligation to
+  // their own supplier can be raised (see SaleItem.originDealerRate,
+  // SoldProduct.owedBy). Null on every DEALER-owned batch — a dealer's own
+  // `rate` field above already serves that purpose for their own stock.
+  originDealerRate     Decimal?  @db.Decimal(10, 2)
 
   updatedAt DateTime @updatedAt
 
@@ -376,6 +460,18 @@ model PurchaseItem {
   expiryDate           DateTime?
   batchName            String?
 
+  // The DEALER's own cost price for this batch — what they originally paid
+  // THEIR supplier — backfilled from the fulfilling Inventory.rate at
+  // dispatch time (sales.js PATCH /:id/dispatch), same moment as
+  // rate/sellingPrice/mrp above. Carried through to the retailer's own
+  // Inventory once this purchase is marked RECEIVED (purchases.js), and
+  // from there to the retailer's own SaleItem when they resell it — so the
+  // dealer's obligation to THEIR supplier can be raised automatically once
+  // the retailer sells the unit on (see SaleItem.originDealerRate,
+  // SoldProduct.owedBy). Always null for a dealer's own purchase from a
+  // supplier — only meaningful for a retailer's purchase from their dealer.
+  originDealerRate     Decimal?  @db.Decimal(10, 2)
+
   saleItem SaleItem? // inverse of SaleItem.purchaseItemId, for a retailer-order line
 }
 
@@ -402,6 +498,10 @@ model Sale {
   // Inverse of Purchase.linkedSale — set when this Sale was auto-created
   // from a retailer's purchase order rather than entered directly at POS.
   linkedPurchase Purchase?
+
+  // One row per CASH-sale line item — see SoldProduct. Empty for a sale to
+  // a RETAILER customer.
+  soldProducts SoldProduct[]
 }
 
 model SaleItem {
@@ -411,41 +511,94 @@ model SaleItem {
   productId        Int
   product          Product  @relation(fields: [productId], references: [id])
   quantity         Int
-  // Copied from the originating PurchaseItem.originalQuantity when this line
-  // is created (see purchases.js PATCH /:id/status, ORDERED transition).
-  // Null for an ordinary POS sale item, which has no retailer order behind
-  // it. Stays fixed while `quantity` may be corrected before dispatch (see
-  // sales.js PATCH /:id/items) — the dealer can fulfil for less than what
-  // was ordered but never more; see Sales.jsx for the max-quantity guard
-  // and the different-quantity highlight this makes possible.
-  //
-  // Deliberately stays nullable with NO default (unlike PurchaseItem's) —
-  // defaulting this to 0 would make every ordinary POS sale item register
-  // as "changed" (0 != quantity) and light up amber on Sales.jsx for no
-  // reason. Null genuinely means "not applicable" here, not "unset".
   originalQuantity Int?
-  // Null until a batch is chosen for this line — see Sale.status /
-  // sales.js PATCH /:id/dispatch. Always set immediately for an ordinary
-  // POS sale (createSale resolves it from the chosen Inventory batch
-  // before the Sale/SaleItem rows are even created).
   price            Decimal? @db.Decimal(10, 2)
   discount         Decimal  @default(0) @db.Decimal(10, 2)
-  // Snapshot of MRP from the Inventory batch at sale time — printed on the
-  // bill alongside the sale price so "you saved" can be shown per line.
   mrp              Decimal? @db.Decimal(10, 2)
-  // Snapshot of which Inventory batch this line was sold from, captured at
-  // sale time — printed on the bill for traceability. Not a live FK to
-  // Inventory, since that row's quantity keeps changing after the sale.
   batchName        String?
 
-  // Set only for a line that mirrors a retailer's purchase-order item
-  // (see purchases.js PATCH /:id/status, ORDERED transition). Lets
-  // sales.js PATCH /:id/dispatch backfill the originating PurchaseItem's
-  // pricing/batch fields directly by id, rather than matching on
-  // productId (which could be ambiguous if a purchase has two lines for
-  // the same product).
+  // Snapshot of the fulfilling Inventory batch's rate (cost price paid to
+  // the supplier) and sellingPrice (dealer's wholesale price to a
+  // retailer), captured at the same moment price/mrp/batchName are set
+  // (createSale, and sales.js PATCH /:id/dispatch). NOT this sale's own
+  // price — `price` above is that. These exist so soldProducts.js can
+  // settle what the seller owes their own upstream supplier/dealer (rate
+  // for a DEALER seller, sellingPrice for a RETAILER seller) from a fixed
+  // snapshot, rather than a live Inventory re-lookup that could have since
+  // drifted if the batch was re-received at a different cost.
+  rate             Decimal? @db.Decimal(10, 2)
+  sellingPrice     Decimal? @db.Decimal(10, 2)
+
+  // Only ever set on a RETAILER's own SaleItem, snapshotted from
+  // Inventory.originDealerRate at sale time (createSale). The dealer's own
+  // cost from THEIR supplier for this batch — lets soldProducts.js raise a
+  // second, dealer-scoped settlement obligation (dealer -> supplier)
+  // alongside the ordinary retailer -> dealer one (SaleItem.sellingPrice
+  // above), whenever a retailer resells dealer-sourced stock for cash. See
+  // SoldProduct.owedBy. Null for a dealer's own SaleItem — not applicable.
+  originDealerRate Decimal? @db.Decimal(10, 2)
+
   purchaseItemId Int?          @unique
   purchaseItem   PurchaseItem? @relation(fields: [purchaseItemId], references: [id])
+
+  soldProducts SoldProduct[]
+}
+
+// One or two rows per CASH-sale line item (see sales.js createSale —
+// created only when customerType is CASH, never for a dealer -> retailer
+// sale, which is already settled through the RECEIVABLE voucher/Receipt
+// flow instead). Tracks what's still owed to an upstream party for stock
+// that's since been sold to a walk-in customer — a periodic (e.g.
+// weekly/monthly) settlement, not tied to the original purchase voucher
+// amount.
+//
+// Two independent obligations can exist for the same SaleItem, which is
+// why saleItemId is no longer @unique:
+//  - owedBy: DEALER, dealerId: null / owedBy: RETAILER — the ordinary row,
+//    always created: the seller (dealer or retailer) owes their own
+//    immediate upstream party (supplier or dealer respectively) for what
+//    they sold. Settles at SaleItem.rate (dealer) or .sellingPrice
+//    (retailer).
+//  - owedBy: DEALER, dealerId: <originating dealer> — only created
+//    alongside a RETAILER's own row, when that retailer resold stock that
+//    was originally dispatched from a dealer's own supplier-sourced batch
+//    (SaleItem.originDealerRate is set). Represents what the ORIGINATING
+//    dealer now owes THEIR OWN supplier for that same unit — a second,
+//    independent settlement that rides on the retailer's Sale/SaleItem
+//    (a dealer never has a Sale of their own for it), which is why dealerId
+//    is stored explicitly here rather than read off the Sale relation.
+//    Settles at SaleItem.originDealerRate. Shown in the dealer's own
+//    sold-products list with a "Sold by retailer <name>" note.
+//
+// batchName, quantity, and price are deliberately NOT duplicated here —
+// they're read from the linked SaleItem at payment time (see
+// soldProducts.js), so they can never drift out of sync with the sale
+// itself. saleItemId is the precise line this row is about; saleId and
+// productId are carried alongside for convenient filtering/display without
+// an extra join.
+model SoldProduct {
+  id         Int               @id @default(autoincrement())
+  saleId     Int
+  sale       Sale              @relation(fields: [saleId], references: [id])
+  productId  Int
+  product    Product           @relation(fields: [productId], references: [id])
+  saleItemId Int
+  saleItem   SaleItem          @relation(fields: [saleItemId], references: [id])
+  status     SoldProductStatus @default(OPEN)
+  // Set once paid — the Payment raised in soldProducts.js POST /pay that
+  // settled this row (that Payment's dealerId/supplierId or
+  // dealerId/retailerId identifies who it was paid to).
+  paymentId  Int?
+  payment    Payment?          @relation(fields: [paymentId], references: [id])
+  createdAt  DateTime          @default(now())
+
+  // Who owes this row's amount. See the two-row explanation above.
+  owedBy   OwnerType
+  // Only set for the second (originating-dealer) row kind — see above.
+  dealerId Int?
+  dealer   Dealer? @relation(fields: [dealerId], references: [id])
+
+  @@unique([saleItemId, owedBy])
 }
 
 // ---------------- Vouchers (Dealer <-> Retailer/Supplier) ----------------
@@ -481,16 +634,34 @@ model Voucher {
 // against the same voucher) covers the voucher in full or only in part,
 // stamps this row PAID or PARTIALLY_PAID accordingly, and pushes that
 // same status onto the Voucher.
+// A voucher-backed receipt (voucherId set) follows the normal retailer ->
+// dealer confirmation workflow: created TO_BE_CONFIRMED the instant the
+// retailer submits it (receipts.js POST /), and only becomes PAID or
+// PARTIALLY_PAID once the dealer confirms (PATCH /:id/confirm), which is
+// also the point the linked Voucher's own status gets updated.
+//
+// A sold-products settlement (voucherId null) has no voucher to run that
+// same workflow against — soldProducts.js already runs its own, separate
+// TO_BE_CONFIRMED -> PAID lifecycle directly on the SoldProduct rows (see
+// SoldProductStatus). Running a second, independent TO_BE_CONFIRMED ->
+// PAID cycle here on top of that would just be two confirmations for the
+// same money, so this kind of Receipt is created already PAID, in the same
+// step the dealer confirms the underlying SoldProduct rows (PATCH
+// /sold-products/pay/:paymentId/confirm) — purely so it shows up
+// alongside voucher receipts in the retailer's payment history, not as a
+// pending item needing its own confirmation.
 model Receipt {
   id          Int           @id @default(autoincrement())
-  voucherId   Int
-  voucher     Voucher       @relation(fields: [voucherId], references: [id])
+  voucherId   Int?
+  voucher     Voucher?      @relation(fields: [voucherId], references: [id])
   retailerId  Int
   retailer    Retailer      @relation(fields: [retailerId], references: [id])
   // The Payment row created in the same transaction as this Receipt (see
-  // receipts.js POST /) — the real ledger entry this receipt is the
-  // confirmation-workflow wrapper around. One-to-one; nullable since
-  // receipts created before this change have no linked Payment.
+  // receipts.js POST / and soldProducts.js PATCH /pay/:paymentId/confirm)
+  // — the real ledger entry this receipt is the confirmation-workflow
+  // wrapper (or, for a sold-products settlement, just the display record)
+  // around. One-to-one; nullable since receipts created before this change
+  // have no linked Payment.
   paymentId   Int?          @unique
   payment     Payment?      @relation(fields: [paymentId], references: [id])
   amount      Decimal       @db.Decimal(10, 2)
@@ -535,6 +706,11 @@ model Payment {
   // direction. Null for every other Payment (dealer -> supplier, or the
   // original generic dealer -> manufacturer payment).
   receipt    Receipt?
+
+  // Every SoldProduct row this Payment settled — set when this Payment was
+  // raised via soldProducts.js POST /pay rather than the ordinary
+  // voucher/receipt flow above.
+  soldProducts SoldProduct[]
 }
 
 // ============================================================

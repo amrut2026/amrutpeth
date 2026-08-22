@@ -13,6 +13,8 @@ export default function Products() {
   const [products, setProducts] = useState([]);
   const [categories, setCategories] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
+  const [productNames, setProductNames] = useState([]);
+  const [units, setUnits] = useState([]);
   const [form, setForm] = useState(empty);
   const [selectedId, setSelectedId] = useState(null);
   const [cloneSource, setCloneSource] = useState(null); // product being cloned from, if any
@@ -20,14 +22,64 @@ export default function Products() {
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
   const [supplierFilter, setSupplierFilter] = useState('');
+  // "+" button state — a name/unit not yet in the dropdown gets typed here,
+  // then POSTed to /products/names or /products/units (see products.js) so
+  // it joins the shared vocabulary and is available for every future
+  // product, not just this one.
+  const [addingName, setAddingName] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [addingUnit, setAddingUnit] = useState(false);
+  const [newUnit, setNewUnit] = useState('');
 
   async function load() {
-    const [p, c, s] = await Promise.all([api.get('/products'), api.get('/categories'), api.get('/suppliers')]);
+    const [p, c, s, u] = await Promise.all([
+      api.get('/products'), api.get('/categories'), api.get('/suppliers'), api.get('/products/units'),
+    ]);
     setProducts(p.data);
     setCategories(c.data);
     setSuppliers(s.data);
+    setUnits(u.data);
   }
   useEffect(() => { load(); }, []);
+
+  // Product Name is scoped to a category (see schema.prisma ProductName) —
+  // refetch the dropdown's vocabulary whenever the selected category
+  // changes, instead of loading every category's names up front.
+  useEffect(() => {
+    if (!form.categoryId) { setProductNames([]); return; }
+    api.get('/products/names', { params: { categoryId: form.categoryId } }).then((res) => setProductNames(res.data));
+  }, [form.categoryId]);
+
+  async function addName() {
+    const trimmed = newName.trim();
+    if (!trimmed || !form.categoryId) return;
+    const { data } = await api.post('/products/names', { name: trimmed, categoryId: form.categoryId });
+    setProductNames((prev) => (prev.some((n) => n.id === data.id) ? prev : [...prev, data].sort((a, b) => a.name.localeCompare(b.name))));
+    setForm((f) => ({ ...f, name: data.name }));
+    setNewName('');
+    setAddingName(false);
+  }
+
+  async function addUnit() {
+    const trimmed = newUnit.trim();
+    if (!trimmed) return;
+    const { data } = await api.post('/products/units', { value: trimmed });
+    setUnits((prev) => (prev.some((u) => u.id === data.id) ? prev : [...prev, data].sort((a, b) => a.value.localeCompare(b.value))));
+    setForm((f) => ({ ...f, sizeWeight: data.value }));
+    setNewUnit('');
+    setAddingUnit(false);
+  }
+
+  // A product saved before this dropdown existed (or created with a name
+  // that's since been edited elsewhere) might hold a name/sizeWeight that
+  // isn't in the fetched list — keep it selectable rather than silently
+  // blanking the field out.
+  const nameOptions = form.name && !productNames.some((n) => n.name === form.name)
+    ? [{ id: 'current', name: form.name }, ...productNames]
+    : productNames;
+  const unitOptions = form.sizeWeight && !units.some((u) => u.value === form.sizeWeight)
+    ? [{ id: 'current', value: form.sizeWeight }, ...units]
+    : units;
 
   const isEditing = selectedId !== null;
   const selectedProduct = products.find((p) => p.id === selectedId);
@@ -36,6 +88,8 @@ export default function Products() {
     setSelectedId(p.id);
     setCloneSource(null);
     setError('');
+    setAddingName(false); setNewName('');
+    setAddingUnit(false); setNewUnit('');
     setForm({
       categoryId: p.categoryId,
       supplierId: p.supplierId || '',
@@ -53,6 +107,8 @@ export default function Products() {
     setSelectedId(null);
     setCloneSource(p);
     setError('');
+    setAddingName(false); setNewName('');
+    setAddingUnit(false); setNewUnit('');
     setForm({
       categoryId: p.categoryId,
       supplierId: '',
@@ -67,6 +123,8 @@ export default function Products() {
     setCloneSource(null);
     setForm(empty);
     setError('');
+    setAddingName(false); setNewName('');
+    setAddingUnit(false); setNewUnit('');
   }
 
   async function submit(e) {
@@ -131,19 +189,63 @@ export default function Products() {
 
           <form onSubmit={submit} className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <select className="border rounded px-2 py-1 md:col-span-2" required
-              value={form.categoryId} onChange={(e) => setForm({ ...form, categoryId: e.target.value })}>
-              <option value="">Category... / श्रेणी...</option>
-              {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-            <select className="border rounded px-2 py-1 md:col-span-2" required
               value={form.supplierId} onChange={(e) => setForm({ ...form, supplierId: e.target.value })}>
               <option value="">Supplier... / पुरवठादार...</option>
               {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
-            <input placeholder="Product Name / उत्पादनाचे नाव" className="border rounded px-2 py-1" required
-              value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-            <input placeholder="Size / Weight (आकार / वजन) (e.g. 200g)" className="border rounded px-2 py-1" required
-              value={form.sizeWeight} onChange={(e) => setForm({ ...form, sizeWeight: e.target.value })} />
+            <select className="border rounded px-2 py-1 md:col-span-2" required
+              value={form.categoryId} onChange={(e) => setForm({ ...form, categoryId: e.target.value, name: '' })}>
+              <option value="">Category... / श्रेणी...</option>
+              {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+            <div>
+              {!form.categoryId ? (
+                <select className="border rounded px-2 py-1 w-full text-gray-400" disabled>
+                  <option>Select a category first / प्रथम श्रेणी निवडा</option>
+                </select>
+              ) : !addingName ? (
+                <div className="flex gap-1">
+                  <select className="border rounded px-2 py-1 flex-1" required
+                    value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })}>
+                    <option value="">Product Name... / उत्पादनाचे नाव...</option>
+                    {nameOptions.map((n) => <option key={n.id} value={n.name}>{n.name}</option>)}
+                  </select>
+                  <button type="button" title="Add new product name / नवीन उत्पादनाचे नाव जोडा"
+                    onClick={() => setAddingName(true)}
+                    className="border rounded px-3 text-emerald-700 font-semibold hover:bg-emerald-50">+</button>
+                </div>
+              ) : (
+                <div className="flex gap-1">
+                  <input autoFocus placeholder="New product name / नवीन उत्पादनाचे नाव" className="border rounded px-2 py-1 flex-1"
+                    value={newName} onChange={(e) => setNewName(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addName(); } }} />
+                  <button type="button" onClick={addName} className="border rounded px-3 text-emerald-700 hover:bg-emerald-50">Add</button>
+                  <button type="button" onClick={() => { setAddingName(false); setNewName(''); }} className="border rounded px-3 text-gray-500 hover:bg-gray-50">✕</button>
+                </div>
+              )}
+            </div>
+            <div>
+              {!addingUnit ? (
+                <div className="flex gap-1">
+                  <select className="border rounded px-2 py-1 flex-1" required
+                    value={form.sizeWeight} onChange={(e) => setForm({ ...form, sizeWeight: e.target.value })}>
+                    <option value="">Size / Weight... / आकार / वजन...</option>
+                    {unitOptions.map((u) => <option key={u.id} value={u.value}>{u.value}</option>)}
+                  </select>
+                  <button type="button" title="Add new size/weight / नवीन आकार/वजन जोडा"
+                    onClick={() => setAddingUnit(true)}
+                    className="border rounded px-3 text-emerald-700 font-semibold hover:bg-emerald-50">+</button>
+                </div>
+              ) : (
+                <div className="flex gap-1">
+                  <input autoFocus placeholder="New size/weight (e.g. 200g)" className="border rounded px-2 py-1 flex-1"
+                    value={newUnit} onChange={(e) => setNewUnit(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addUnit(); } }} />
+                  <button type="button" onClick={addUnit} className="border rounded px-3 text-emerald-700 hover:bg-emerald-50">Add</button>
+                  <button type="button" onClick={() => { setAddingUnit(false); setNewUnit(''); }} className="border rounded px-3 text-gray-500 hover:bg-gray-50">✕</button>
+                </div>
+              )}
+            </div>
             <input placeholder="FSSAI Code / एफएसएसएआय कोड" className="border rounded px-2 py-1 md:col-span-2" required
               value={form.fssaiCode} onChange={(e) => setForm({ ...form, fssaiCode: e.target.value })} />
 

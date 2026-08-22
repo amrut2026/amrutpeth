@@ -7,7 +7,11 @@ const router = Router();
 
 const PAYMENT_MODES = ['CASH', 'UPI', 'CARD'];
 
-router.get('/', authRequired, async (req, res) => {
+// DEALER/RETAILER only — enforced here, not just by hiding the nav link /
+// route in the frontend, since scope.ownerType is empty for ADMIN and
+// ORGANISATION and would otherwise fall through to an unfiltered `where`
+// below, returning every sale in the system to a non-dealer/retailer caller.
+router.get('/', authRequired, requireRole('DEALER', 'RETAILER'), async (req, res) => {
   const scope = ownerScope(req);
   let where = {};
   if (scope.ownerType === 'DEALER') where = { ownerType: 'DEALER', dealerId: scope.dealerId };
@@ -118,10 +122,36 @@ async function createSale(req, res) {
         price: Number(price),
         mrp: inv.mrp != null ? Number(inv.mrp) : null,
         batchName: inv.batchName || null,
+        // Snapshot of this batch's rate (cost paid to supplier) and
+        // sellingPrice (dealer -> retailer wholesale price) — see
+        // schema.prisma SaleItem.rate/sellingPrice. Used later by
+        // soldProducts.js to settle what this seller owes their own
+        // upstream dealer/supplier, independent of `price` above (what the
+        // end customer was actually charged).
+        rate: inv.rate != null ? Number(inv.rate) : null,
+        sellingPrice: inv.sellingPrice != null ? Number(inv.sellingPrice) : null,
+        // Only ever populated on a RETAILER's own batch (see schema.prisma
+        // Inventory.originDealerRate) — the dealer's own cost from THEIR
+        // supplier, so reselling this unit can also settle what the
+        // originating dealer owes their supplier.
+        originDealerRate: inv.originDealerRate != null ? Number(inv.originDealerRate) : null,
       };
     });
 
     const totalAmount = resolvedItems.reduce((sum, i) => sum + i.price * i.quantity, 0);
+
+    // Needed only for a RETAILER's CASH sale, to raise the second
+    // (dealer-owed-to-supplier) SoldProduct row against the right dealer —
+    // sale.dealerId is null on a retailer's own Sale, so it can't be read
+    // off the Sale relation the way it is for a dealer's own cash sale.
+    let originDealerId = null;
+    if (scope.ownerType === 'RETAILER') {
+      const retailer = await prisma.retailer.findUnique({
+        where: { id: scope.retailerId },
+        select: { primaryDealerId: true },
+      });
+      originDealerId = retailer?.primaryDealerId ?? null;
+    }
 
     const sale = await prisma.$transaction(async (tx) => {
       const created = await tx.sale.create({
@@ -144,6 +174,41 @@ async function createSale(req, res) {
       // transaction as the sale, so a failed decrement rolls back the sale
       for (const { inv, quantity } of lines) {
         await tx.inventory.update({ where: { id: inv.id }, data: { quantity: { decrement: quantity } } });
+      }
+
+      // A CASH sale (walk-in end customer) isn't covered by the usual
+      // RECEIVABLE voucher, so give each line its own SoldProduct row
+      // (OPEN) — this is what lets the seller pay their own dealer/supplier
+      // for exactly what's been sold once a settlement period is up (see
+      // soldProducts.js). Not created for a sale to a RETAILER customer,
+      // which already gets a voucher below.
+      //
+      // A retailer's line additionally raises a SECOND, independent row
+      // when it carries an originDealerRate — the unit was originally
+      // dispatched from a dealer's own supplier-sourced batch, so that
+      // dealer now separately owes THEIR supplier for it too, regardless
+      // of when/whether the retailer settles with the dealer. See
+      // schema.prisma SoldProduct.owedBy.
+      if (customerType === 'CASH') {
+        const soldProductRows = [];
+        for (const item of created.items) {
+          soldProductRows.push({
+            saleId: created.id,
+            productId: item.productId,
+            saleItemId: item.id,
+            owedBy: scope.ownerType,
+          });
+          if (scope.ownerType === 'RETAILER' && item.originDealerRate != null && originDealerId != null) {
+            soldProductRows.push({
+              saleId: created.id,
+              productId: item.productId,
+              saleItemId: item.id,
+              owedBy: 'DEALER',
+              dealerId: originDealerId,
+            });
+          }
+        }
+        await tx.soldProduct.createMany({ data: soldProductRows });
       }
 
       // If a dealer sells to a retailer, auto-generate a receivable voucher
@@ -240,7 +305,13 @@ router.patch('/:id/dispatch', authRequired, requireRole('DEALER'), async (req, r
       for (const { saleItem, inv } of resolved) {
         await tx.saleItem.update({
           where: { id: saleItem.id },
-          data: { price: inv.sellingPrice, mrp: inv.mrp, batchName: inv.batchName }
+          data: {
+            price: inv.sellingPrice,
+            mrp: inv.mrp,
+            batchName: inv.batchName,
+            rate: inv.rate,
+            sellingPrice: inv.sellingPrice,
+          }
         });
         await tx.inventory.update({ where: { id: inv.id }, data: { quantity: { decrement: saleItem.quantity } } });
       }
@@ -282,6 +353,11 @@ router.patch('/:id/dispatch', authRequired, requireRole('DEALER'), async (req, r
               manufacturingDate: inv.manufacturingDate,
               expiryDate: inv.expiryDate,
               batchName: inv.batchName,
+              // The dealer's own cost from THEIR supplier — carried through
+              // so once the retailer resells this unit, the dealer's
+              // obligation to their supplier can be settled too (see
+              // schema.prisma SoldProduct.owedBy).
+              originDealerRate: inv.rate,
             }
           });
         }

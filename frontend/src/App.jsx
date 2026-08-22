@@ -11,6 +11,7 @@ import Products from './pages/Products.jsx';
 import Inventory from './pages/Inventory.jsx';
 import Purchases from './pages/Purchases.jsx';
 import Sales from './pages/Sales.jsx';
+import SoldProducts from './pages/SoldProducts.jsx';
 import Vouchers from './pages/Vouchers.jsx';
 import Receipts from './pages/Receipts.jsx';
 import Payments from './pages/Payments.jsx';
@@ -49,12 +50,15 @@ export default function App() {
       <Route path="/retailers" element={<Protected><Retailers /></Protected>} />
       <Route path="/categories" element={<Protected><Categories /></Protected>} />
       <Route path="/products" element={<Protected><Products /></Protected>} />
-      <Route path="/inventory" element={<Protected><Inventory /></Protected>} />
+      <Route path="/inventory" element={<RoleProtected roles={['DEALER', 'RETAILER']}><Inventory /></RoleProtected>} />
       <Route path="/purchases" element={<RoleProtected roles={['DEALER', 'RETAILER']}><Purchases /></RoleProtected>} />
-      <Route path="/sales" element={<Protected><Sales /></Protected>} />
-      <Route path="/vouchers" element={<Protected><Vouchers /></Protected>} />
-      <Route path="/receipts" element={<Protected><Receipts /></Protected>} />
-      <Route path="/payments" element={<Protected><Payments /></Protected>} />
+      <Route path="/sales" element={<RoleProtected roles={['DEALER', 'RETAILER']}><Sales /></RoleProtected>} />
+      <Route path="/sold-products" element={<RoleProtected roles={['DEALER', 'RETAILER']}><SoldProducts /></RoleProtected>} />
+      <Route path="/vouchers" element={<RoleProtected roles={['DEALER', 'RETAILER']}><Vouchers /></RoleProtected>} />
+      {/* /receipts is also where a RETAILER pays their dealer (see Receipts.jsx / Layout.jsx) — still a DEALER/RETAILER-only screen either way. */}
+      <Route path="/receipts" element={<RoleProtected roles={['DEALER', 'RETAILER']}><Receipts /></RoleProtected>} />
+      {/* RETAILER pays their dealer via /receipts, not /payments — see Layout.jsx RETAILER nav — so this stays DEALER-only. */}
+      <Route path="/payments" element={<RoleProtected roles={['DEALER']}><Payments /></RoleProtected>} />
       <Route path="/reports" element={<Protected><Reports /></Protected>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

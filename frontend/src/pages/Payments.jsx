@@ -199,7 +199,20 @@ export default function Payments() {
                       {isFromRetailer ? (p.retailer?.name || p.retailerId) : (p.supplier?.name || p.supplierId || '—')}
                     </td>
                   )}
-                  <td className="p-2">{p.voucherId ? `#${p.voucherId}` : '—'}</td>
+                  {/* A payment with no voucherId is either the old generic
+                      "dealer -> manufacturer" payment (no supplierId either)
+                      or a sold-products settlement (POST /sold-products/pay
+                      — supplierId set, but never tied to a specific
+                      voucher, since it settles a batch of SoldProduct rows
+                      instead). Label the two differently so they aren't
+                      both shown as a bare "—". */}
+                  <td className="p-2">
+                    {p.voucherId ? `#${p.voucherId}` : (
+                      p.supplierId
+                        ? <span className="text-xs text-gray-500">Sold products / विकलेली उत्पादने</span>
+                        : <span className="text-xs text-gray-500">General / सर्वसाधारण</span>
+                    )}
+                  </td>
                   <td className="p-2">₹{Number(p.amount).toFixed(2)}</td>
                   <td className="p-2">{p.mode}</td>
                   <td className="p-2">{p.reference || '—'}</td>

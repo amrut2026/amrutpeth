@@ -42,4 +42,29 @@ router.post('/users', authRequired, requireRole('DEALER'), async (req, res) => {
 
 router.get('/me', authRequired, (req, res) => res.json(req.user));
 
+// PATCH /api/auth/change-password — any logged-in role (ADMIN, ORGANISATION,
+// DEALER, RETAILER). Requires the current password to be re-entered and
+// verified via bcrypt before the new one is set, same hashing as /login and
+// POST /users above.
+router.patch('/change-password', authRequired, async (req, res) => {
+  const { currentPassword, newPassword } = req.body;
+  if (!currentPassword || !newPassword) {
+    return res.status(400).json({ error: 'currentPassword and newPassword are required' });
+  }
+  if (newPassword.length < 6) {
+    return res.status(400).json({ error: 'New password must be at least 6 characters' });
+  }
+
+  const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  const ok = await bcrypt.compare(currentPassword, user.password);
+  if (!ok) return res.status(401).json({ error: 'Current password is incorrect' });
+
+  const hash = await bcrypt.hash(newPassword, 10);
+  await prisma.user.update({ where: { id: user.id }, data: { password: hash } });
+
+  res.json({ ok: true });
+});
+
 export default router;

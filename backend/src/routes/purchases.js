@@ -342,6 +342,14 @@ router.patch('/:id/status', authRequired, requireRole('DEALER', 'RETAILER'), asy
         retailerSellingPrice: i.retailerSellingPrice,
         manufacturingDate: i.manufacturingDate,
         expiryDate: i.expiryDate,
+        // Only ever populated on a RETAILER's PurchaseItem (backfilled at
+        // dispatch time — see sales.js PATCH /:id/dispatch and
+        // schema.prisma PurchaseItem.originDealerRate). Carrying it through
+        // to Inventory here is the last hop in the chain that lets
+        // soldProducts.js raise a dealer-owed-to-supplier settlement once
+        // this retailer resells the batch. Always undefined/null for a
+        // dealer's own purchase from a supplier.
+        originDealerRate: i.originDealerRate,
       };
 
       const existingInv = await prisma.inventory.findUnique({ where: invWhere }).catch(() => null);

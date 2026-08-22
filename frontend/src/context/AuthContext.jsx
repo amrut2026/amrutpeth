@@ -23,8 +23,16 @@ export function AuthProvider({ children }) {
     setUser(null);
   }
 
+  // Doesn't touch the current session — the existing token stays valid
+  // (it doesn't encode the password), so the user isn't logged out just
+  // for changing it. Throws on failure (wrong current password, etc.) so
+  // the caller's own form can show the error.
+  async function changePassword(currentPassword, newPassword) {
+    await api.patch('/auth/change-password', { currentPassword, newPassword });
+  }
+
   return (
-    <AuthContext.Provider value={{ user, login, logout }}>
+    <AuthContext.Provider value={{ user, login, logout, changePassword }}>
       {children}
     </AuthContext.Provider>
   );
