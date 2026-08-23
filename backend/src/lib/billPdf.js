@@ -50,6 +50,8 @@ const L = {
   mrp: 'MRP',
   save: 'Save / बचत',
   totalSavings: 'Total Savings / एकूण बचत',
+  totalItems: 'Items / वस्तू',
+  totalQty: 'Total Qty / एकूण प्रमाण',
   grandTotal: 'GRAND TOTAL / एकूण रक्कम',
   thankYou: 'Thank you for your business. / आपल्या व्यवसायासाठी धन्यवाद.',
 };
@@ -173,9 +175,11 @@ function renderBill(c, sale, party, isB2B) {
   c.hr(0.3);
 
   let totalSavings = 0;
+  let totalQuantity = 0;
   sale.items.forEach((item, idx) => {
     const { savedTotal } = renderItem(c, item, idx, isB2B);
     if (!isB2B) totalSavings += savedTotal;
+    totalQuantity += Number(item.quantity);
   });
 
   c.hr(0.3);
@@ -185,6 +189,10 @@ function renderBill(c, sale, party, isB2B) {
     c.text(`${L.totalSavings}: Rs. ${fmt(totalSavings)}`, { align: 'right' });
     c.moveDown(0.2);
   }
+
+  c.font(FONT_REGULAR).fontSize(7.5);
+  c.text(`${L.totalItems}: ${sale.items.length}   ${L.totalQty}: ${totalQuantity}`, { align: 'right' });
+  c.moveDown(0.15);
 
   c.font(FONT_BOLD).fontSize(10);
   c.text(`${L.grandTotal}: Rs. ${fmt(sale.totalAmount)}`, { align: 'right' });

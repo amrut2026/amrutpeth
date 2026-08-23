@@ -223,6 +223,8 @@ export default function Sales() {
   }
 
   const total = cart.reduce((s, c) => s + unitPrice(c) * c.quantity, 0);
+  const totalItemCount = cart.length;
+  const totalQuantity = cart.reduce((s, c) => s + Number(c.quantity || 0), 0);
   // Split for the two Recent Sales sections below — CASH is a walk-in
   // customer sale; anything else (RETAILER) is a dealer selling on to one
   // of their own retailers.
@@ -353,6 +355,13 @@ export default function Sales() {
       setSubmitting(false);
     }
   }
+
+  const itemsQtySummary = (
+    <div className="text-xs text-gray-500 mb-4">
+      {totalItemCount} item{totalItemCount === 1 ? '' : 's'} <span className="text-gray-400">/ वस्तू</span>
+      {' · '}{totalQuantity} qty <span className="text-gray-400">/ प्रमाण</span>
+    </div>
+  );
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
@@ -576,7 +585,11 @@ export default function Sales() {
               <tfoot>
                 <tr className="border-t-2 bg-gray-50 font-semibold">
                   <td className="p-2" colSpan={customerType !== 'CASH' ? 5 : 4}>
-                    Total <span className="text-gray-400 font-normal">/ एकूण</span>
+                    <div>Total <span className="text-gray-400 font-normal">/ एकूण</span></div>
+                    <div className="text-xs font-normal text-gray-500">
+                      {totalItemCount} item{totalItemCount === 1 ? '' : 's'} <span className="text-gray-400">/ वस्तू</span>
+                      {' · '}{totalQuantity} qty <span className="text-gray-400">/ प्रमाण</span>
+                    </div>
                   </td>
                   <td className="p-2">₹{total.toFixed(2)}</td>
                   <td className="p-2"></td>
@@ -592,9 +605,10 @@ export default function Sales() {
           {activeSaleLocked ? (
             <>
               <h2 className="font-semibold mb-3">Sale #{activeSale.id}</h2>
-              <div className="text-3xl font-bold mb-4">
+              <div className="text-3xl font-bold mb-1">
                 ₹{activeSale.totalAmount != null ? Number(activeSale.totalAmount).toFixed(2) : total.toFixed(2)}
               </div>
+              {itemsQtySummary}
               <p className="text-xs text-gray-500 mb-4">
                 Payment mode: <span className="font-medium">{activeSale.paymentMode || '—'}</span>
               </p>
@@ -607,7 +621,8 @@ export default function Sales() {
           ) : activeSaleEditable ? (
             <>
               <h2 className="font-semibold mb-3">Dispatch Order #{activeSale.id}</h2>
-              <div className="text-3xl font-bold mb-4">₹{total.toFixed(2)}</div>
+              <div className="text-3xl font-bold mb-1">₹{total.toFixed(2)}</div>
+              {itemsQtySummary}
 
               <label className="text-xs text-gray-500">Payment mode <span className="text-gray-400">/ पैसे भरण्याची पद्धत</span></label>
               <div className="flex gap-2 mb-4">
@@ -632,7 +647,8 @@ export default function Sales() {
           ) : (
             <>
               <h2 className="font-semibold mb-3">Checkout <span className="text-gray-400 font-normal">/ चेकआउट</span></h2>
-              <div className="text-3xl font-bold mb-4">₹{total.toFixed(2)}</div>
+              <div className="text-3xl font-bold mb-1">₹{total.toFixed(2)}</div>
+              {itemsQtySummary}
 
               <label className="text-xs text-gray-500">Payment mode <span className="text-gray-400">/ पैसे भरण्याची पद्धत</span></label>
               <div className="flex gap-2 mb-4">
