@@ -223,6 +223,72 @@ export default function Sales() {
   }
 
   const total = cart.reduce((s, c) => s + unitPrice(c) * c.quantity, 0);
+  // Split for the two Recent Sales sections below — CASH is a walk-in
+  // customer sale; anything else (RETAILER) is a dealer selling on to one
+  // of their own retailers.
+  const cashSales = sales.filter((s) => s.customerType === 'CASH');
+  const nonCashSales = sales.filter((s) => s.customerType !== 'CASH');
+
+  // Shared table body for both Recent Sales sections below — identical
+  // row rendering, just given a different (pre-filtered) slice of `sales`
+  // and its own empty-state message.
+  function renderSalesTable(rows, emptyMessage) {
+    return (
+      <div className="bg-white rounded shadow overflow-x-auto lg:max-h-[calc(50vh-8rem)] lg:overflow-y-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-gray-100 sticky top-0">
+            <tr>
+              <th className="text-left p-2">#</th>
+              <th className="text-left p-2">Date <span className="text-gray-400 font-normal">/ दिनांक</span></th>
+              <th className="text-left p-2">Customer <span className="text-gray-400 font-normal">/ ग्राहक</span></th>
+              <th className="text-left p-2">Payment <span className="text-gray-400 font-normal">/ पैसे भरणे</span></th>
+              <th className="text-left p-2">Total <span className="text-gray-400 font-normal">/ एकूण</span></th>
+              <th className="text-left p-2">Status <span className="text-gray-400 font-normal">/ स्थिती</span></th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((s) => {
+              const status = s.status || 'COMPLETED';
+              const isActive = activeSale?.id === s.id;
+              return (
+                <tr key={s.id}
+                  className={`border-t cursor-pointer hover:bg-gray-50 ${isActive ? 'bg-emerald-50' : ''}`}
+                  onClick={() => loadSaleIntoCart(s)}>
+                  <td className="p-2">{s.id}</td>
+                  <td className="p-2">{new Date(s.date).toLocaleString()}</td>
+                  <td className="p-2">{s.customerType}{s.posTransactionRef ? ` · ${s.posTransactionRef}` : ''}</td>
+                  <td className="p-2">{s.paymentMode || '—'}</td>
+                  <td className="p-2">{s.totalAmount != null ? `₹${Number(s.totalAmount).toFixed(2)}` : '—'}</td>
+                  <td className="p-2">
+                    {status === 'IN_PENDING' && (
+                      <span className="text-xs bg-amber-50 text-amber-800 font-medium px-2 py-1 rounded border border-amber-200">
+                        Pending Order<span className="block">प्रलंबित ऑर्डर</span>
+                      </span>
+                    )}
+                    {status === 'DISPATCHED' && (
+                      <span className="text-xs bg-emerald-50 text-emerald-700 font-medium px-2 py-1 rounded border border-emerald-200">
+                        Dispatched<span className="block">पाठवले</span>
+                      </span>
+                    )}
+                    {status === 'COMPLETED' && (
+                      <span className="text-xs text-gray-500">Completed<span className="block">पूर्ण</span></span>
+                    )}
+                  </td>
+                  <td className="p-2">
+                    {status !== 'IN_PENDING' && (
+                      <button className="text-emerald-700 text-xs" onClick={(e) => { e.stopPropagation(); printBill(s.id); }}>Print / छापा</button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+            {rows.length === 0 && <tr><td className="p-3 text-gray-400" colSpan={7}>{emptyMessage}</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
 
   async function printBill(saleId) {
     try {
@@ -506,6 +572,17 @@ export default function Sales() {
                 </td></tr>
               )}
             </tbody>
+            {cart.length > 0 && (
+              <tfoot>
+                <tr className="border-t-2 bg-gray-50 font-semibold">
+                  <td className="p-2" colSpan={customerType !== 'CASH' ? 5 : 4}>
+                    Total <span className="text-gray-400 font-normal">/ एकूण</span>
+                  </td>
+                  <td className="p-2">₹{total.toFixed(2)}</td>
+                  <td className="p-2"></td>
+                </tr>
+              </tfoot>
+            )}
           </table>
         </div>
       </div>
@@ -587,59 +664,12 @@ export default function Sales() {
 
         <div className="mt-4">
           <h2 className="text-lg font-semibold mb-2">Recent Sales <span className="text-gray-400 font-normal">/ अलीकडील विक्री</span></h2>
-          <div className="bg-white rounded shadow overflow-x-auto lg:max-h-[calc(100vh-24rem)] lg:overflow-y-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-gray-100 sticky top-0">
-                <tr>
-                  <th className="text-left p-2">#</th>
-                  <th className="text-left p-2">Date <span className="text-gray-400 font-normal">/ दिनांक</span></th>
-                  <th className="text-left p-2">Customer <span className="text-gray-400 font-normal">/ ग्राहक</span></th>
-                  <th className="text-left p-2">Payment <span className="text-gray-400 font-normal">/ पैसे भरणे</span></th>
-                  <th className="text-left p-2">Total <span className="text-gray-400 font-normal">/ एकूण</span></th>
-                  <th className="text-left p-2">Status <span className="text-gray-400 font-normal">/ स्थिती</span></th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {sales.map((s) => {
-                  const status = s.status || 'COMPLETED';
-                  const isActive = activeSale?.id === s.id;
-                  return (
-                    <tr key={s.id}
-                      className={`border-t cursor-pointer hover:bg-gray-50 ${isActive ? 'bg-emerald-50' : ''}`}
-                      onClick={() => loadSaleIntoCart(s)}>
-                      <td className="p-2">{s.id}</td>
-                      <td className="p-2">{new Date(s.date).toLocaleString()}</td>
-                      <td className="p-2">{s.customerType}{s.posTransactionRef ? ` · ${s.posTransactionRef}` : ''}</td>
-                      <td className="p-2">{s.paymentMode || '—'}</td>
-                      <td className="p-2">{s.totalAmount != null ? `₹${Number(s.totalAmount).toFixed(2)}` : '—'}</td>
-                      <td className="p-2">
-                        {status === 'IN_PENDING' && (
-                          <span className="text-xs bg-amber-50 text-amber-800 font-medium px-2 py-1 rounded border border-amber-200">
-                            Pending Order<span className="block">प्रलंबित ऑर्डर</span>
-                          </span>
-                        )}
-                        {status === 'DISPATCHED' && (
-                          <span className="text-xs bg-emerald-50 text-emerald-700 font-medium px-2 py-1 rounded border border-emerald-200">
-                            Dispatched<span className="block">पाठवले</span>
-                          </span>
-                        )}
-                        {status === 'COMPLETED' && (
-                          <span className="text-xs text-gray-500">Completed<span className="block">पूर्ण</span></span>
-                        )}
-                      </td>
-                      <td className="p-2">
-                        {status !== 'IN_PENDING' && (
-                          <button className="text-emerald-700 text-xs" onClick={(e) => { e.stopPropagation(); printBill(s.id); }}>Print / छापा</button>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-                {sales.length === 0 && <tr><td className="p-3 text-gray-400" colSpan={7}>No sales yet. / अद्याप विक्री नाही.</td></tr>}
-              </tbody>
-            </table>
-          </div>
+
+          <h3 className="text-sm font-semibold text-gray-600 mb-1">Cash Sales <span className="text-gray-400 font-normal">/ रोख विक्री</span></h3>
+          {renderSalesTable(cashSales, 'No cash sales yet. / अद्याप रोख विक्री नाही.')}
+
+          <h3 className="text-sm font-semibold text-gray-600 mb-1 mt-4">Retailer Sales <span className="text-gray-400 font-normal">/ किरकोळ विक्रेता विक्री</span></h3>
+          {renderSalesTable(nonCashSales, 'No retailer sales yet. / अद्याप किरकोळ विक्रेता विक्री नाही.')}
         </div>
       </div>
     </div>
