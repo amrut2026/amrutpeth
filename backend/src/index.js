@@ -23,7 +23,28 @@ import supplierRoutes from './routes/suppliers.js';
 import divisionRoutes from './routes/divisions.js';
 
 const app = express();
-app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
+
+// process.env.CORS_ORIGIN is a comma-separated list (e.g.
+// "https://amrutpeth.co.in,https://www.amrutpeth.co.in") — cors()'s
+// `origin` option treats a plain string as ONE literal origin to compare
+// against, so passing the raw env var directly never matches any real
+// origin and silently drops the Access-Control-Allow-Origin header. Split
+// it into an array and check membership instead.
+const allowedOrigins = (process.env.CORS_ORIGIN || '*')
+  .split(',')
+  .map((o) => o.trim());
+
+app.use(cors({
+  origin(origin, callback) {
+    // `origin` is undefined for non-browser requests (curl, server-to-server
+    // calls, same-origin requests) — allow those through.
+    if (!origin || allowedOrigins.includes('*') || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    callback(new Error(`Origin ${origin} not allowed by CORS`));
+  },
+  credentials: true,
+}));
 app.use(express.json());
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok', time: new Date() }));
