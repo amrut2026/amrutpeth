@@ -14,6 +14,28 @@ function FieldLabel({ en, mr }) {
   );
 }
 
+// Same sizeWeight/flavour/brand join used by the product picker's <option>
+// text below (plain string, can't hold ProductCell's JSX) and by
+// ProductCell itself, so both stay in sync.
+function productDetails(product) {
+  return [product?.sizeWeight, product?.flavour, product?.brand].filter(Boolean).join(' · ');
+}
+
+// Product name plus size/weight, flavour, and brand — used in every item
+// table's Product column below (entry-form preview and the selected
+// purchase's view/edit panel, both RETAILER and DEALER branches) so the
+// same detail is visible everywhere a product shows up on this screen.
+function ProductCell({ product }) {
+  if (!product) return '—';
+  const details = productDetails(product);
+  return (
+    <>
+      <div>{product.name}</div>
+      {details && <div className="text-xs text-gray-400">{details}</div>}
+    </>
+  );
+}
+
 // Formats a date (Date object, ISO string, or yyyy-mm[-dd]) as mm-yyyy for
 // display, regardless of the browser/OS locale.
 function formatMMYYYY(date) {
@@ -96,6 +118,11 @@ export default function Purchases() {
   // Purchase lookup: pick a purchase by ID and edit its quantities inline
   // while it's still PENDING or IN_REVIEW (before inventory is credited).
   const [selectedPurchaseId, setSelectedPurchaseId] = useState('');
+  // Narrows the purchase selector below to one supplier — separate from
+  // supplierId above (which is the "record a new purchase" form's own
+  // supplier field, unaffected by how the browser is filtered). Empty
+  // string = all suppliers, the default.
+  const [purchaseSupplierFilter, setPurchaseSupplierFilter] = useState('');
   const [quantityEdits, setQuantityEdits] = useState({});
   const [quantityError, setQuantityError] = useState('');
   const [savingQuantities, setSavingQuantities] = useState(false);
@@ -509,7 +536,12 @@ export default function Purchases() {
             {printPrompt.purchase.items.map((it) => (
               <div key={it.id} className="flex items-center justify-between gap-3 py-2 text-sm">
                 <div>
-                  <div className="font-medium">{it.product?.name} <span className="text-xs text-gray-400">({it.product?.sizeWeight})</span></div>
+                  <div className="font-medium">
+                    {it.product?.name} <span className="text-xs text-gray-400">({it.product?.sizeWeight})</span>
+                    {(it.product?.flavour || it.product?.brand) && (
+                      <span className="text-xs text-gray-400"> · {[it.product?.flavour, it.product?.brand].filter(Boolean).join(' · ')}</span>
+                    )}
+                  </div>
                   <div className="text-xs text-gray-400">Batch {it.batchName} · MRP ₹{it.mrp} · Retailer ₹{it.retailerSellingPrice} · Purchased {it.quantity}</div>
                 </div>
                 <div className="flex flex-col items-end gap-1">
@@ -600,8 +632,8 @@ export default function Purchases() {
                   {availableProducts.map((p) => (
                     <option key={p.id} value={p.id}>
                       {user.role === 'RETAILER'
-                        ? `${p.name} - ${p.sizeWeight} / ${p.supplier?.name || '—'}`
-                        : `${p.name} (${p.sizeWeight})`}
+                        ? `${p.name} - ${productDetails(p)} / ${p.supplier?.name || '—'}`
+                        : `${p.name} (${productDetails(p)})`}
                     </option>
                   ))}
                 </select>
@@ -721,7 +753,7 @@ export default function Purchases() {
                     const product = products.find((p) => String(p.id) === String(it.productId));
                     return (
                       <tr key={i} className="border-t">
-                        <td className="p-1">{product?.name || '—'}</td>
+                        <td className="p-1"><ProductCell product={product} /></td>
                         <td className="p-1">
                           <input type="number" min="1" className="border rounded px-1 py-0.5 w-20"
                             value={it.quantity} onChange={(e) => updateItem(i, 'quantity', e.target.value)} />
@@ -768,7 +800,7 @@ export default function Purchases() {
                     const product = products.find((p) => String(p.id) === String(it.productId));
                     return (
                       <tr key={i} className="border-t">
-                        <td className="p-1">{product?.name || '—'}</td>
+                        <td className="p-1"><ProductCell product={product} /></td>
                         <td className="p-1">
                           <input type="number" min="1" className="border rounded px-1 py-0.5 w-20"
                             value={it.quantity} onChange={(e) => updateItem(i, 'quantity', e.target.value)} />
@@ -834,11 +866,35 @@ export default function Purchases() {
               now the only view of a purchase on this side of the screen —
               the full history list has been removed. */}
           <div className="bg-white rounded shadow p-4">
+            {user.role === 'DEALER' && (
+              <div className="mb-3">
+                <FieldLabel en="Filter by Supplier" mr="पुरवठादारानुसार फिल्टर करा" />
+                <select className="border rounded px-2 py-1 w-full mt-1"
+                  value={purchaseSupplierFilter}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    setPurchaseSupplierFilter(next);
+                    // Drop the current selection if it falls outside the
+                    // newly chosen supplier, so the panel below doesn't
+                    // keep showing a purchase that's no longer in the list.
+                    const stillVisible = !next || purchases.some(
+                      (p) => String(p.id) === selectedPurchaseId && String(p.supplierId) === next
+                    );
+                    if (!stillVisible) setSelectedPurchaseId('');
+                  }}>
+                  <option value="">All Suppliers / सर्व पुरवठादार</option>
+                  {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+              </div>
+            )}
+
             <FieldLabel en="View / Edit Purchase" mr="खरेदी पहा / संपादित करा" />
             <select className="border rounded px-2 py-1 w-full mt-1"
               value={selectedPurchaseId} onChange={(e) => setSelectedPurchaseId(e.target.value)}>
               <option value="">Select a purchase... / खरेदी निवडा...</option>
-              {purchases.map((p) => (
+              {purchases
+                .filter((p) => !purchaseSupplierFilter || String(p.supplierId) === purchaseSupplierFilter)
+                .map((p) => (
                 <option key={p.id} value={p.id}>
                   #{p.id} — {p.supplier?.name || p.sourceDealer?.name || '—'} — {new Date(p.date).toLocaleDateString()} — {p.status || 'PENDING'}
                 </option>
@@ -925,7 +981,7 @@ export default function Purchases() {
                           const qtyChanged = it.originalQuantity != null && it.quantity !== it.originalQuantity;
                           return (
                             <tr key={it.id} className={`border-t ${qtyChanged ? 'bg-amber-50' : ''}`}>
-                              <td className="p-1">{it.product?.name}</td>
+                              <td className="p-1"><ProductCell product={it.product} /></td>
                               <td className="p-1 text-gray-500">{it.originalQuantity ?? '—'}</td>
                               <td className="p-1">
                                 {isSelectedEditable ? (
@@ -972,7 +1028,7 @@ export default function Purchases() {
                           const liveRetailerPrice = editingPrices && edit ? computeRetailerPrice(edit) : null;
                           return (
                             <tr key={it.id} className="border-t">
-                              <td className="p-1">{it.product?.name}</td>
+                              <td className="p-1"><ProductCell product={it.product} /></td>
                               <td className="p-1">
                                 {isSelectedEditable ? (
                                   <input type="number" min="1" className="border rounded px-1 py-0.5 w-20"

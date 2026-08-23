@@ -9,13 +9,14 @@ export default function Suppliers() {
       title="Suppliers / Manufacturers"
       endpoint="/suppliers"
       canWrite={user.role === 'DEALER'}
+      editable
       fields={[
         { key: 'name', label: 'Name', required: true },
         { key: 'address', label: 'Address', required: true },
         { key: 'contactNumber', label: 'Contact Number', required: true },
         { key: 'gstNumber', label: 'GST Number (optional)' },
-        // No divisionId field here — the backend always assigns a new
-        // supplier to the logged-in dealer's own division (see
+        // No divisionId/dealerId field here — the backend always assigns a
+        // new supplier to the logged-in dealer's own id (see
         // suppliers.js POST /), so it's not something to pick in this form.
         { key: 'bankAccounts', label: 'Bank accounts', type: 'bankAccounts' },
       ]}
@@ -25,7 +26,6 @@ export default function Suppliers() {
         { key: 'address', label: 'Address' },
         { key: 'contactNumber', label: 'Contact' },
         { key: 'gstNumber', label: 'GST' },
-        { key: 'division', label: 'Division', render: (r) => r.division?.name || '—' },
         {
           key: 'bankAccounts',
           label: 'Bank Accounts',

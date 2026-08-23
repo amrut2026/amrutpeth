@@ -170,6 +170,7 @@ export default function Sales() {
           }
     ));
     setActiveSale(sale);
+    setCustomerType(sale.customerType);
     setCart(items);
     setDispatchError('');
     setPendingBatches(null);
@@ -374,7 +375,7 @@ export default function Sales() {
               {pendingBatches && (
                 <div className="mt-3 border rounded p-3 bg-amber-50">
                   <p className="text-sm font-medium mb-2">
-                    Multiple batches available for {pendingBatches[0].product?.name} — choose one
+                    Multiple batches available for {[pendingBatches[0].product?.name, pendingBatches[0].product?.sizeWeight, pendingBatches[0].product?.flavour, pendingBatches[0].product?.brand].filter(Boolean).join(' · ')} — choose one
                     <span className="text-gray-500"> / एकापेक्षा जास्त बॅच उपलब्ध आहेत — एक निवडा</span>:
                   </p>
                   <table className="w-full text-sm mb-2">
@@ -415,7 +416,13 @@ export default function Sales() {
                 <th className="text-left p-2">Product <span className="text-gray-400 font-normal">/ उत्पादन</span></th>
                 <th className="text-left p-2">Batch <span className="text-gray-400 font-normal">/ बॅच</span></th>
                 <th className="text-left p-2">Price <span className="text-gray-400 font-normal">/ किंमत</span></th>
-                <th className="text-left p-2">Original Qty <span className="text-gray-400 font-normal">/ मूळ प्रमाण</span></th>
+                {/* Original Qty only means anything for a retailer's own
+                    purchase order showing up here as a sale to fulfil —
+                    never for a direct/walk-in (CASH) customer sale, which
+                    has no such originating order to compare against. */}
+                {customerType !== 'CASH' && (
+                  <th className="text-left p-2">Original Qty <span className="text-gray-400 font-normal">/ मूळ प्रमाण</span></th>
+                )}
                 <th className="text-left p-2">Qty <span className="text-gray-400 font-normal">/ प्रमाण</span></th>
                 <th className="text-left p-2">Line Total <span className="text-gray-400 font-normal">/ एकूण</span></th>
                 <th></th>
@@ -435,7 +442,14 @@ export default function Sales() {
                 const qtyChanged = c.originalQuantity != null && c.quantity !== c.originalQuantity;
                 return (
                   <tr key={c.saleItemId ?? c.inventoryId} className={`border-t ${qtyChanged ? 'bg-amber-50' : ''}`}>
-                    <td className="p-2">{c.product.name} ({c.product.sizeWeight})</td>
+                    <td className="p-2">
+                      <div>{c.product.name}</div>
+                      {[c.product.sizeWeight, c.product.flavour, c.product.brand].filter(Boolean).length > 0 && (
+                        <div className="text-xs text-gray-400">
+                          {[c.product.sizeWeight, c.product.flavour, c.product.brand].filter(Boolean).join(' · ')}
+                        </div>
+                      )}
+                    </td>
                     <td className="p-2">
                       {c.saleItemId && !c.locked ? (
                         <select className="border rounded px-2 py-1 text-sm w-full" value={c.inventoryId || ''}
@@ -462,7 +476,9 @@ export default function Sales() {
                         </>
                       )}
                     </td>
-                    <td className="p-2 text-gray-500">{c.originalQuantity ?? '—'}</td>
+                    {customerType !== 'CASH' && (
+                      <td className="p-2 text-gray-500">{c.originalQuantity ?? '—'}</td>
+                    )}
                     <td className="p-2">
                       {c.locked ? c.quantity : (
                         <input type="number" min="1" max={c.saleItemId ? (c.originalQuantity ?? undefined) : c.available}

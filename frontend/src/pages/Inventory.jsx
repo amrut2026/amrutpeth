@@ -27,22 +27,31 @@ export default function Inventory() {
             {/* Inventory is now tracked per batch — a product with stock from
                 two different accepted purchases shows as two rows here, each
                 with its own batch name, expiry, and quantity. */}
-            {rows.map((r) => (
-              <tr key={r.id} className={`border-t ${r.lowStock ? 'bg-red-50' : ''}`}>
-                <td className="p-2">{r.product?.name} ({r.product?.sizeWeight})</td>
-                <td className="p-2">{r.product?.barcode}</td>
-                <td className="p-2">{r.batchName || '-'}</td>
-                <td className="p-2">{r.expiryDate ? new Date(r.expiryDate).toLocaleDateString() : '-'}</td>
-                <td className="p-2">{r.mrp != null ? `₹${Number(r.mrp).toFixed(2)}` : '-'}</td>
-                <td className="p-2">{r.quantity}</td>
-                <td className="p-2">{r.reorderLevel}</td>
-                <td className="p-2">
-                  {r.lowStock
-                    ? <span className="text-red-600 font-semibold">⚠ Reorder now / आता पुन्हा मागवा</span>
-                    : <span className="text-green-600">OK / ठीक आहे</span>}
-                </td>
-              </tr>
-            ))}
+            {rows.map((r) => {
+              // Same sizeWeight/flavour/brand join used in Sales.jsx and
+              // Purchases.jsx, so a product reads identically everywhere it
+              // shows up across the app.
+              const details = [r.product?.sizeWeight, r.product?.flavour, r.product?.brand].filter(Boolean).join(' · ');
+              return (
+                <tr key={r.id} className={`border-t ${r.lowStock ? 'bg-red-50' : ''}`}>
+                  <td className="p-2">
+                    <div>{r.product?.name}</div>
+                    {details && <div className="text-xs text-gray-400">{details}</div>}
+                  </td>
+                  <td className="p-2">{r.product?.barcode}</td>
+                  <td className="p-2">{r.batchName || '-'}</td>
+                  <td className="p-2">{r.expiryDate ? new Date(r.expiryDate).toLocaleDateString() : '-'}</td>
+                  <td className="p-2">{r.mrp != null ? `₹${Number(r.mrp).toFixed(2)}` : '-'}</td>
+                  <td className="p-2">{r.quantity}</td>
+                  <td className="p-2">{r.reorderLevel}</td>
+                  <td className="p-2">
+                    {r.lowStock
+                      ? <span className="text-red-600 font-semibold">⚠ Reorder now / आता पुन्हा मागवा</span>
+                      : <span className="text-green-600">OK / ठीक आहे</span>}
+                  </td>
+                </tr>
+              );
+            })}
             {rows.length === 0 && <tr><td className="p-3 text-gray-400" colSpan={8}>No inventory yet. / अद्याप इन्व्हेंटरी नाही.</td></tr>}
           </tbody>
         </table>

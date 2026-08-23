@@ -178,6 +178,7 @@ model Dealer {
   users                  User[]
   products               Product[]
   productCategories      ProductCategory[]
+  suppliers              Supplier[]
   inventory              Inventory[]         @relation("DealerInventory")
   purchases              Purchase[]          @relation("DealerPurchases")
   purchasesFromRetailers Purchase[]          @relation("PurchaseFromDealer")
@@ -362,8 +363,12 @@ model Product {
   @@unique([supplierId, categoryId, name, sizeWeight, flavour, brand])
 }
 
-// Suppliers / manufacturers that dealers (or retailers) purchase stock from.
-// Managed centrally by ADMIN.
+// Suppliers / manufacturers that dealers (or retailers, via their primary
+// dealer) purchase stock from. Owned by exactly one dealer (see
+// suppliers.js POST / — DEALER only, dealerId always taken from the
+// logged-in user, never the client) — same exclusive-ownership pattern as
+// Product/ProductCategory, replacing the previous division-shared model
+// (a supplier used to be visible to every dealer in the same division).
 model Supplier {
   id            Int       @id @default(autoincrement())
   name          String
@@ -371,8 +376,20 @@ model Supplier {
   contactNumber String
   // Optional — a supplier may not be GST-registered.
   gstNumber     String?
+  // No longer the access boundary (see dealerId below) — kept only in case
+  // existing division-grouping data/reporting still depends on it.
   divisionId    Int?
   division      Division? @relation(fields: [divisionId], references: [id])
+  // The real access boundary now (see suppliers.js) — same bootstrap
+  // pattern as Dealer.organisationId below: defaults every existing/new
+  // row to dealer id 1 so this can land as a plain additive migration
+  // without a NOT NULL failure on existing Supplier rows. Existing
+  // suppliers were previously shared within a division rather than owned
+  // by any one dealer, so this default is a migration starting point
+  // only — go back and assign each existing supplier to its actual
+  // owning dealer once this migration is applied.
+  dealerId      Int       @default(1)
+  dealer        Dealer    @relation(fields: [dealerId], references: [id])
   createdAt     DateTime  @default(now())
 
   bankAccounts SupplierBankAccount[]

@@ -141,8 +141,10 @@ function renderTitleAndMeta(doc, y, purchase) {
 
 // purchase: a Purchase with { items: [{ product, quantity, rate, batchName,
 //           manufacturingDate, expiryDate }], id, date, status, supplier }
-//           — rate is this purchase's own recorded cost price, so the PO
-//           still shows correct figures even after a later price
+//           — product additionally needs name/sizeWeight/flavour/brand
+//           (all shown in the Product column, see the items.forEach loop
+//           below) — rate is this purchase's own recorded cost price, so
+//           the PO still shows correct figures even after a later price
 //           correction (see purchases.js PATCH /:id/prices) — it always
 //           reflects whatever the item's current rate is at print time.
 // dealer: the Dealer that placed the order (for the header).
@@ -170,9 +172,19 @@ export async function generatePurchaseOrderPdf(purchase, dealer) {
       totalQty += qty;
       totalAmount += amount;
 
+      const productDetails = [item.product?.sizeWeight, item.product?.flavour, item.product?.brand]
+        .filter(Boolean).join(' \u00b7 ');
+      const productName = item.product?.name || `#${item.productId}`;
+
       const values = {
         sr: idx + 1,
-        product: item.product?.name || `#${item.productId}`,
+        // Second line (size/weight · flavour · brand) only when at least
+        // one is present — same font/size as everything else in the row
+        // (see drawRow), the embedded newline is enough for PDFKit's
+        // heightOfString/text to wrap and measure it as two lines within
+        // the Product column's width, no separate column or draw call
+        // needed.
+        product: productDetails ? `${productName}\n${productDetails}` : productName,
         batch: item.batchName || '-',
         mfg: fmtMonthYear(item.manufacturingDate),
         exp: fmtMonthYear(item.expiryDate),

@@ -151,6 +151,8 @@ function renderItem(c, item, idx, isB2B) {
   c.text(`${idx + 1}. ${item.product?.name || `#${item.productId}`}`);
 
   c.font(FONT_REGULAR).fontSize(7);
+  const details = [item.product?.sizeWeight, item.product?.flavour, item.product?.brand].filter(Boolean).join(' \u00b7 ');
+  if (details) c.text(`   ${details}`);
   if (item.batchName) c.text(`   ${L.batch}: ${item.batchName}`);
   c.row(`   ${item.quantity} x ${fmt(price)}`, fmt(amount));
 
@@ -195,7 +197,9 @@ function renderBill(c, sale, party, isB2B) {
 //        ..., customerRetailer? } — items[].price and items[].mrp are
 //        snapshots taken at sale time from the Inventory batch sold from,
 //        so the bill still shows correct figures even if that batch's
-//        inventory row later changes.
+//        inventory row later changes. product additionally needs
+//        name/sizeWeight/flavour/brand, all shown under the item (see
+//        renderItem).
 // party: the Dealer or Retailer that made the sale (for the header).
 export async function generateSaleBillPdf(sale, party) {
   const isB2B = sale.customerType === 'RETAILER';
