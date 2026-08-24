@@ -20,8 +20,15 @@ export default function Categories() {
         { key: 'description', label: 'Description / वर्णन' },
         // Optional — left blank, the backend applies the schema default of
         // 2.5% each (see schema.prisma ProductCategory.cgst/sgst).
-        { key: 'cgst', label: 'CGST % (default 2.5) / सीजीएसटी %', type: 'number' },
-        { key: 'sgst', label: 'SGST % (default 2.5) / एसजीएसटी %', type: 'number' },
+        {
+          key: 'gst',
+          label: 'CGST % / SGST % (default 2.5 each) / सीजीएसटी % / एसजीएसटी %',
+          type: 'group',
+          fields: [
+            { key: 'cgst', label: 'CGST %', type: 'number' },
+            { key: 'sgst', label: 'SGST %', type: 'number' },
+          ],
+        },
       ]}
       columns={[
         { key: 'id', label: 'ID / आयडी' },

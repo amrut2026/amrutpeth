@@ -18,6 +18,10 @@ export default function CrudTable({
   // pattern. Opt-in per page rather than a change to every CrudTable user.
   activatable = false,
   addButtonLabel,
+  // Bump this (e.g. a counter) from the parent to force a reload of rows
+  // without remounting the table — for changes made outside the built-in
+  // create/edit form, like Retailers' separate login-credentials action.
+  refreshSignal,
 }) {
   const [rows, setRows] = useState([]);
   const [form, setForm] = useState({});
@@ -36,7 +40,7 @@ export default function CrudTable({
     setRows(data);
   }
 
-  useEffect(() => { load(); }, [endpoint]);
+  useEffect(() => { load(); }, [endpoint, refreshSignal]);
 
   const emptyBankRow = { accountNumber: '', ifsc: '', bankName: '' };
 
@@ -61,7 +65,13 @@ export default function CrudTable({
   function startEdit(row) {
     const next = {};
     fields.forEach((f) => {
-      next[f.key] = row[f.key] ?? '';
+      if (f.type === 'group') {
+        f.fields.forEach((sub) => {
+          next[sub.key] = row[sub.key] ?? '';
+        });
+      } else {
+        next[f.key] = row[f.key] ?? '';
+      }
     });
     setForm(next);
     setEditingId(row.id);
@@ -158,6 +168,26 @@ export default function CrudTable({
                 </div>
               );
             }
+            if (f.type === 'group') {
+              return (
+                <div key={f.key} className="flex flex-col">
+                  <label className="text-xs text-gray-500 mb-1">{f.label}</label>
+                  <div className="flex gap-2">
+                    {f.fields.map((sub) => (
+                      <input
+                        key={sub.key}
+                        className="border rounded px-2 py-1 w-full min-w-0"
+                        type={sub.type || 'text'}
+                        placeholder={sub.label}
+                        value={form[sub.key] ?? ''}
+                        onChange={(e) => setForm({ ...form, [sub.key]: e.target.value })}
+                        required={sub.required}
+                      />
+                    ))}
+                  </div>
+                </div>
+              );
+            }
             return (
               <div key={f.key} className="flex flex-col">
                 <label className="text-xs text-gray-500 mb-1">{f.label}</label>
@@ -204,9 +234,9 @@ export default function CrudTable({
         </form>
       )}
 
-      <div className="bg-white rounded shadow overflow-x-auto">
+      <div className="bg-white rounded shadow overflow-x-auto max-h-[70vh] overflow-y-auto">
         <table className="w-full text-sm">
-          <thead className="bg-gray-100">
+          <thead className="bg-gray-100 sticky top-0 z-10">
             <tr>
               {columns.map((c) => <th key={c.key} className="text-left p-2">{c.label}</th>)}
               {activatable && <th className="text-left p-2">Status / स्थिती</th>}
