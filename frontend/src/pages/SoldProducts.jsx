@@ -8,6 +8,20 @@ function formatMoney(value) {
   return `₹${Number(value || 0).toFixed(2)}`;
 }
 
+// Same sizeWeight/flavour/brand join and layout as ProductCell in
+// Sales.jsx / Purchases.jsx, so a product reads identically everywhere it
+// shows up across the app.
+function ProductCell({ item }) {
+  const details = [item.productSizeWeight, item.productFlavour, item.productBrand].filter(Boolean).join(' · ');
+  return (
+    <>
+      <div>{item.productName}</div>
+      {details && <div className="text-xs text-gray-400">{details}</div>}
+      {item.remark && <span className="block text-xs text-amber-600">{item.remark}</span>}
+    </>
+  );
+}
+
 export default function SoldProducts() {
   const { user } = useAuth();
   const [openItems, setOpenItems] = useState([]);
@@ -184,8 +198,7 @@ export default function SoldProducts() {
                       <td className="p-2">{i.saleId}</td>
                       <td className="p-2">{new Date(i.date).toLocaleDateString()}</td>
                       <td className="p-2">
-                        {i.productName}
-                        {i.remark && <span className="block text-xs text-amber-600">{i.remark}</span>}
+                        <ProductCell item={i} />
                       </td>
                       <td className="p-2">{i.batchName || '-'}</td>
                       <td className="p-2">{i.quantity}</td>
@@ -262,7 +275,7 @@ export default function SoldProducts() {
                     <tr key={i.id} className="border-t">
                       <td className="p-2">{i.saleId}</td>
                       <td className="p-2">{new Date(i.date).toLocaleDateString()}</td>
-                      <td className="p-2">{i.productName}</td>
+                      <td className="p-2"><ProductCell item={i} /></td>
                       <td className="p-2">{i.batchName || '-'}</td>
                       <td className="p-2">{i.quantity}</td>
                       <td className="p-2">{i.price != null ? formatMoney(i.price) : '-'}</td>

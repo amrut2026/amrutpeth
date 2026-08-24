@@ -82,6 +82,13 @@ router.get('/', authRequired, async (req, res) => {
       date: r.sale.date,
       productId: r.productId,
       productName: r.product.name,
+      // Same sizeWeight/flavour/brand shown under the product name on the
+      // Sales and Purchases screens — kept as separate fields (rather than
+      // pre-joined into one string) so the frontend can lay them out the
+      // same way it already does elsewhere.
+      productSizeWeight: r.product.sizeWeight,
+      productFlavour: r.product.flavour,
+      productBrand: r.product.brand,
       // Which supplier this product traces back to — used to group a
       // DEALER's own list (a RETAILER only ever has one counterparty, their
       // primary dealer, so this is unused on that side).
