@@ -153,10 +153,10 @@ export default function Dealers() {
         // /dealers/:id doesn't accept, so it's turned off here regardless
         // of role.
         canCreate={false}
-        // Editing is DEALER (own record) or ORGANISATION (any dealer under
-        // its own org) — see dealers.js PUT /:id. ADMIN doesn't get this;
-        // its write access stays limited to Organisation.
-        canWrite={user.role === 'DEALER' || user.role === 'ORGANISATION'}
+        // Editing is ORGANISATION-only, for any dealer under its own org
+        // (see dealers.js PUT /:id). DEALER can no longer edit its own
+        // record from here.
+        canWrite={user.role === 'ORGANISATION'}
         fields={[
           { key: 'name', label: 'Name / नाव', required: true },
           { key: 'address', label: 'Address / पत्ता', required: true },

@@ -86,18 +86,14 @@ router.post('/', authRequired, requireRole('ORGANISATION'), async (req, res) => 
   }
 });
 
-// Edit dealer - DEALER (their own record only) or ORGANISATION (any dealer
-// under its own organisation). ADMIN still doesn't touch Dealer here -
-// ADMIN's write access stays limited to Organisation (create/update).
-router.put('/:id', authRequired, requireRole('DEALER', 'ORGANISATION'), async (req, res) => {
+// Edit dealer - ORGANISATION only, and only a dealer under its own
+// organisation. DEALER no longer edits its own record here; ADMIN still
+// doesn't touch Dealer - its write access stays limited to Organisation.
+router.put('/:id', authRequired, requireRole('ORGANISATION'), async (req, res) => {
   const id = Number(req.params.id);
-  if (req.user.role === 'DEALER') {
-    if (req.user.dealerId !== id) return res.status(403).json({ error: 'Forbidden' });
-  } else {
-    const existing = await prisma.dealer.findUnique({ where: { id } });
-    if (!existing) return res.status(404).json({ error: 'Dealer not found' });
-    if (existing.organisationId !== req.user.organisationId) return res.status(403).json({ error: 'Forbidden' });
-  }
+  const existing = await prisma.dealer.findUnique({ where: { id } });
+  if (!existing) return res.status(404).json({ error: 'Dealer not found' });
+  if (existing.organisationId !== req.user.organisationId) return res.status(403).json({ error: 'Forbidden' });
   const { name, address, contactNumber, gstNumber } = req.body;
   const dealer = await prisma.dealer.update({
     where: { id },
