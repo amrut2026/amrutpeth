@@ -166,6 +166,97 @@ router.get('/payments', authRequired, async (req, res) => {
   });
 });
 
+// Vouchers (with their payments): a dealer sees both directions - what
+// they owe suppliers (PAYABLE vouchers, dealer -> supplier) and what
+// retailers owe them (RECEIVABLE vouchers, dealer -> retailer). A retailer
+// only ever sees the one direction - what they owe their dealer
+// (RECEIVABLE vouchers where they're the retailer). Both sides of a
+// Voucher share the same VoucherStatus (OPEN/PARTIALLY_PAID/PAID), so
+// vouchers and their payments are grouped by that one status on the
+// frontend rather than needing separate orderings like /payments above.
+function serializeVoucher(v, { includeDealer = false } = {}) {
+  return {
+    id: v.id,
+    date: v.date,
+    status: v.status,
+    amount: v.amount,
+    description: v.description,
+    counterpartyName: v.supplier?.name ?? v.retailer?.name ?? null,
+    ...(includeDealer ? { dealerName: v.dealer?.name ?? null } : {}),
+  };
+}
+
+function serializeVoucherPayment(p, { includeDealer = false } = {}) {
+  return {
+    id: p.id,
+    date: p.date,
+    amount: p.amount,
+    mode: p.mode,
+    reference: p.reference,
+    counterpartyName: p.supplier?.name ?? p.retailer?.name ?? null,
+    voucherStatus: p.voucher?.status ?? null,
+    ...(includeDealer ? { dealerName: p.dealer?.name ?? null } : {}),
+  };
+}
+
+router.get('/vouchers', authRequired, async (req, res) => {
+  if (req.user.role === 'DEALER') {
+    const dealerId = req.user.dealerId;
+    const [supplierVouchers, supplierPayments, retailerVouchers, retailerPayments] = await Promise.all([
+      prisma.voucher.findMany({ where: { dealerId, type: 'PAYABLE' }, include: { supplier: true }, orderBy: { date: 'desc' } }),
+      prisma.payment.findMany({ where: { dealerId, supplierId: { not: null } }, include: { supplier: true, voucher: true }, orderBy: { date: 'desc' } }),
+      prisma.voucher.findMany({ where: { dealerId, type: 'RECEIVABLE' }, include: { retailer: true }, orderBy: { date: 'desc' } }),
+      prisma.payment.findMany({ where: { dealerId, retailerId: { not: null } }, include: { retailer: true, voucher: true }, orderBy: { date: 'desc' } }),
+    ]);
+    return res.json({
+      context: 'DEALER',
+      supplier: {
+        vouchers: supplierVouchers.map((v) => serializeVoucher(v)),
+        payments: supplierPayments.map((p) => serializeVoucherPayment(p)),
+      },
+      retailer: {
+        vouchers: retailerVouchers.map((v) => serializeVoucher(v)),
+        payments: retailerPayments.map((p) => serializeVoucherPayment(p)),
+      },
+    });
+  }
+
+  if (req.user.role === 'RETAILER') {
+    const retailerId = req.user.retailerId;
+    const [vouchers, payments] = await Promise.all([
+      prisma.voucher.findMany({ where: { retailerId, type: 'RECEIVABLE' }, include: { dealer: true }, orderBy: { date: 'desc' } }),
+      prisma.payment.findMany({ where: { retailerId }, include: { dealer: true, voucher: true }, orderBy: { date: 'desc' } }),
+    ]);
+    return res.json({
+      context: 'RETAILER',
+      dealer: {
+        vouchers: vouchers.map((v) => serializeVoucher(v, { includeDealer: true })),
+        payments: payments.map((p) => serializeVoucherPayment(p, { includeDealer: true })),
+      },
+    });
+  }
+
+  // ADMIN / ORGANISATION - everything, across every dealer, split the same
+  // way as the DEALER branch (supplier side / retailer side) but with the
+  // owning dealer's name attached since it now spans more than one dealer.
+  const [payableVouchers, receivableVouchers, payments] = await Promise.all([
+    prisma.voucher.findMany({ where: { type: 'PAYABLE' }, include: { supplier: true, dealer: true }, orderBy: { date: 'desc' } }),
+    prisma.voucher.findMany({ where: { type: 'RECEIVABLE' }, include: { retailer: true, dealer: true }, orderBy: { date: 'desc' } }),
+    prisma.payment.findMany({ include: { supplier: true, retailer: true, dealer: true, voucher: true }, orderBy: { date: 'desc' } }),
+  ]);
+  res.json({
+    context: 'ALL',
+    supplier: {
+      vouchers: payableVouchers.map((v) => serializeVoucher(v, { includeDealer: true })),
+      payments: payments.filter((p) => p.supplierId).map((p) => serializeVoucherPayment(p, { includeDealer: true })),
+    },
+    retailer: {
+      vouchers: receivableVouchers.map((v) => serializeVoucher(v, { includeDealer: true })),
+      payments: payments.filter((p) => p.retailerId).map((p) => serializeVoucherPayment(p, { includeDealer: true })),
+    },
+  });
+});
+
 // Inventory report (with low-stock flag) - reused by dealer or retailer login
 router.get('/inventory', authRequired, async (req, res) => {
   let where = {};
