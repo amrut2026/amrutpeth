@@ -1,73 +1,60 @@
-import { useEffect, useState, Fragment } from 'react';
+import { useState } from 'react';
 import api from '../api.js';
+import CrudTable from '../components/CrudTable.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
-
-const empty = { org_name: '', org_address: '', org_contact: '', org_type: 'MAHAMANDAL', username: '', password: '' };
 
 export default function Organisation() {
   const { user } = useAuth();
   const canWrite = user.role === 'ADMIN';
 
-  const [orgs, setOrgs] = useState([]);
-  const [form, setForm] = useState(empty);
-  const [editingId, setEditingId] = useState(null);
+  // Creating a new organisation (with optional login) stays a separate
+  // form, same reasoning as Dealers.jsx: its field set (org_type, login)
+  // doesn't match what PUT /organisations/:id accepts, so folding it into
+  // CrudTable's generic add-form would expose fields that silently
+  // wouldn't save on edit.
+  const [form, setForm] = useState({ org_name: '', org_address: '', org_contact: '', org_type: 'MAHAMANDAL', username: '', password: '' });
   const [error, setError] = useState('');
 
   // Credentials for an existing organisation are set/reset separately from
-  // the create/edit form above — same pattern as Dealers/Retailers.
+  // the create/edit form — same pattern as Dealers/Retailers.
   const [credEdit, setCredEdit] = useState(null); // orgId currently setting/resetting a login
+  const [credHasLogin, setCredHasLogin] = useState(false);
   const [credForm, setCredForm] = useState({ username: '', password: '' });
   const [credError, setCredError] = useState('');
 
-  async function load() {
-    const { data } = await api.get('/organisations');
-    setOrgs(data);
-  }
-  useEffect(() => { load(); }, []);
-
-  function startEdit(o) {
-    setEditingId(o.orgId);
-    setForm({ org_name: o.orgName, org_address: o.orgAddress, org_contact: o.orgContact, org_type: o.orgType, username: '', password: '' });
-    setError('');
-  }
-
-  function cancelEdit() {
-    setEditingId(null);
-    setForm(empty);
-    setError('');
-  }
+  // Bumped after the create form or the credentials form succeeds, so
+  // CrudTable reloads its own rows — both happen outside CrudTable's own
+  // create/edit flow.
+  const [refreshSignal, setRefreshSignal] = useState(0);
 
   async function submit(e) {
     e.preventDefault();
     setError('');
     try {
-      if (editingId) {
-        // Editing existing org details only — login is managed via the
-        // per-row Set login / Reset password action below, not here.
-        await api.put(`/organisations/${editingId}`, {
-          org_name: form.org_name, org_address: form.org_address, org_contact: form.org_contact, org_type: form.org_type
-        });
-      } else {
-        await api.post('/organisations', form);
-      }
-      setForm(empty);
-      setEditingId(null);
-      load();
+      await api.post('/organisations', form);
+      setForm({ org_name: '', org_address: '', org_contact: '', org_type: 'MAHAMANDAL', username: '', password: '' });
+      setRefreshSignal((n) => n + 1);
     } catch (err) {
-      setError(err.response?.data?.error || (editingId
-        ? 'Could not update organisation / संस्था अद्ययावत करता आली नाही'
-        : 'Could not create organisation'));
+      setError(err.response?.data?.error || 'Could not create organisation / संस्था तयार करता आली नाही');
     }
   }
 
-  async function submitCredentials(e, orgId) {
+  function openCredForm(org) {
+    const login = org.users?.[0];
+    setCredEdit(credEdit === org.orgId ? null : org.orgId);
+    setCredHasLogin(!!login);
+    setCredForm({ username: login?.username || '', password: '' });
+    setCredError('');
+  }
+
+  async function submitCredentials(e) {
     e.preventDefault();
     setCredError('');
     try {
-      await api.post(`/organisations/${orgId}/credentials`, credForm);
+      await api.post(`/organisations/${credEdit}/credentials`, credForm);
       setCredEdit(null);
       setCredForm({ username: '', password: '' });
-      load();
+      setRefreshSignal((n) => n + 1);
     } catch (err) {
       setCredError(err.response?.data?.error || 'Failed to save login / लॉगिन जतन करण्यात अयशस्वी');
     }
@@ -75,12 +62,14 @@ export default function Organisation() {
 
   return (
     <div>
-      <h1 className="text-2xl font-semibold mb-4">
-        Organisation (Mahamandal) <span className="text-base font-normal text-gray-500">(संस्था / महामंडळ)</span>
-      </h1>
-
       {canWrite && (
         <form onSubmit={submit} className="bg-white p-4 rounded shadow mb-6 space-y-4">
+          <div className="text-sm font-medium">
+            Create Organisation
+            <span className="block text-xs font-normal text-orange-700">संस्था तयार करा</span>
+          </div>
+          {error && <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">{error}</div>}
+
           <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
             <input placeholder="Organisation Name / संस्थेचे नाव" className="border rounded px-2 py-1" required
               value={form.org_name} onChange={(e) => setForm({ ...form, org_name: e.target.value })} />
@@ -96,116 +85,144 @@ export default function Organisation() {
             </select>
           </div>
 
-          {/* Login is only offered while creating a new organisation — for an
-              existing one it's set/reset per-row further down, same as
-              Dealers/Retailers. */}
-          {!editingId && (
-            <div>
-              <div className="text-sm font-medium mb-2">
-                Login (optional — lets this organisation sign in and see its own data)
-                <span className="block text-xs font-normal text-orange-700">
-                  लॉगिन (ऐच्छिक — यामुळे ही संस्था स्वतः साइन इन करून स्वतःचा डेटा पाहू शकते)
-                </span>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <input placeholder="Username / वापरकर्तानाव" className="border rounded px-2 py-1" autoComplete="off"
-                  value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
-                <input placeholder="Password / पासवर्ड" type="password" className="border rounded px-2 py-1" autoComplete="new-password"
-                  value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
-              </div>
+          <div>
+            <div className="text-sm font-medium mb-2">
+              Login (optional — lets this organisation sign in and see its own data)
+              <span className="block text-xs font-normal text-orange-700">
+                लॉगिन (ऐच्छिक — यामुळे ही संस्था स्वतः साइन इन करून स्वतःचा डेटा पाहू शकते)
+              </span>
             </div>
-          )}
-
-          <div className="flex items-center gap-3">
-            <button className="bg-emerald-700 text-white px-4 py-2 rounded hover:bg-emerald-800">
-              {editingId ? 'Save Changes / बदल जतन करा' : 'Create Organisation / संस्था तयार करा'}
-            </button>
-            {editingId && (
-              <button type="button" onClick={cancelEdit} className="text-gray-600 text-sm px-3 py-2 rounded hover:bg-gray-100">
-                Cancel / रद्द करा
-              </button>
-            )}
-            {error && <span className="text-red-600 text-sm">{error}</span>}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <input placeholder="Username / वापरकर्तानाव" className="border rounded px-2 py-1" autoComplete="off"
+                value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
+              <input placeholder="Password / पासवर्ड" type="password" className="border rounded px-2 py-1" autoComplete="new-password"
+                value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+            </div>
           </div>
+
+          <button className="bg-emerald-700 text-white px-4 py-2 rounded hover:bg-emerald-800">
+            Create Organisation / संस्था तयार करा
+          </button>
         </form>
       )}
 
-      <div className="bg-white rounded shadow overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead className="bg-gray-100">
-            <tr>
-              <th className="text-left p-2">ID / आयडी</th>
-              <th className="text-left p-2">Name / नाव</th>
-              <th className="text-left p-2">Address / पत्ता</th>
-              <th className="text-left p-2">Contact / संपर्क</th>
-              <th className="text-left p-2">Type / प्रकार</th>
-              {canWrite && <th className="text-left p-2">Login / लॉगिन</th>}
-              {canWrite && <th className="text-left p-2">Actions / क्रिया</th>}
-            </tr>
-          </thead>
-          <tbody>
-            {orgs.map((o) => {
-              const login = o.users?.[0];
+      <CrudTable
+        title={
+          <span>
+            Organisation (Mahamandal)
+            <span className="block text-xs font-normal text-orange-700">संस्था / महामंडळ</span>
+          </span>
+        }
+        endpoint="/organisations"
+        refreshSignal={refreshSignal}
+        editable
+        // Organisations are only ever created through the form above
+        // (ADMIN only, POST /organisations) — CrudTable's own add-form
+        // would duplicate it and expose the login fields, which
+        // PUT /organisations/:id doesn't accept.
+        canCreate={false}
+        canWrite={canWrite}
+        // Field keys match the row's own property names (orgName,
+        // orgAddress, ...) so CrudTable's startEdit can populate the form
+        // correctly from an existing row. transformSubmit below converts
+        // them to the snake_case body PUT /organisations/:id expects.
+        fields={[
+          { key: 'orgName', label: 'Organisation Name / संस्थेचे नाव', required: true },
+          { key: 'orgAddress', label: 'Address / पत्ता', required: true },
+          { key: 'orgContact', label: 'Contact Number / संपर्क क्रमांक', required: true },
+          {
+            key: 'orgType',
+            label: 'Type / प्रकार',
+            type: 'select',
+            options: [
+              { value: 'MAHAMANDAL', label: 'MAHAMANDAL / महामंडळ' },
+              { value: 'FEDERATION', label: 'FEDERATION / फेडरेशन' },
+              { value: 'ASSOCIATION', label: 'ASSOCIATION / संघटना' },
+            ],
+          },
+        ]}
+        transformSubmit={(f) => ({
+          org_name: f.orgName,
+          org_address: f.orgAddress,
+          org_contact: f.orgContact,
+          org_type: f.orgType,
+        })}
+        columns={[
+          { key: 'orgId', label: 'ID / आयडी' },
+          { key: 'orgName', label: 'Name / नाव' },
+          { key: 'orgAddress', label: 'Address / पत्ता' },
+          { key: 'orgContact', label: 'Contact / संपर्क' },
+          { key: 'orgType', label: 'Type / प्रकार' },
+          // Hidden entirely for non-ADMIN viewers, same as the original
+          // hand-rolled table (not just the Set/Reset button).
+          ...(canWrite ? [{
+            key: 'login',
+            label: 'Login / लॉगिन',
+            render: (r) => {
+              const login = r.users?.[0];
               return (
-                <Fragment key={o.orgId}>
-                  <tr key={o.orgId} className={`border-t ${editingId === o.orgId ? 'bg-emerald-50' : ''}`}>
-                    <td className="p-2">{o.orgId}</td>
-                    <td className="p-2">{o.orgName}</td>
-                    <td className="p-2">{o.orgAddress}</td>
-                    <td className="p-2">{o.orgContact}</td>
-                    <td className="p-2">{o.orgType}</td>
-                    {canWrite && (
-                      <td className="p-2">
-                        {login ? (
-                          <span className="text-gray-700">{login.username}</span>
-                        ) : (
-                          <span className="text-amber-600">No login yet / अद्याप लॉगिन नाही</span>
-                        )}
-                      </td>
-                    )}
-                    {canWrite && (
-                      <td className="p-2">
-                        <div className="flex items-center gap-3">
-                          <button type="button" onClick={() => startEdit(o)} className="text-emerald-700 text-sm hover:underline">
-                            Edit / संपादित करा
-                          </button>
-                          <button type="button" className="text-emerald-700 text-sm hover:underline"
-                            onClick={() => { setCredEdit(credEdit === o.orgId ? null : o.orgId); setCredForm({ username: login?.username || '', password: '' }); setCredError(''); }}>
-                            {login ? 'Reset password / पासवर्ड रीसेट करा' : 'Set login / लॉगिन सेट करा'}
-                          </button>
-                        </div>
-                      </td>
-                    )}
-                  </tr>
-                  {credEdit === o.orgId && (
-                    <tr key={`${o.orgId}-cred`} className="border-t bg-gray-50">
-                      <td className="p-3" colSpan={7}>
-                        <form onSubmit={(e) => submitCredentials(e, o.orgId)} className="space-y-2">
-                          {credError && <div className="text-sm text-red-600">{credError}</div>}
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                            <input placeholder="Username / वापरकर्तानाव" className="border rounded px-2 py-1" autoComplete="off"
-                              value={credForm.username} onChange={(e) => setCredForm({ ...credForm, username: e.target.value })}
-                              disabled={!!login} />
-                            <input placeholder="New password / नवीन पासवर्ड" type="password" className="border rounded px-2 py-1" required autoComplete="new-password"
-                              value={credForm.password} onChange={(e) => setCredForm({ ...credForm, password: e.target.value })} />
-                          </div>
-                          <div className="flex gap-2">
-                            <button className="bg-emerald-700 text-white px-3 py-1 rounded text-sm hover:bg-emerald-800">Save / जतन करा</button>
-                            <button type="button" className="text-gray-500 text-sm" onClick={() => setCredEdit(null)}>Cancel / रद्द करा</button>
-                          </div>
-                        </form>
-                      </td>
-                    </tr>
-                  )}
-                </Fragment>
+                <div>
+                  {login
+                    ? <span className="text-gray-700">{login.username}</span>
+                    : <span className="text-amber-600">No login yet / अद्याप लॉगिन नाही</span>}
+                  <button
+                    type="button"
+                    className="block text-emerald-700 text-xs mt-1 hover:underline"
+                    onClick={() => openCredForm(r)}
+                  >
+                    {login ? 'Reset password / पासवर्ड रीसेट करा' : 'Set login / लॉगिन सेट करा'}
+                  </button>
+                </div>
               );
-            })}
-            {orgs.length === 0 && (
-              <tr><td className="p-3 text-gray-400" colSpan={canWrite ? 7 : 5}>No organisations yet. / अद्याप संस्था नाहीत.</td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+            },
+          }] : []),
+        ]}
+      />
+
+      {credEdit && (
+        <form onSubmit={submitCredentials} className="mt-4 bg-white border rounded shadow p-4 max-w-md space-y-3">
+          <div className="text-sm font-medium">
+            Organisation login
+            <span className="block text-xs font-normal text-orange-700">संस्था लॉगिन</span>
+          </div>
+          {credError && <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">{credError}</div>}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-gray-500">Username / वापरकर्तानाव</label>
+              <input
+                placeholder="Username"
+                className="border rounded px-2 py-1"
+                autoComplete="off"
+                value={credForm.username}
+                onChange={(e) => setCredForm({ ...credForm, username: e.target.value })}
+                disabled={credHasLogin}
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-gray-500">
+                {credHasLogin ? 'New Password / नवीन पासवर्ड' : 'Password / पासवर्ड'}
+              </label>
+              <input
+                placeholder="Password"
+                type="password"
+                className="border rounded px-2 py-1"
+                required
+                autoComplete="new-password"
+                value={credForm.password}
+                onChange={(e) => setCredForm({ ...credForm, password: e.target.value })}
+              />
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button className="bg-emerald-700 text-white px-3 py-1 rounded text-sm hover:bg-emerald-800">
+              Save / जतन करा
+            </button>
+            <button type="button" className="text-gray-500 text-sm" onClick={() => setCredEdit(null)}>
+              Cancel / रद्द करा
+            </button>
+          </div>
+        </form>
+      )}
     </div>
   );
 }

@@ -6,10 +6,14 @@ import { authRequired, requireRole } from '../middleware/auth.js';
 const router = Router();
 
 router.get('/', authRequired, async (req, res) => {
-  res.json(await prisma.organisation.findMany({
+  const orgs = await prisma.organisation.findMany({
     include: { users: { select: { id: true, username: true } } },
     orderBy: { createdAt: 'desc' }
-  }));
+  });
+  // CrudTable (frontend) expects a plain `id` field on each row to key
+  // rows and build the PUT url — orgId remains the real field name
+  // everywhere else, this is purely an additive alias for that consumer.
+  res.json(orgs.map((o) => ({ ...o, id: o.orgId })));
 });
 
 router.get('/:id', authRequired, async (req, res) => {
