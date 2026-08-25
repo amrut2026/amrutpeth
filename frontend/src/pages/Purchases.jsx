@@ -159,14 +159,6 @@ export default function Purchases() {
   }
   useEffect(() => { load(); }, []);
 
-  // Default the lookup dropdown to the most recent purchase, and keep it
-  // pointed at a valid purchase if the list changes.
-  useEffect(() => {
-    if (purchases.length && !purchases.some((p) => String(p.id) === selectedPurchaseId)) {
-      setSelectedPurchaseId(String(purchases[0].id));
-    }
-  }, [purchases]);
-
   const selectedPurchase = purchases.find((p) => String(p.id) === selectedPurchaseId);
   const isSelectedEditable = !!selectedPurchase &&
     (!selectedPurchase.status || selectedPurchase.status === 'PENDING' || selectedPurchase.status === 'IN_REVIEW');
@@ -246,12 +238,65 @@ export default function Purchases() {
     }
   }
 
+  // Same approach as Sales.jsx's printBill — loads the PDF into a hidden
+  // iframe and calls its print(), which opens the browser's native print
+  // dialog with the OS default printer pre-selected. JS can't detect
+  // whether a printer exists or skip the dialog (browsers block silent
+  // printing outright), so "if no printer" here means "if triggering the
+  // dialog itself fails" — falls back to opening the PDF in a new tab.
+  function printPdfBlob(blob) {
+    const blobUrl = URL.createObjectURL(blob);
+    const iframe = document.createElement('iframe');
+    iframe.style.position = 'fixed';
+    iframe.style.right = '0';
+    iframe.style.bottom = '0';
+    iframe.style.width = '0';
+    iframe.style.height = '0';
+    iframe.style.border = '0';
+
+    const cleanup = () => {
+      setTimeout(() => {
+        if (iframe.parentNode) document.body.removeChild(iframe);
+        URL.revokeObjectURL(blobUrl);
+      }, 60000);
+    };
+
+    // Guards against two dialogs: some browsers fire onload a second time
+    // for PDF content specifically (once for the iframe's own document,
+    // again once the embedded PDF viewer finishes rendering) — this makes
+    // sure print() only ever fires once no matter how many times onload
+    // does.
+    let triggered = false;
+    iframe.onload = () => {
+      if (triggered) return;
+      triggered = true;
+      try {
+        iframe.contentWindow.focus();
+        iframe.contentWindow.print();
+      } catch (err) {
+        console.error('Could not open the print dialog, opening the PDF instead:', err);
+        window.open(blobUrl, '_blank');
+      }
+      cleanup();
+    };
+    iframe.onerror = () => {
+      if (triggered) return;
+      triggered = true;
+      window.open(blobUrl, '_blank');
+      cleanup();
+    };
+
+    // src is set BEFORE the iframe is attached to the DOM — see Sales.jsx's
+    // printPdfBlob for why appending first (as this used to) causes two
+    // navigations, and therefore two print() calls.
+    iframe.src = blobUrl;
+    document.body.appendChild(iframe);
+  }
+
   async function printPurchaseOrder(purchaseId) {
     try {
       const res = await api.get(`/purchases/${purchaseId}/bill`, { responseType: 'blob' });
-      const blobUrl = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
-      window.open(blobUrl, '_blank');
-      setTimeout(() => URL.revokeObjectURL(blobUrl), 30000);
+      printPdfBlob(new Blob([res.data], { type: 'application/pdf' }));
     } catch (err) {
       console.error('Failed to load purchase order:', err);
       alert('Could not load the purchase order PDF.');
@@ -330,6 +375,27 @@ export default function Purchases() {
   }
 
   function cancelEditPurchase() {
+    setEditingPurchaseId(null);
+    setSupplierId('');
+    setItems([{ ...emptyItem }]);
+    setError('');
+  }
+
+  // Picking a purchase from Recent Purchases (or the View/Edit dropdown)
+  // to view/edit its details — mirrors Sales' loadSaleIntoCart: drops any
+  // in-progress new-purchase entry or full-form edit first.
+  function selectPurchase(p) {
+    setEditingPurchaseId(null);
+    setSupplierId('');
+    setItems([{ ...emptyItem }]);
+    setError('');
+    setSelectedPurchaseId(String(p.id));
+  }
+
+  // "+ New Purchase" — leaves whatever purchase is being viewed and
+  // returns to a blank entry form, mirrors Sales' exitActiveSale.
+  function startNewPurchase() {
+    setSelectedPurchaseId('');
     setEditingPurchaseId(null);
     setSupplierId('');
     setItems([{ ...emptyItem }]);
@@ -495,7 +561,13 @@ export default function Purchases() {
       if (editingPurchaseId) {
         await api.put(`/purchases/${editingPurchaseId}`, payload);
       } else {
-        await api.post('/purchases', payload);
+        const { data } = await api.post('/purchases', payload);
+        // Same moment Sales.jsx auto-prints the bill right after checkout —
+        // here it's right after either role records a brand-new purchase
+        // (not on an edit of an existing draft). GET /:id/bill now serves
+        // both a DEALER's purchase (header: dealer + supplier) and a
+        // RETAILER's (header: retailer + dealer) — see purchases.js.
+        await printPurchaseOrder(data.id);
       }
       setSupplierId('');
       setItems([{ ...emptyItem }]);
@@ -516,10 +588,78 @@ export default function Purchases() {
     ? products.filter((p) => supplierId && p.supplierId === Number(supplierId))
     : products;
 
+  // Recent Purchases — same table styling/behaviour as Sales' Recent Sales:
+  // scrollable, sticky header, clicking a row loads that purchase into the
+  // detail view above (via selectPurchase). Respects the same supplier
+  // filter as the View/Edit Purchase dropdown, for a DEALER.
+  function renderPurchasesTable() {
+    const rows = purchases.filter(
+      (p) => !purchaseSupplierFilter || String(p.supplierId) === purchaseSupplierFilter
+    );
+    return (
+      <div className="bg-white rounded shadow overflow-x-auto lg:max-h-[calc(100vh-20rem)] lg:overflow-y-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-gray-100 sticky top-0">
+            <tr>
+              <th className="text-left p-2">#</th>
+              <th className="text-left p-2">Date <span className="text-gray-400 font-normal">/ दिनांक</span></th>
+              <th className="text-left p-2">Supplier <span className="text-gray-400 font-normal">/ पुरवठादार</span></th>
+              <th className="text-left p-2">Status <span className="text-gray-400 font-normal">/ स्थिती</span></th>
+              <th className="text-left p-2">Total <span className="text-gray-400 font-normal">/ एकूण</span></th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((p) => {
+              const status = p.status || 'PENDING';
+              const isActive = String(p.id) === selectedPurchaseId;
+              const { totalAmount, isComplete } = purchaseTotals(p, user.role);
+              // Printable by either DEALER or RETAILER, at any status — this
+              // is for reviewing the order as it stands, not just once it's
+              // final (see purchases.js GET /:id/bill).
+              const canPrint = true;
+              return (
+                <tr key={p.id}
+                  className={`border-t cursor-pointer hover:bg-gray-50 ${isActive ? 'bg-emerald-50' : ''}`}
+                  onClick={() => selectPurchase(p)}>
+                  <td className="p-2">{p.id}</td>
+                  <td className="p-2">{new Date(p.date).toLocaleDateString()}</td>
+                  <td className="p-2">{p.supplier?.name || p.sourceDealer?.name || '—'}</td>
+                  <td className="p-2">
+                    {['CONFIRMED', 'MODIFIED', 'RECEIVED'].includes(status) ? (
+                      <span className="text-xs bg-emerald-50 text-emerald-700 font-medium px-2 py-1 rounded border border-emerald-200">
+                        {status === 'CONFIRMED' ? 'Confirmed' : status === 'MODIFIED' ? 'Modified' : 'Received'}
+                      </span>
+                    ) : (
+                      <span className="text-xs bg-amber-50 text-amber-800 font-medium px-2 py-1 rounded border border-amber-200">
+                        {status === 'IN_TRANSIT' ? 'In Transit' : status === 'ORDERED' ? 'Order Placed' : status === 'IN_REVIEW' ? 'In Review' : 'Pending'}
+                      </span>
+                    )}
+                  </td>
+                  <td className="p-2">{isComplete ? `₹${totalAmount.toFixed(2)}` : '—'}</td>
+                  <td className="p-2">
+                    {canPrint && (
+                      <button className="text-emerald-700 text-xs" onClick={(e) => { e.stopPropagation(); printPurchaseOrder(p.id); }}>
+                        Print / छापा
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+            {rows.length === 0 && <tr><td className="p-3 text-gray-400" colSpan={6}>No purchases yet. / अद्याप कोणतीही खरेदी नाही.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
   return (
     <div>
-      <h1 className="text-2xl font-semibold">Purchases / Stock Inwards</h1>
-      <p className="text-sm text-orange-700 mb-4">खरेदी / साठा आवक</p>
+      <div className="mb-4">
+        <h1 className="text-2xl font-semibold">Purchases / Stock Inwards</h1>
+        <p className="text-sm text-orange-700">खरेदी / साठा आवक</p>
+      </div>
 
       {printPrompt && (
         <div className="bg-white rounded shadow p-4 mb-4 border border-emerald-200">
@@ -560,7 +700,222 @@ export default function Purchases() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
+      <div className="lg:col-span-2">
+      {selectedPurchase && !editingPurchaseId && (
+        <div className="flex justify-end mb-2">
+          <button type="button" onClick={startNewPurchase}
+            className="text-sm bg-emerald-700 text-white px-3 py-1.5 rounded hover:bg-emerald-800">
+            + New Purchase
+          </button>
+        </div>
+      )}
+      {selectedPurchase && !editingPurchaseId ? (
+        <div className="bg-white p-4 rounded shadow space-y-3">
+          {/* Selected-purchase detail/edit view goes here — see below */}
+              <div className="mt-3">
+                <div className="flex items-center justify-between flex-wrap gap-2 mb-2">
+                  <div>
+                    <div className="font-semibold">{selectedPurchase.supplier?.name || selectedPurchase.sourceDealer?.name}</div>
+                    <div className="text-xs text-gray-400">{new Date(selectedPurchase.date).toLocaleString()}</div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button type="button" onClick={() => printPurchaseOrder(selectedPurchase.id)}
+                      className="text-xs bg-white border border-gray-400 text-gray-700 px-3 py-1.5 rounded hover:bg-gray-50">
+                      Print Purchase Order<span className="block">खरेदी ऑर्डर छापा</span>
+                    </button>
+                    {user.role === 'DEALER' && (selectedPurchase.status === 'CONFIRMED' || selectedPurchase.status === 'MODIFIED') && !editingPrices && (
+                      <button type="button" onClick={startEditPrices}
+                        className="text-xs bg-white border border-emerald-700 text-emerald-700 px-3 py-1.5 rounded hover:bg-emerald-50">
+                        Correct Prices<span className="block">किंमती दुरुस्त करा</span>
+                      </button>
+                    )}
+                    {statusAction(selectedPurchase)}
+                  </div>
+                </div>
+
+                {priceSuccessMessage && (
+                  <div className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-3 py-2 mb-2">{priceSuccessMessage}</div>
+                )}
+
+                {(() => {
+                  const { itemCount, totalQuantity, totalAmount, isComplete } = purchaseTotals(selectedPurchase, user.role);
+                  return (
+                    <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm bg-gray-50 border border-gray-200 rounded px-3 py-2 mb-2">
+                      <div>
+                        <span className="text-gray-500">Items</span> <span className="text-gray-400">/ वस्तू:</span>{' '}
+                        <span className="font-medium">{itemCount}</span>
+                      </div>
+                      <div>
+                        <span className="text-gray-500">Total Qty</span> <span className="text-gray-400">/ एकूण प्रमाण:</span>{' '}
+                        <span className="font-medium">{totalQuantity}</span>
+                      </div>
+                      <div>
+                        <span className="text-gray-500">Total</span> <span className="text-gray-400">/ एकूण:</span>{' '}
+                        {isComplete ? (
+                          <span className="font-medium">₹{totalAmount.toFixed(2)}</span>
+                        ) : (
+                          <span className="font-medium text-amber-700">
+                            Pending dealer fulfillment <span className="text-amber-600">/ डीलरच्या पूर्ततेची प्रतीक्षा</span>
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {user.role === 'RETAILER' ? (
+                  <div className="overflow-x-auto max-h-[50vh] overflow-y-auto">
+                    <table className="w-full text-sm">
+                      <thead className="bg-gray-50 sticky top-0">
+                        <tr>
+                          <th className="text-left p-1">Product / उत्पादन</th>
+                          <th className="text-left p-1">Original Qty / मूळ प्रमाण</th>
+                          <th className="text-left p-1">Qty / प्रमाण</th>
+                          <th className="text-left p-1">Batch / बॅच</th>
+                          <th className="text-left p-1">MRP / एमआरपी</th>
+                          <th className="text-left p-1">Retailer Price / किरकोळ किंमत</th>
+                          <th className="text-left p-1">Exp (mm-yyyy) / कालबाह्यता</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {selectedPurchase.items.map((it) => {
+                          // Highlights a line the dealer fulfilled (or is
+                          // currently dispatching) for a different quantity
+                          // than what was originally ordered — that edit on
+                          // the dealer's Sales screen cascades back to this
+                          // PurchaseItem's quantity (see sales.js PATCH
+                          // /:id/items), so it shows up here too, most
+                          // relevantly right before Mark Received.
+                          const qtyChanged = it.originalQuantity != null && it.quantity !== it.originalQuantity;
+                          return (
+                            <tr key={it.id} className={`border-t ${qtyChanged ? 'bg-amber-50' : ''}`}>
+                              <td className="p-1"><ProductCell product={it.product} /></td>
+                              <td className="p-1 text-gray-500">{it.originalQuantity ?? '—'}</td>
+                              <td className="p-1">
+                                {isSelectedEditable ? (
+                                  <input type="number" min="1" className="border rounded px-1 py-0.5 w-20"
+                                    value={quantityEdits[it.id] ?? ''}
+                                    onChange={(e) => setQuantityEdits((prev) => ({ ...prev, [it.id]: e.target.value }))} />
+                                ) : it.quantity}
+                              </td>
+                              {/* batch/MRP/price/expiry are only known once the dealer
+                                  has dispatched the order (IN_TRANSIT/RECEIVED) — blank
+                                  until then, since a retailer never enters them. */}
+                              <td className="p-1">{it.batchName || '—'}</td>
+                              <td className="p-1">{it.mrp != null ? `₹${it.mrp}` : '—'}</td>
+                              <td className="p-1">{it.retailerSellingPrice != null ? `₹${it.retailerSellingPrice}` : '—'}</td>
+                              <td className="p-1">{it.expiryDate ? formatMMYYYY(it.expiryDate) : '—'}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto max-h-[50vh] overflow-y-auto">
+                    <table className="w-full text-sm">
+                      <thead className="bg-gray-50 sticky top-0">
+                        <tr>
+                          <th className="text-left p-1">Product / उत्पादन</th>
+                          <th className="text-left p-1">Qty / प्रमाण</th>
+                          <th className="text-left p-1">Batch / बॅच</th>
+                          <th className="text-left p-1">Cost / क्रय</th>
+                          <th className="text-left p-1">Commission / कमिशन</th>
+                          <th className="text-left p-1">Sell Price / विक्री किंमत</th>
+                          <th className="text-left p-1">MRP / एमआरपी</th>
+                          <th className="text-left p-1">Discount / सवलत</th>
+                          <th className="text-left p-1">Retailer Price / किरकोळ किंमत</th>
+                          <th className="text-left p-1">Mfg (mm-yyyy) / उत्पादन तारीख</th>
+                          <th className="text-left p-1">Exp (mm-yyyy) / कालबाह्यता</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {selectedPurchase.items.map((it) => {
+                          const edit = priceEdits[it.id];
+                          const liveSellingPrice = editingPrices && edit ? computeSellingPrice(edit) : null;
+                          const liveRetailerPrice = editingPrices && edit ? computeRetailerPrice(edit) : null;
+                          return (
+                            <tr key={it.id} className="border-t">
+                              <td className="p-1"><ProductCell product={it.product} /></td>
+                              <td className="p-1">
+                                {isSelectedEditable ? (
+                                  <input type="number" min="1" className="border rounded px-1 py-0.5 w-20"
+                                    value={quantityEdits[it.id] ?? ''}
+                                    onChange={(e) => setQuantityEdits((prev) => ({ ...prev, [it.id]: e.target.value }))} />
+                                ) : it.quantity}
+                              </td>
+                              <td className="p-1">{it.batchName}</td>
+                              <td className="p-1">
+                                {editingPrices ? (
+                                  <input type="number" step="0.01" min="0" className="border rounded px-1 py-0.5 w-20"
+                                    value={edit?.rate ?? ''}
+                                    onChange={(e) => updatePriceEdit(it.id, 'rate', e.target.value)} />
+                                ) : `₹${it.rate}`}
+                              </td>
+                              <td className="p-1">
+                                {editingPrices ? (
+                                  <input type="number" step="0.01" min="0" className="border rounded px-1 py-0.5 w-16"
+                                    value={edit?.dealerCommission ?? ''}
+                                    onChange={(e) => updatePriceEdit(it.id, 'dealerCommission', e.target.value)} />
+                                ) : `${it.dealerCommission}%`}
+                              </td>
+                              <td className="p-1">₹{editingPrices ? (liveSellingPrice || '—') : it.sellingPrice}</td>
+                              <td className="p-1">
+                                {editingPrices ? (
+                                  <input type="number" step="0.01" min="0" className="border rounded px-1 py-0.5 w-20"
+                                    value={edit?.mrp ?? ''}
+                                    onChange={(e) => updatePriceEdit(it.id, 'mrp', e.target.value)} />
+                                ) : `₹${it.mrp}`}
+                              </td>
+                              <td className="p-1">
+                                {editingPrices ? (
+                                  <input type="number" step="0.01" min="0" className="border rounded px-1 py-0.5 w-16"
+                                    value={edit?.discount ?? ''}
+                                    onChange={(e) => updatePriceEdit(it.id, 'discount', e.target.value)} />
+                                ) : `${it.discount}%`}
+                              </td>
+                              <td className="p-1">₹{editingPrices ? (liveRetailerPrice || '—') : (it.retailerSellingPrice ?? computeRetailerPrice(it))}</td>
+                              <td className="p-1">{formatMMYYYY(it.manufacturingDate)}</td>
+                              <td className="p-1">{formatMMYYYY(it.expiryDate)}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {priceError && (
+                  <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2 mt-2">{priceError}</div>
+                )}
+
+                {editingPrices && (
+                  <div className="flex items-center gap-3 mt-2">
+                    <button type="button" onClick={savePrices} disabled={savingPrices}
+                      className="text-xs bg-emerald-700 text-white px-3 py-1.5 rounded hover:bg-emerald-800 disabled:opacity-50">
+                      {savingPrices ? 'Saving... / जतन करत आहे...' : 'Save Price Changes / किंमत बदल जतन करा'}
+                    </button>
+                    <button type="button" onClick={cancelEditPrices} disabled={savingPrices}
+                      className="text-xs text-gray-600 px-2 py-1.5 rounded hover:bg-gray-100">
+                      Cancel / रद्द करा
+                    </button>
+                  </div>
+                )}
+
+                {quantityError && (
+                  <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2 mt-2">{quantityError}</div>
+                )}
+
+                {isSelectedEditable && (
+                  <button type="button" onClick={saveQuantities} disabled={savingQuantities}
+                    className="mt-2 text-xs bg-emerald-700 text-white px-3 py-1.5 rounded hover:bg-emerald-800 disabled:opacity-50">
+                    {savingQuantities ? 'Saving... / जतन करत आहे...' : 'Save Quantity Changes / प्रमाण बदल जतन करा'}
+                  </button>
+                )}
+              </div>
+        </div>
+      ) : (
         <form onSubmit={submit} className="bg-white p-4 rounded shadow space-y-3">
           {editingPurchaseId && (
             <div className="text-sm bg-amber-50 border border-amber-200 text-amber-800 rounded px-3 py-2 flex items-center justify-between gap-2">
@@ -684,8 +1039,9 @@ export default function Purchases() {
                     </div>
                   </div>
 
-                  {/* Line: Cost Price, Commission, Sell Price */}
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                  {/* Line: Cost Price, Commission, Sell Price, MRP, Discount %, Retailer Selling Price —
+                      collapses to a single row once the (left, 2/3-width) panel has room for it. */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-2">
                     <div className="flex flex-col gap-1">
                       <FieldLabel en="Cost Price" mr="क्रय किंमत" />
                       <input type="number" step="0.01" placeholder="Cost Price" className="border rounded px-2 py-1 w-full" required
@@ -701,10 +1057,6 @@ export default function Purchases() {
                       <input type="number" placeholder="Sell Price" className="border rounded px-2 py-1 w-full bg-gray-100 text-gray-700" disabled required
                         value={computeSellingPrice(it)} />
                     </div>
-                  </div>
-
-                  {/* Line: MRP, Discount %, Retailer Selling Price */}
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
                     <div className="flex flex-col gap-1">
                       <FieldLabel en="MRP" mr="एमआरपी" />
                       <input type="number" step="0.01" placeholder="MRP" className="border rounded px-2 py-1 w-full" required
@@ -738,9 +1090,9 @@ export default function Purchases() {
             <p className="text-xs font-medium text-gray-500 mb-1">
               Items in this Purchase<span className="block text-orange-700">या खरेदीतील वस्तू</span>
             </p>
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto max-h-[50vh] overflow-y-auto">
               <table className="w-full text-sm">
-                <thead className="bg-gray-50">
+                <thead className="bg-gray-50 sticky top-0">
                   <tr>
                     <th className="text-left p-1">Product / उत्पादन</th>
                     <th className="text-left p-1">Qty / प्रमाण</th>
@@ -777,9 +1129,9 @@ export default function Purchases() {
             <p className="text-xs font-medium text-gray-500 mb-1">
               Items in this Purchase<span className="block text-orange-700">या खरेदीतील वस्तू</span>
             </p>
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto max-h-[50vh] overflow-y-auto">
               <table className="w-full text-sm">
-                <thead className="bg-gray-50">
+                <thead className="bg-gray-50 sticky top-0">
                   <tr>
                     <th className="text-left p-1">Product / उत्पादन</th>
                     <th className="text-left p-1">Qty / प्रमाण</th>
@@ -860,260 +1212,53 @@ export default function Purchases() {
           </button>
         </div>
       </form>
+      )}
+      </div>
 
-      <div className="lg:sticky lg:top-4">
-          {/* Purchase lookup: pick a purchase by ID and view/edit it. This is
-              now the only view of a purchase on this side of the screen —
-              the full history list has been removed. */}
-          <div className="bg-white rounded shadow p-4">
-            {user.role === 'DEALER' && (
-              <div className="mb-3">
-                <FieldLabel en="Filter by Supplier" mr="पुरवठादारानुसार फिल्टर करा" />
-                <select className="border rounded px-2 py-1 w-full mt-1"
-                  value={purchaseSupplierFilter}
-                  onChange={(e) => {
-                    const next = e.target.value;
-                    setPurchaseSupplierFilter(next);
-                    // Drop the current selection if it falls outside the
-                    // newly chosen supplier, so the panel below doesn't
-                    // keep showing a purchase that's no longer in the list.
-                    const stillVisible = !next || purchases.some(
-                      (p) => String(p.id) === selectedPurchaseId && String(p.supplierId) === next
-                    );
-                    if (!stillVisible) setSelectedPurchaseId('');
-                  }}>
-                  <option value="">All Suppliers / सर्व पुरवठादार</option>
-                  {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-                </select>
-              </div>
-            )}
-
-            <FieldLabel en="View / Edit Purchase" mr="खरेदी पहा / संपादित करा" />
-            <select className="border rounded px-2 py-1 w-full mt-1"
-              value={selectedPurchaseId} onChange={(e) => setSelectedPurchaseId(e.target.value)}>
-              <option value="">Select a purchase... / खरेदी निवडा...</option>
-              {purchases
-                .filter((p) => !purchaseSupplierFilter || String(p.supplierId) === purchaseSupplierFilter)
-                .map((p) => (
-                <option key={p.id} value={p.id}>
-                  #{p.id} — {p.supplier?.name || p.sourceDealer?.name || '—'} — {new Date(p.date).toLocaleDateString()} — {p.status || 'PENDING'}
-                </option>
-              ))}
-            </select>
-
-            {selectedPurchase ? (
-              <div className="mt-3">
-                <div className="flex items-center justify-between flex-wrap gap-2 mb-2">
-                  <div>
-                    <div className="font-semibold">{selectedPurchase.supplier?.name || selectedPurchase.sourceDealer?.name}</div>
-                    <div className="text-xs text-gray-400">{new Date(selectedPurchase.date).toLocaleString()}</div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {user.role === 'DEALER' && (
-                      <button type="button" onClick={() => printPurchaseOrder(selectedPurchase.id)}
-                        className="text-xs bg-white border border-gray-400 text-gray-700 px-3 py-1.5 rounded hover:bg-gray-50">
-                        Print Purchase Order<span className="block">खरेदी ऑर्डर छापा</span>
-                      </button>
-                    )}
-                    {user.role === 'DEALER' && (selectedPurchase.status === 'CONFIRMED' || selectedPurchase.status === 'MODIFIED') && !editingPrices && (
-                      <button type="button" onClick={startEditPrices}
-                        className="text-xs bg-white border border-emerald-700 text-emerald-700 px-3 py-1.5 rounded hover:bg-emerald-50">
-                        Correct Prices<span className="block">किंमती दुरुस्त करा</span>
-                      </button>
-                    )}
-                    {statusAction(selectedPurchase)}
-                  </div>
-                </div>
-
-                {priceSuccessMessage && (
-                  <div className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-3 py-2 mb-2">{priceSuccessMessage}</div>
-                )}
-
-                {(() => {
-                  const { itemCount, totalQuantity, totalAmount, isComplete } = purchaseTotals(selectedPurchase, user.role);
-                  return (
-                    <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm bg-gray-50 border border-gray-200 rounded px-3 py-2 mb-2">
-                      <div>
-                        <span className="text-gray-500">Items</span> <span className="text-gray-400">/ वस्तू:</span>{' '}
-                        <span className="font-medium">{itemCount}</span>
-                      </div>
-                      <div>
-                        <span className="text-gray-500">Total Qty</span> <span className="text-gray-400">/ एकूण प्रमाण:</span>{' '}
-                        <span className="font-medium">{totalQuantity}</span>
-                      </div>
-                      <div>
-                        <span className="text-gray-500">Total</span> <span className="text-gray-400">/ एकूण:</span>{' '}
-                        {isComplete ? (
-                          <span className="font-medium">₹{totalAmount.toFixed(2)}</span>
-                        ) : (
-                          <span className="font-medium text-amber-700">
-                            Pending dealer fulfillment <span className="text-amber-600">/ डीलरच्या पूर्ततेची प्रतीक्षा</span>
-                          </span>
-                        )}
-                      </div>
-                    </div>
+      <div className="lg:col-span-1">
+        <div className="bg-white rounded shadow p-4 lg:sticky lg:top-4">
+          {user.role === 'DEALER' && (
+            <div className="mb-3">
+              <FieldLabel en="Filter by Supplier" mr="पुरवठादारानुसार फिल्टर करा" />
+              <select className="border rounded px-2 py-1 w-full mt-1"
+                value={purchaseSupplierFilter}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setPurchaseSupplierFilter(next);
+                  // Drop the current selection if it falls outside the
+                  // newly chosen supplier, so the panel below doesn't
+                  // keep showing a purchase that's no longer in the list.
+                  const stillVisible = !next || purchases.some(
+                    (p) => String(p.id) === selectedPurchaseId && String(p.supplierId) === next
                   );
-                })()}
+                  if (!stillVisible) setSelectedPurchaseId('');
+                }}>
+                <option value="">All Suppliers / सर्व पुरवठादार</option>
+                {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </div>
+          )}
 
-                {user.role === 'RETAILER' ? (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead className="bg-gray-50">
-                        <tr>
-                          <th className="text-left p-1">Product / उत्पादन</th>
-                          <th className="text-left p-1">Original Qty / मूळ प्रमाण</th>
-                          <th className="text-left p-1">Qty / प्रमाण</th>
-                          <th className="text-left p-1">Batch / बॅच</th>
-                          <th className="text-left p-1">MRP / एमआरपी</th>
-                          <th className="text-left p-1">Retailer Price / किरकोळ किंमत</th>
-                          <th className="text-left p-1">Exp (mm-yyyy) / कालबाह्यता</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {selectedPurchase.items.map((it) => {
-                          // Highlights a line the dealer fulfilled (or is
-                          // currently dispatching) for a different quantity
-                          // than what was originally ordered — that edit on
-                          // the dealer's Sales screen cascades back to this
-                          // PurchaseItem's quantity (see sales.js PATCH
-                          // /:id/items), so it shows up here too, most
-                          // relevantly right before Mark Received.
-                          const qtyChanged = it.originalQuantity != null && it.quantity !== it.originalQuantity;
-                          return (
-                            <tr key={it.id} className={`border-t ${qtyChanged ? 'bg-amber-50' : ''}`}>
-                              <td className="p-1"><ProductCell product={it.product} /></td>
-                              <td className="p-1 text-gray-500">{it.originalQuantity ?? '—'}</td>
-                              <td className="p-1">
-                                {isSelectedEditable ? (
-                                  <input type="number" min="1" className="border rounded px-1 py-0.5 w-20"
-                                    value={quantityEdits[it.id] ?? ''}
-                                    onChange={(e) => setQuantityEdits((prev) => ({ ...prev, [it.id]: e.target.value }))} />
-                                ) : it.quantity}
-                              </td>
-                              {/* batch/MRP/price/expiry are only known once the dealer
-                                  has dispatched the order (IN_TRANSIT/RECEIVED) — blank
-                                  until then, since a retailer never enters them. */}
-                              <td className="p-1">{it.batchName || '—'}</td>
-                              <td className="p-1">{it.mrp != null ? `₹${it.mrp}` : '—'}</td>
-                              <td className="p-1">{it.retailerSellingPrice != null ? `₹${it.retailerSellingPrice}` : '—'}</td>
-                              <td className="p-1">{it.expiryDate ? formatMMYYYY(it.expiryDate) : '—'}</td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead className="bg-gray-50">
-                        <tr>
-                          <th className="text-left p-1">Product / उत्पादन</th>
-                          <th className="text-left p-1">Qty / प्रमाण</th>
-                          <th className="text-left p-1">Batch / बॅच</th>
-                          <th className="text-left p-1">Cost / क्रय</th>
-                          <th className="text-left p-1">Commission / कमिशन</th>
-                          <th className="text-left p-1">Sell Price / विक्री किंमत</th>
-                          <th className="text-left p-1">MRP / एमआरपी</th>
-                          <th className="text-left p-1">Discount / सवलत</th>
-                          <th className="text-left p-1">Retailer Price / किरकोळ किंमत</th>
-                          <th className="text-left p-1">Mfg (mm-yyyy) / उत्पादन तारीख</th>
-                          <th className="text-left p-1">Exp (mm-yyyy) / कालबाह्यता</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {selectedPurchase.items.map((it) => {
-                          const edit = priceEdits[it.id];
-                          const liveSellingPrice = editingPrices && edit ? computeSellingPrice(edit) : null;
-                          const liveRetailerPrice = editingPrices && edit ? computeRetailerPrice(edit) : null;
-                          return (
-                            <tr key={it.id} className="border-t">
-                              <td className="p-1"><ProductCell product={it.product} /></td>
-                              <td className="p-1">
-                                {isSelectedEditable ? (
-                                  <input type="number" min="1" className="border rounded px-1 py-0.5 w-20"
-                                    value={quantityEdits[it.id] ?? ''}
-                                    onChange={(e) => setQuantityEdits((prev) => ({ ...prev, [it.id]: e.target.value }))} />
-                                ) : it.quantity}
-                              </td>
-                              <td className="p-1">{it.batchName}</td>
-                              <td className="p-1">
-                                {editingPrices ? (
-                                  <input type="number" step="0.01" min="0" className="border rounded px-1 py-0.5 w-20"
-                                    value={edit?.rate ?? ''}
-                                    onChange={(e) => updatePriceEdit(it.id, 'rate', e.target.value)} />
-                                ) : `₹${it.rate}`}
-                              </td>
-                              <td className="p-1">
-                                {editingPrices ? (
-                                  <input type="number" step="0.01" min="0" className="border rounded px-1 py-0.5 w-16"
-                                    value={edit?.dealerCommission ?? ''}
-                                    onChange={(e) => updatePriceEdit(it.id, 'dealerCommission', e.target.value)} />
-                                ) : `${it.dealerCommission}%`}
-                              </td>
-                              <td className="p-1">₹{editingPrices ? (liveSellingPrice || '—') : it.sellingPrice}</td>
-                              <td className="p-1">
-                                {editingPrices ? (
-                                  <input type="number" step="0.01" min="0" className="border rounded px-1 py-0.5 w-20"
-                                    value={edit?.mrp ?? ''}
-                                    onChange={(e) => updatePriceEdit(it.id, 'mrp', e.target.value)} />
-                                ) : `₹${it.mrp}`}
-                              </td>
-                              <td className="p-1">
-                                {editingPrices ? (
-                                  <input type="number" step="0.01" min="0" className="border rounded px-1 py-0.5 w-16"
-                                    value={edit?.discount ?? ''}
-                                    onChange={(e) => updatePriceEdit(it.id, 'discount', e.target.value)} />
-                                ) : `${it.discount}%`}
-                              </td>
-                              <td className="p-1">₹{editingPrices ? (liveRetailerPrice || '—') : (it.retailerSellingPrice ?? computeRetailerPrice(it))}</td>
-                              <td className="p-1">{formatMMYYYY(it.manufacturingDate)}</td>
-                              <td className="p-1">{formatMMYYYY(it.expiryDate)}</td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
+          <FieldLabel en="View / Edit Purchase" mr="खरेदी पहा / संपादित करा" />
+          <select className="border rounded px-2 py-1 w-full mt-1"
+            value={selectedPurchaseId} onChange={(e) => setSelectedPurchaseId(e.target.value)}>
+            <option value="">Select a purchase... / खरेदी निवडा...</option>
+            {purchases
+              .filter((p) => !purchaseSupplierFilter || String(p.supplierId) === purchaseSupplierFilter)
+              .map((p) => (
+              <option key={p.id} value={p.id}>
+                #{p.id} — {p.supplier?.name || p.sourceDealer?.name || '—'} — {new Date(p.date).toLocaleDateString()} — {p.status || 'PENDING'}
+              </option>
+            ))}
+          </select>
+        </div>
 
-                {priceError && (
-                  <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2 mt-2">{priceError}</div>
-                )}
-
-                {editingPrices && (
-                  <div className="flex items-center gap-3 mt-2">
-                    <button type="button" onClick={savePrices} disabled={savingPrices}
-                      className="text-xs bg-emerald-700 text-white px-3 py-1.5 rounded hover:bg-emerald-800 disabled:opacity-50">
-                      {savingPrices ? 'Saving... / जतन करत आहे...' : 'Save Price Changes / किंमत बदल जतन करा'}
-                    </button>
-                    <button type="button" onClick={cancelEditPrices} disabled={savingPrices}
-                      className="text-xs text-gray-600 px-2 py-1.5 rounded hover:bg-gray-100">
-                      Cancel / रद्द करा
-                    </button>
-                  </div>
-                )}
-
-                {quantityError && (
-                  <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2 mt-2">{quantityError}</div>
-                )}
-
-                {isSelectedEditable && (
-                  <button type="button" onClick={saveQuantities} disabled={savingQuantities}
-                    className="mt-2 text-xs bg-emerald-700 text-white px-3 py-1.5 rounded hover:bg-emerald-800 disabled:opacity-50">
-                    {savingQuantities ? 'Saving... / जतन करत आहे...' : 'Save Quantity Changes / प्रमाण बदल जतन करा'}
-                  </button>
-                )}
-              </div>
-            ) : (
-              <p className="text-gray-400 text-sm mt-2">
-                No purchase selected.
-                <span className="block text-xs">कोणतीही खरेदी निवडलेली नाही.</span>
-              </p>
-            )}
-          </div>
+        <div className="mt-4">
+          <h2 className="text-lg font-semibold mb-2">Recent Purchases <span className="text-gray-400 font-normal">/ अलीकडील खरेदी</span></h2>
+          {renderPurchasesTable()}
         </div>
       </div>
       </div>
+    </div>
   );
 }

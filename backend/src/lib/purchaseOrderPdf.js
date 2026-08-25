@@ -49,9 +49,11 @@ function fmtMonthYear(d) {
 }
 
 // Rate/Amount only — deliberately no Dealer Commission, Selling Price, or
-// Retailer Selling Price columns. Those are the dealer's own onward-margin
-// figures; a document going to the supplier who sold at Rate in the first
-// place has no business disclosing what the dealer marks it up to.
+// Retailer Selling Price columns. Those are the buyer's own onward-margin
+// figures (a dealer's markup over their supplier's Rate, or a retailer's
+// markup over their dealer's); a document going to the counterparty who
+// sold at Rate in the first place has no business disclosing what it gets
+// marked up to further down the chain.
 const COLS = [
   { key: 'sr', label: L.srNo, width: 28, align: 'left' },
   { key: 'product', label: L.product, width: 150, align: 'left' },
@@ -89,26 +91,28 @@ function drawRow(doc, y, values) {
   COLS.forEach((c, i) => doc.text(String(values[c.key] ?? ''), colX(i), y, { width: c.width, align: c.align }));
 }
 
-// Dealer name/address/contact/GST as the header block, then — its own
-// line, right corner, same font/size as the dealer name — the supplier's
-// name. Reads as a letterhead: "who this order is from" on the left,
-// stacked; "who it's addressed to" on the right, matching weight.
-function renderHeader(doc, dealer, supplierName) {
+// party name/address/contact/GST as the header block, then — its own line,
+// right corner, same font/size as the party name — the counterparty's
+// name (the supplier, for a dealer's own purchase, or the dealer, for a
+// retailer's own purchase — see generatePurchaseOrderPdf below). Reads as
+// a letterhead: "who this order is from" on the left, stacked; "who it's
+// addressed to" on the right, matching weight.
+function renderHeader(doc, party, counterpartyName) {
   let y = MARGIN;
 
   doc.font(FONT_BOLD).fontSize(16);
-  const dealerName = dealer?.name || '—';
-  doc.text(dealerName, MARGIN, y, { width: CONTENT_WIDTH, align: 'left' });
-  y += doc.heightOfString(dealerName, { width: CONTENT_WIDTH }) + 3;
+  const partyName = party?.name || '—';
+  doc.text(partyName, MARGIN, y, { width: CONTENT_WIDTH, align: 'left' });
+  y += doc.heightOfString(partyName, { width: CONTENT_WIDTH }) + 3;
 
   doc.font(FONT_REGULAR).fontSize(9);
-  if (dealer?.address) {
-    doc.text(dealer.address, MARGIN, y, { width: CONTENT_WIDTH, align: 'left' });
-    y += doc.heightOfString(dealer.address, { width: CONTENT_WIDTH }) + 2;
+  if (party?.address) {
+    doc.text(party.address, MARGIN, y, { width: CONTENT_WIDTH, align: 'left' });
+    y += doc.heightOfString(party.address, { width: CONTENT_WIDTH }) + 2;
   }
   const contactLine = [
-    dealer?.contactNumber ? `Ph: ${dealer.contactNumber}` : null,
-    dealer?.gstNumber ? `GSTIN: ${dealer.gstNumber}` : null,
+    party?.contactNumber ? `Ph: ${party.contactNumber}` : null,
+    party?.gstNumber ? `GSTIN: ${party.gstNumber}` : null,
   ].filter(Boolean).join('   |   ');
   if (contactLine) {
     doc.text(contactLine, MARGIN, y, { width: CONTENT_WIDTH, align: 'left' });
@@ -116,9 +120,9 @@ function renderHeader(doc, dealer, supplierName) {
   }
 
   doc.font(FONT_BOLD).fontSize(16);
-  const supplierLabel = supplierName || '—';
-  doc.text(supplierLabel, MARGIN, y, { width: CONTENT_WIDTH, align: 'right' });
-  y += doc.heightOfString(supplierLabel, { width: CONTENT_WIDTH }) + 10;
+  const counterpartyLabel = counterpartyName || '—';
+  doc.text(counterpartyLabel, MARGIN, y, { width: CONTENT_WIDTH, align: 'right' });
+  y += doc.heightOfString(counterpartyLabel, { width: CONTENT_WIDTH }) + 10;
 
   doc.moveTo(MARGIN, y).lineTo(MARGIN + CONTENT_WIDTH, y).stroke();
   return y + 16;
@@ -140,17 +144,23 @@ function renderTitleAndMeta(doc, y, purchase) {
 }
 
 // purchase: a Purchase with { items: [{ product, quantity, rate, batchName,
-//           manufacturingDate, expiryDate }], id, date, status, supplier }
-//           — product additionally needs name/sizeWeight/flavour/brand
-//           (all shown in the Product column, see the items.forEach loop
-//           below) — rate is this purchase's own recorded cost price, so
-//           the PO still shows correct figures even after a later price
-//           correction (see purchases.js PATCH /:id/prices) — it always
-//           reflects whatever the item's current rate is at print time.
-// dealer: the Dealer that placed the order (for the header).
-export async function generatePurchaseOrderPdf(purchase, dealer) {
-  const supplierName = purchase.supplier?.name || '—';
-
+//           manufacturingDate, expiryDate }], id, date, status } — rate is
+//           this purchase's own recorded cost price, so the PO still shows
+//           correct figures even after a later price correction (see
+//           purchases.js PATCH /:id/prices) — it always reflects whatever
+//           the item's current rate is at print time. Works identically
+//           for a DEALER's purchase (rate = what they pay their supplier)
+//           and a RETAILER's purchase (rate = what they pay their dealer,
+//           backfilled at dispatch — see schema.prisma PurchaseItem.rate).
+// party: whoever placed the order — the Dealer, for their own purchase
+//        from a supplier, or the Retailer, for their own purchase from a
+//        dealer (for the header).
+// counterpartyName: who the order is addressed to — the supplier's name
+//        for a dealer's purchase, or the dealer's name for a retailer's
+//        purchase. Passed explicitly rather than read off `purchase`
+//        itself, since which relation that is (supplier vs sourceDealer)
+//        depends on which side placed the order.
+export async function generatePurchaseOrderPdf(purchase, party, counterpartyName) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ size: 'A4', margin: 0, bufferPages: true });
     const chunks = [];
@@ -158,7 +168,7 @@ export async function generatePurchaseOrderPdf(purchase, dealer) {
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
 
-    let y = renderHeader(doc, dealer, supplierName);
+    let y = renderHeader(doc, party, counterpartyName);
     y = renderTitleAndMeta(doc, y, purchase);
     y = drawTableHeader(doc, y);
 
@@ -172,19 +182,9 @@ export async function generatePurchaseOrderPdf(purchase, dealer) {
       totalQty += qty;
       totalAmount += amount;
 
-      const productDetails = [item.product?.sizeWeight, item.product?.flavour, item.product?.brand]
-        .filter(Boolean).join(' \u00b7 ');
-      const productName = item.product?.name || `#${item.productId}`;
-
       const values = {
         sr: idx + 1,
-        // Second line (size/weight · flavour · brand) only when at least
-        // one is present — same font/size as everything else in the row
-        // (see drawRow), the embedded newline is enough for PDFKit's
-        // heightOfString/text to wrap and measure it as two lines within
-        // the Product column's width, no separate column or draw call
-        // needed.
-        product: productDetails ? `${productName}\n${productDetails}` : productName,
+        product: item.product?.name || `#${item.productId}`,
         batch: item.batchName || '-',
         mfg: fmtMonthYear(item.manufacturingDate),
         exp: fmtMonthYear(item.expiryDate),

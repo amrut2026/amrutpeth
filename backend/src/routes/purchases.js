@@ -693,25 +693,39 @@ router.patch('/:id/prices', authRequired, requireRole('DEALER'), async (req, res
 
 // GET /api/purchases/:id/bill — printable A4 Purchase Order PDF, same
 // naming convention as GET /sales/:id/bill even though this one renders a
-// "PURCHASE ORDER" (see purchaseOrderPdf.js). DEALER only: this purchase's
-// header is dealer-name/address/contact/GST + supplier name — a retailer's
-// own purchase is from a dealer, not a supplier, and would need a
-// different header layout that isn't implemented here.
-router.get('/:id/bill', authRequired, requireRole('DEALER'), async (req, res) => {
+// "PURCHASE ORDER" (see purchaseOrderPdf.js). Available for both a
+// DEALER's own purchase (header: dealer + supplier) and a RETAILER's own
+// purchase (header: retailer + dealer) — same document either way, just a
+// different pair of parties. No status restriction: both sides can print
+// at any stage (PENDING through CONFIRMED/RECEIVED/MODIFIED) purely to
+// review what's on the order as it stands, not just once it's final.
+router.get('/:id/bill', authRequired, requireRole('DEALER', 'RETAILER'), async (req, res) => {
   try {
     const scope = ownerScope(req);
     const id = Number(req.params.id);
     const purchase = await prisma.purchase.findUnique({
       where: { id },
-      include: { items: { include: { product: true } }, supplier: true }
+      include: { items: { include: { product: true } }, supplier: true, sourceDealer: true }
     });
     if (!purchase) return res.status(404).json({ error: 'Purchase not found' });
-    if (purchase.ownerType !== 'DEALER' || purchase.dealerId !== scope.dealerId) {
-      return res.status(403).json({ error: 'Forbidden' });
+
+    let party;
+    let counterpartyName;
+    if (scope.ownerType === 'DEALER') {
+      if (purchase.ownerType !== 'DEALER' || purchase.dealerId !== scope.dealerId) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+      party = await prisma.dealer.findUnique({ where: { id: scope.dealerId } });
+      counterpartyName = purchase.supplier?.name;
+    } else {
+      if (purchase.ownerType !== 'RETAILER' || purchase.retailerId !== scope.retailerId) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+      party = await prisma.retailer.findUnique({ where: { id: scope.retailerId } });
+      counterpartyName = purchase.sourceDealer?.name;
     }
 
-    const dealer = await prisma.dealer.findUnique({ where: { id: scope.dealerId } });
-    const pdfBuffer = await generatePurchaseOrderPdf(purchase, dealer);
+    const pdfBuffer = await generatePurchaseOrderPdf(purchase, party, counterpartyName);
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="purchase-order-${purchase.id}.pdf"`);

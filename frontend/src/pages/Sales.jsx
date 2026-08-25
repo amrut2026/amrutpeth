@@ -29,6 +29,13 @@ export default function Sales() {
   const [activeSale, setActiveSale] = useState(null);
   const [dispatchError, setDispatchError] = useState('');
   const [dispatching, setDispatching] = useState(false);
+  // Which Recent Sales tab is showing — Cash or Retailer.
+  const [recentSalesTab, setRecentSalesTab] = useState('CASH');
+  // Narrows the Retailer Sales tab (and its Select Sale dropdown) to one
+  // retailer, same pattern as Purchases' "Filter by Supplier" — separate
+  // from customerRetailerId above (the sale-being-built's own retailer
+  // field). Empty string = all retailers, the default.
+  const [saleRetailerFilter, setSaleRetailerFilter] = useState('');
   const scanRef = useRef(null);
 
   async function load() {
@@ -229,14 +236,16 @@ export default function Sales() {
   // customer sale; anything else (RETAILER) is a dealer selling on to one
   // of their own retailers.
   const cashSales = sales.filter((s) => s.customerType === 'CASH');
-  const nonCashSales = sales.filter((s) => s.customerType !== 'CASH');
+  const nonCashSales = sales.filter((s) =>
+    s.customerType !== 'CASH' && (!saleRetailerFilter || String(s.customerRetailerId) === saleRetailerFilter)
+  );
 
   // Shared table body for both Recent Sales sections below — identical
   // row rendering, just given a different (pre-filtered) slice of `sales`
   // and its own empty-state message.
   function renderSalesTable(rows, emptyMessage) {
     return (
-      <div className="bg-white rounded shadow overflow-x-auto lg:max-h-[calc(50vh-8rem)] lg:overflow-y-auto">
+      <div className="bg-white rounded shadow overflow-x-auto lg:max-h-[calc(100vh-20rem)] lg:overflow-y-auto">
         <table className="w-full text-sm">
           <thead className="bg-gray-100 sticky top-0">
             <tr>
@@ -292,12 +301,74 @@ export default function Sales() {
     );
   }
 
+  // Loads a PDF blob into a hidden iframe and calls its print(), which
+  // opens the browser's native print dialog with the OS default printer
+  // pre-selected — as close as a web app can get to "just print it"
+  // without the user manually opening the file first. There's no way for
+  // JS to detect whether a printer is installed or to skip the dialog
+  // entirely (browsers block silent printing outright, for good reason),
+  // so "if no printer" here means "if triggering the print dialog itself
+  // fails" (blocked iframe, a browser that won't render PDF inline, etc.)
+  // — in that case this falls back to the old behavior of just opening the
+  // PDF in a new tab so the user can print it themselves.
+  function printPdfBlob(blob) {
+    const blobUrl = URL.createObjectURL(blob);
+    const iframe = document.createElement('iframe');
+    iframe.style.position = 'fixed';
+    iframe.style.right = '0';
+    iframe.style.bottom = '0';
+    iframe.style.width = '0';
+    iframe.style.height = '0';
+    iframe.style.border = '0';
+
+    const cleanup = () => {
+      // Left in place for a bit after print() is called — removing the
+      // iframe immediately can cancel the print job before the browser's
+      // spooler has actually picked it up.
+      setTimeout(() => {
+        if (iframe.parentNode) document.body.removeChild(iframe);
+        URL.revokeObjectURL(blobUrl);
+      }, 60000);
+    };
+
+    // Guards against two dialogs: some browsers fire onload a second time
+    // for PDF content specifically (once for the iframe's own document,
+    // again once the embedded PDF viewer finishes rendering) — this makes
+    // sure print() only ever fires once no matter how many times onload
+    // does.
+    let triggered = false;
+    iframe.onload = () => {
+      if (triggered) return;
+      triggered = true;
+      try {
+        iframe.contentWindow.focus();
+        iframe.contentWindow.print();
+      } catch (err) {
+        console.error('Could not open the print dialog, opening the PDF instead:', err);
+        window.open(blobUrl, '_blank');
+      }
+      cleanup();
+    };
+    iframe.onerror = () => {
+      if (triggered) return;
+      triggered = true;
+      window.open(blobUrl, '_blank');
+      cleanup();
+    };
+
+    // src is set BEFORE the iframe is attached to the DOM. Appending an
+    // iframe with no src first (as this used to) makes it navigate to
+    // about:blank, firing onload once, then navigate again once src is
+    // assigned — two loads, two print() calls, two dialogs. Setting src
+    // first means there's only one navigation, straight to the PDF.
+    iframe.src = blobUrl;
+    document.body.appendChild(iframe);
+  }
+
   async function printBill(saleId) {
     try {
       const res = await api.get(`/sales/${saleId}/bill`, { responseType: 'blob' });
-      const blobUrl = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
-      window.open(blobUrl, '_blank');
-      setTimeout(() => URL.revokeObjectURL(blobUrl), 30000);
+      printPdfBlob(new Blob([res.data], { type: 'application/pdf' }));
     } catch (err) {
       console.error('Failed to load bill:', err);
       alert('Sale was completed, but the bill could not be loaded. You can open it later from Recent Sales.');
@@ -369,7 +440,8 @@ export default function Sales() {
         <div className="flex items-center justify-between mb-4">
           <h1 className="text-2xl font-semibold">Sales / POS <span className="text-gray-400 font-normal">/ विक्री / पॉस</span></h1>
           {activeSale && (
-            <button type="button" onClick={exitActiveSale} className="text-sm text-emerald-700 hover:underline">
+            <button type="button" onClick={exitActiveSale}
+              className="text-sm bg-emerald-700 text-white px-3 py-1.5 rounded hover:bg-emerald-800">
               + New Sale
             </button>
           )}
@@ -381,7 +453,9 @@ export default function Sales() {
               <span className="text-sm font-medium">
                 Customer <span className="text-gray-400">/ ग्राहक</span>:{' '}
                 <span className="font-normal">
-                  {retailers.find((r) => r.id === activeSale.customerRetailerId)?.name || 'Retailer'}
+                  {activeSale.customerType === 'CASH'
+                    ? 'Cash'
+                    : (retailers.find((r) => r.id === activeSale.customerRetailerId)?.name || 'Retailer')}
                 </span>
               </span>
             ) : (
@@ -484,9 +558,9 @@ export default function Sales() {
           )}
         </div>
 
-        <div className="bg-white rounded shadow overflow-x-auto">
+        <div className="bg-white rounded shadow overflow-x-auto max-h-[60vh] overflow-y-auto">
           <table className="w-full text-sm">
-            <thead className="bg-gray-100">
+            <thead className="bg-gray-100 sticky top-0 z-10">
               <tr>
                 <th className="text-left p-2">Product <span className="text-gray-400 font-normal">/ उत्पादन</span></th>
                 <th className="text-left p-2">Batch <span className="text-gray-400 font-normal">/ बॅच</span></th>
@@ -681,11 +755,57 @@ export default function Sales() {
         <div className="mt-4">
           <h2 className="text-lg font-semibold mb-2">Recent Sales <span className="text-gray-400 font-normal">/ अलीकडील विक्री</span></h2>
 
-          <h3 className="text-sm font-semibold text-gray-600 mb-1">Cash Sales <span className="text-gray-400 font-normal">/ रोख विक्री</span></h3>
-          {renderSalesTable(cashSales, 'No cash sales yet. / अद्याप रोख विक्री नाही.')}
+          {user.role === 'DEALER' && (
+            <div className="flex gap-1 mb-2 border-b">
+              <button type="button"
+                className={`px-3 py-1.5 text-sm font-medium border-b-2 -mb-px ${
+                  recentSalesTab === 'CASH' ? 'border-emerald-700 text-emerald-700' : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
+                onClick={() => setRecentSalesTab('CASH')}>
+                Cash Sales <span className="text-gray-400 font-normal">/ रोख विक्री</span>
+              </button>
+              <button type="button"
+                className={`px-3 py-1.5 text-sm font-medium border-b-2 -mb-px ${
+                  recentSalesTab === 'RETAILER' ? 'border-emerald-700 text-emerald-700' : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
+                onClick={() => setRecentSalesTab('RETAILER')}>
+                Retailer Sales <span className="text-gray-400 font-normal">/ किरकोळ विक्रेता विक्री</span>
+              </button>
+            </div>
+          )}
 
-          <h3 className="text-sm font-semibold text-gray-600 mb-1 mt-4">Retailer Sales <span className="text-gray-400 font-normal">/ किरकोळ विक्रेता विक्री</span></h3>
-          {renderSalesTable(nonCashSales, 'No retailer sales yet. / अद्याप किरकोळ विक्रेता विक्री नाही.')}
+          {recentSalesTab === 'RETAILER' && user.role === 'DEALER' && (
+            <div className="mb-2">
+              <label className="text-xs text-gray-500">Filter by Retailer <span className="text-gray-400">/ किरकोळ विक्रेत्यानुसार फिल्टर करा</span></label>
+              <select className="border rounded px-2 py-1 w-full mt-1 text-sm"
+                value={saleRetailerFilter}
+                onChange={(e) => setSaleRetailerFilter(e.target.value)}>
+                <option value="">All Retailers / सर्व किरकोळ विक्रेते</option>
+                {retailers.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+              </select>
+            </div>
+          )}
+
+          <div className="mb-2">
+            <label className="text-xs text-gray-500">Select Sale <span className="text-gray-400">/ विक्री निवडा</span></label>
+            <select className="border rounded px-2 py-1 w-full mt-1 text-sm"
+              value={activeSale && (recentSalesTab === 'CASH' ? cashSales : nonCashSales).some((s) => s.id === activeSale.id) ? String(activeSale.id) : ''}
+              onChange={(e) => {
+                const sale = (recentSalesTab === 'CASH' ? cashSales : nonCashSales).find((s) => String(s.id) === e.target.value);
+                if (sale) loadSaleIntoCart(sale);
+              }}>
+              <option value="">Select a sale... / विक्री निवडा...</option>
+              {(recentSalesTab === 'CASH' ? cashSales : nonCashSales).map((s) => (
+                <option key={s.id} value={s.id}>
+                  #{s.id} — {new Date(s.date).toLocaleDateString()} — {s.totalAmount != null ? `₹${Number(s.totalAmount).toFixed(2)}` : '—'} — {s.status || 'COMPLETED'}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {recentSalesTab === 'CASH'
+            ? renderSalesTable(cashSales, 'No cash sales yet. / अद्याप रोख विक्री नाही.')
+            : renderSalesTable(nonCashSales, 'No retailer sales yet. / अद्याप किरकोळ विक्रेता विक्री नाही.')}
         </div>
       </div>
     </div>
