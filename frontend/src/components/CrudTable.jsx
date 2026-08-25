@@ -143,7 +143,7 @@ export default function CrudTable({
     <div>
       <h1 className="text-2xl font-semibold mb-4">{title}</h1>
 
-      {canCreate && (
+      {(canCreate || editingId) && (
         <form onSubmit={submit} className="bg-white p-4 rounded shadow mb-6 grid grid-cols-1 md:grid-cols-3 gap-3">
           {fields.map((f) => {
             if (f.type === 'bankAccounts') {
