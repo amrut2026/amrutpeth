@@ -8,6 +8,16 @@ function formatMoney(value) {
   return `₹${Number(value || 0).toFixed(2)}`;
 }
 
+// Sum of quantity + amount across a list of sold-product rows — used for
+// both the per-group subtotal (per supplier for a DEALER, the single
+// implicit group for a RETAILER) and the overall per-tab total.
+function sumItems(items) {
+  return items.reduce((acc, i) => ({
+    quantity: acc.quantity + Number(i.quantity || 0),
+    amount: acc.amount + Number(i.amount || 0),
+  }), { quantity: 0, amount: 0 });
+}
+
 // Same sizeWeight/flavour/brand join and layout as ProductCell in
 // Sales.jsx / Purchases.jsx, so a product reads identically everywhere it
 // shows up across the app.
@@ -151,25 +161,50 @@ export default function SoldProducts() {
     }
   }
 
+  // The overall total for whichever tab is showing — across every group,
+  // not just the one currently in view — shown above the table.
+  function TabTotals({ items }) {
+    if (!items.length) return null;
+    const { quantity, amount } = sumItems(items);
+    return (
+      <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm bg-gray-50 border border-gray-200 rounded px-3 py-2 mb-3">
+        <div>
+          <span className="text-gray-500">Items</span> <span className="text-gray-400">/ वस्तू:</span>{' '}
+          <span className="font-medium">{items.length}</span>
+        </div>
+        <div>
+          <span className="text-gray-500">Total Qty</span> <span className="text-gray-400">/ एकूण प्रमाण:</span>{' '}
+          <span className="font-medium">{quantity}</span>
+        </div>
+        <div>
+          <span className="text-gray-500">Total</span> <span className="text-gray-400">/ एकूण:</span>{' '}
+          <span className="font-medium">{formatMoney(amount)}</span>
+        </div>
+      </div>
+    );
+  }
+
   function ItemsTable({ items, selectable }) {
     const groups = groupBySupplier(items);
     return (
-      <div className="space-y-4">
+      <div className="space-y-4 max-h-[70vh] overflow-y-auto">
         {groups.map((g) => {
           const groupSelectedCount = g.items.filter((i) => selected.has(i.id)).length;
-          const groupTotal = g.items.reduce((sum, i) => sum + Number(i.amount), 0);
+          const { quantity: groupQty, amount: groupTotal } = sumItems(g.items);
           return (
             <div key={g.supplierId ?? 'all'} className="bg-white rounded shadow overflow-x-auto">
-              {user.role === 'DEALER' && (
-                <div className="flex items-center justify-between px-3 py-2 bg-gray-50 border-b">
-                  <span className="text-sm font-medium">
-                    {g.supplierName} <span className="text-gray-400 font-normal">({g.items.length})</span>
-                  </span>
-                  <span className="text-sm text-gray-600">{formatMoney(groupTotal)}</span>
-                </div>
-              )}
+              <div className="flex items-center justify-between px-3 py-2 bg-gray-50 border-b">
+                <span className="text-sm font-medium">
+                  {user.role === 'DEALER' ? g.supplierName : 'Total'}
+                  {user.role !== 'DEALER' && <span className="text-gray-400 font-normal"> / एकूण</span>}
+                  {' '}<span className="text-gray-400 font-normal">({g.items.length})</span>
+                </span>
+                <span className="text-sm text-gray-600">
+                  {groupQty} qty <span className="text-gray-400">/ प्रमाण</span> · {formatMoney(groupTotal)}
+                </span>
+              </div>
               <table className="w-full text-sm">
-                <thead className="bg-gray-100">
+                <thead className="bg-gray-100 sticky top-0 z-10">
                   <tr>
                     {selectable && (
                       <th className="p-2">
@@ -240,9 +275,9 @@ export default function SoldProducts() {
     const groups = [...map.values()];
 
     return (
-      <div className="space-y-4">
+      <div className="space-y-4 max-h-[70vh] overflow-y-auto">
         {groups.map((g) => {
-          const groupTotal = g.items.reduce((sum, i) => sum + Number(i.amount), 0);
+          const { quantity: groupQty, amount: groupTotal } = sumItems(g.items);
           return (
             <div key={g.paymentId} className="bg-white rounded shadow overflow-x-auto">
               <div className="flex items-center justify-between px-3 py-2 bg-gray-50 border-b">
@@ -250,7 +285,9 @@ export default function SoldProducts() {
                   {g.retailerName || `Retailer #${g.paymentId}`} <span className="text-gray-400 font-normal">({g.items.length})</span>
                 </span>
                 <div className="flex items-center gap-3">
-                  <span className="text-sm text-gray-600">{formatMoney(groupTotal)}</span>
+                  <span className="text-sm text-gray-600">
+                    {groupQty} qty <span className="text-gray-400">/ प्रमाण</span> · {formatMoney(groupTotal)}
+                  </span>
                   <button type="button" disabled={confirmingId === g.paymentId}
                     onClick={() => confirmPayment(g.paymentId)}
                     className="text-emerald-700 text-xs font-medium hover:underline disabled:opacity-50">
@@ -259,7 +296,7 @@ export default function SoldProducts() {
                 </div>
               </div>
               <table className="w-full text-sm">
-                <thead className="bg-gray-100">
+                <thead className="bg-gray-100 sticky top-0 z-10">
                   <tr>
                     <th className="text-left p-2">Sale # / विक्री क्र.</th>
                     <th className="text-left p-2">Date / दिनांक</th>
@@ -322,9 +359,9 @@ export default function SoldProducts() {
           ))}
         </div>
 
-        {tab === 'open' && <ItemsTable items={openItems} selectable />}
-        {tab === 'pending' && <PendingConfirmationTable items={pendingItems} />}
-        {tab === 'paid' && <ItemsTable items={paidItems} selectable={false} />}
+        {tab === 'open' && <><TabTotals items={openItems} /><ItemsTable items={openItems} selectable /></>}
+        {tab === 'pending' && <><TabTotals items={pendingItems} /><PendingConfirmationTable items={pendingItems} /></>}
+        {tab === 'paid' && <><TabTotals items={paidItems} /><ItemsTable items={paidItems} selectable={false} /></>}
       </div>
 
       <div className="bg-white p-4 rounded shadow sticky top-4">

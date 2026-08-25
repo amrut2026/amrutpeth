@@ -55,27 +55,27 @@ export default function Retailers() {
         // No dealerId field here, same as Suppliers — the backend always
         // assigns a new retailer to the logged-in dealer.
         fields={[
-          { key: 'name', label: 'Name', required: true },
-          { key: 'address', label: 'Address', required: true },
-          { key: 'contactNumber', label: 'Contact Number', required: true },
-          { key: 'gstNumber', label: 'GST Number (optional)' },
-          { key: 'bankAccounts', label: 'Bank accounts', type: 'bankAccounts' },
+          { key: 'name', label: 'Name / नाव', required: true },
+          { key: 'address', label: 'Address / पत्ता', required: true },
+          { key: 'contactNumber', label: 'Contact Number / संपर्क क्रमांक', required: true },
+          { key: 'gstNumber', label: 'GST Number (optional) / GST क्रमांक (ऐच्छिक)' },
+          { key: 'bankAccounts', label: 'Bank accounts / बँक खाती', type: 'bankAccounts' },
         ]}
         columns={[
-          { key: 'id', label: 'ID' },
-          { key: 'name', label: 'Name' },
-          { key: 'address', label: 'Address' },
-          { key: 'contactNumber', label: 'Contact' },
+          { key: 'id', label: 'ID / आयडी' },
+          { key: 'name', label: 'Name / नाव' },
+          { key: 'address', label: 'Address / पत्ता' },
+          { key: 'contactNumber', label: 'Contact / संपर्क' },
           { key: 'gstNumber', label: 'GST' },
-          { key: 'dealerName', label: 'Dealer', render: (r) => r.dealer?.name || '—' },
+          { key: 'dealerName', label: 'Dealer / डीलर', render: (r) => r.dealer?.name || '—' },
           {
             key: 'bankAccounts',
-            label: 'Bank Accounts',
+            label: 'Bank Accounts / बँक खाती',
             render: (r) => r.bankAccounts?.map((b) => `${b.bankName} - ${b.accountNumber} (${b.ifsc})`).join(' | ') || 'None',
           },
           {
             key: 'login',
-            label: 'Login',
+            label: 'Login / लॉगिन',
             render: (r) => {
               const login = r.users?.[0];
               return (
