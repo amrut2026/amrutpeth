@@ -117,18 +117,6 @@ export default function Layout({ children }) {
             {user.role} · {ROLE_MR[user.role] || ''}
           </span>
         </div>
-        <div className="mx-4 mb-4 flex flex-col gap-2">
-          <button
-            onClick={() => setShowChangePassword(true)}
-            className="px-3 py-2 bg-orange-800 rounded hover:bg-orange-700 text-sm text-left">
-            Change Password <span className="text-orange-200">· पासवर्ड बदला</span>
-          </button>
-          <button
-            onClick={() => { logout(); navigate('/login'); }}
-            className="px-3 py-2 bg-orange-700 rounded hover:bg-orange-600 text-sm text-left">
-            Log out <span className="text-orange-200">· बाहेर पडा</span>
-          </button>
-        </div>
         <nav className="flex-1 px-2 space-y-1 overflow-y-auto">
           {links.map(([to, label, labelMr]) => (
             <NavLink key={to} to={to}
@@ -140,7 +128,21 @@ export default function Layout({ children }) {
           ))}
         </nav>
       </aside>
-      <main className="flex-1 p-6 overflow-y-auto">{children}</main>
+      <main className="flex-1 flex flex-col overflow-y-auto">
+        <div className="flex justify-end items-center gap-2 px-6 py-3 bg-white border-b">
+          <button
+            onClick={() => setShowChangePassword(true)}
+            className="px-3 py-1.5 rounded border border-gray-300 text-gray-700 text-sm hover:bg-gray-100">
+            Change Password <span className="text-gray-400">· पासवर्ड बदला</span>
+          </button>
+          <button
+            onClick={() => { logout(); navigate('/login'); }}
+            className="px-3 py-1.5 bg-orange-800 text-white rounded hover:bg-orange-700 text-sm">
+            Log out <span className="text-orange-200">· बाहेर पडा</span>
+          </button>
+        </div>
+        <div className="flex-1 p-6">{children}</div>
+      </main>
       {showChangePassword && (
         <ChangePasswordModal
           changePassword={changePassword}
