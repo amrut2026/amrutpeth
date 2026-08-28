@@ -9,6 +9,7 @@ import categoryRoutes from './routes/categories.js';
 import productRoutes from './routes/products.js';
 import inventoryRoutes from './routes/inventory.js';
 import purchaseRoutes from './routes/purchases.js';
+import goodsReturnRoutes from './routes/goodsReturns.js';
 import saleRoutes from './routes/sales.js';
 import soldProductRoutes from './routes/soldProducts.js';
 import voucherRoutes from './routes/vouchers.js';
@@ -56,6 +57,7 @@ app.use('/api/categories', categoryRoutes);
 app.use('/api/products', productRoutes);
 app.use('/api/inventory', inventoryRoutes);
 app.use('/api/purchases', purchaseRoutes);
+app.use('/api/goods-returns', goodsReturnRoutes);
 app.use('/api/sales', saleRoutes);
 app.use('/api/sold-products', soldProductRoutes);
 app.use('/api/vouchers', voucherRoutes);
@@ -75,4 +77,4 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => console.log(`FoodMart API listening on port ${PORT}`));
+app.listen(PORT, () => console.log(`Amrutpeth API listening on port ${PORT}`));

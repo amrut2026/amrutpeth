@@ -8,16 +8,16 @@ import { useAuth } from '../context/AuthContext.jsx';
 // (POST /vouchers/:id/payments) and an amount auto-filled from that
 // voucher's remaining balance, neither of which CrudTable supports.
 //
-// Primary flow: DEALER picks one of their own open PAYABLE (supplier)
-// vouchers and pays against it — mirrors RETAILER paying a RECEIVABLE
-// voucher on Receipts.jsx. This goes through vouchers.js's
-// POST /vouchers/:id/payments, which also moves the voucher
-// OPEN -> PARTIALLY_PAID -> PAID.
+// DEALER picks one of their own open PAYABLE (supplier) vouchers and pays
+// against it — mirrors RETAILER paying a RECEIVABLE voucher on
+// Receipts.jsx. Goes through vouchers.js's POST /vouchers/:id/payments,
+// which also moves the voucher OPEN -> PARTIALLY_PAID -> PAID.
 //
-// Secondary flow: the original generic "payment not tied to any voucher"
-// (what the old CrudTable-based version of this page did), kept as a
-// fallback so nothing that worked before stops working — posts straight
-// to POST /payments.
+// The old "General payment" flow (a payment not tied to any voucher) has
+// been removed from this screen — every dealer payment now goes through a
+// voucher. POST /payments still exists server-side and isn't touched here,
+// so nothing that already used it directly breaks, but this UI no longer
+// offers it as an option.
 export default function Payments() {
   const { user } = useAuth();
   const canPay = user.role === 'DEALER';
@@ -41,18 +41,20 @@ export default function Payments() {
 
   const [payments, setPayments] = useState([]);
   const [vouchers, setVouchers] = useState([]);
-  const [tab, setTab] = useState('voucher'); // 'voucher' | 'general' — which form is shown, not the payment mode (CASH/UPI/CARD)
+  const [suppliers, setSuppliers] = useState([]); // canPay only — for the filter dropdown
+  const [supplierFilter, setSupplierFilter] = useState(''); // '' = All
   const [form, setForm] = useState({ voucherId: '', amount: '', mode: 'CASH', reference: '' });
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
   async function load() {
     const calls = [api.get('/payments')];
-    if (canPay) calls.push(api.get('/vouchers'));
+    if (canPay) { calls.push(api.get('/vouchers')); calls.push(api.get('/suppliers')); }
     const results = await Promise.all(calls);
     setPayments(showOnlySupplierPayments ? results[0].data.filter((p) => !p.retailerId) : results[0].data);
     if (canPay) {
       setVouchers(results[1].data.filter((v) => v.type === 'PAYABLE' && v.status !== 'PAID'));
+      setSuppliers(results[2].data);
     }
   }
   useEffect(() => { load(); }, []);
@@ -69,26 +71,14 @@ export default function Payments() {
     setForm({ ...form, voucherId, amount: remaining != null ? remaining.toFixed(2) : '' });
   }
 
-  function switchTab(next) {
-    setTab(next);
-    setForm({ voucherId: '', amount: '', mode: 'CASH', reference: '' });
-    setError('');
-  }
-
   async function submit(e) {
     e.preventDefault();
     setError('');
     setSubmitting(true);
     try {
-      if (tab === 'voucher') {
-        await api.post(`/vouchers/${form.voucherId}/payments`, {
-          amount: Number(form.amount), mode: form.mode, reference: form.reference || undefined
-        });
-      } else {
-        await api.post('/payments', {
-          amount: Number(form.amount), mode: form.mode, reference: form.reference || undefined
-        });
-      }
+      await api.post(`/vouchers/${form.voucherId}/payments`, {
+        amount: Number(form.amount), mode: form.mode, reference: form.reference || undefined
+      });
       setForm({ voucherId: '', amount: '', mode: 'CASH', reference: '' });
       load();
     } catch (err) {
@@ -96,6 +86,27 @@ export default function Payments() {
     } finally {
       setSubmitting(false);
     }
+  }
+
+  // canPay (DEALER) only: narrow to one supplier (default: all), club into
+  // a section per supplier with its own subtotal. Other roles keep the
+  // original flat table below unchanged.
+  const filteredPayments = canPay && supplierFilter
+    ? payments.filter((p) => String(p.supplierId) === supplierFilter)
+    : payments;
+
+  const grandTotal = filteredPayments.reduce((sum, p) => sum + Number(p.amount), 0);
+
+  function groupBySupplier(list) {
+    const map = new Map();
+    for (const p of list) {
+      const key = p.supplierId ?? 'none';
+      if (!map.has(key)) {
+        map.set(key, { supplierId: p.supplierId, supplierName: p.supplier?.name || 'Unknown supplier / अज्ञात पुरवठादार', items: [] });
+      }
+      map.get(key).items.push(p);
+    }
+    return [...map.values()].sort((a, b) => a.supplierName.localeCompare(b.supplierName));
   }
 
   return (
@@ -112,31 +123,20 @@ export default function Payments() {
           sees the resulting ledger below. */}
       {canPay && (
         <div className="bg-white p-4 rounded shadow mb-6">
-          <div className="flex gap-4 mb-3 text-sm">
-            <button type="button"
-              className={`pb-1 border-b-2 ${tab === 'voucher' ? 'border-emerald-700 text-emerald-800 font-medium' : 'border-transparent text-gray-400'}`}
-              onClick={() => switchTab('voucher')}>
-              Pay a supplier voucher / पुरवठादार व्हाउचर भरा
-            </button>
-            <button type="button"
-              className={`pb-1 border-b-2 ${tab === 'general' ? 'border-emerald-700 text-emerald-800 font-medium' : 'border-transparent text-gray-400'}`}
-              onClick={() => switchTab('general')}>
-              General payment / सर्वसाधारण देयक
-            </button>
+          <div className="text-sm font-medium text-gray-700 mb-3">
+            Pay a supplier voucher <span className="text-gray-400 font-normal">/ पुरवठादार व्हाउचर भरा</span>
           </div>
 
           <form onSubmit={submit} className="grid grid-cols-1 md:grid-cols-4 gap-3">
-            {tab === 'voucher' && (
-              <select className="border rounded px-2 py-1" required
-                value={form.voucherId} onChange={(e) => selectVoucher(e.target.value)}>
-                <option value="">Supplier voucher... / पुरवठादार व्हाउचर...</option>
-                {vouchers.map((v) => (
-                  <option key={v.id} value={v.id}>
-                    #{v.id} · {v.supplier?.name || `Supplier #${v.supplierId}`} · ₹{v.amount} ({v.status})
-                  </option>
-                ))}
-              </select>
-            )}
+            <select className="border rounded px-2 py-1" required
+              value={form.voucherId} onChange={(e) => selectVoucher(e.target.value)}>
+              <option value="">Supplier voucher... / पुरवठादार व्हाउचर...</option>
+              {vouchers.map((v) => (
+                <option key={v.id} value={v.id}>
+                  #{v.id} · {v.supplier?.name || `Supplier #${v.supplierId}`} · ₹{v.amount} ({v.status})
+                </option>
+              ))}
+            </select>
             <input type="number" step="0.01" placeholder="Amount to pay / भरावयाची रक्कम" className="border rounded px-2 py-1" required
               value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} />
             <select className="border rounded px-2 py-1"
@@ -151,81 +151,154 @@ export default function Payments() {
               {submitting ? 'Saving... / जतन करत आहे...' : 'Make Payment / देयक करा'}
             </button>
             {error && <p className="md:col-span-4 text-red-600 text-sm">{error}</p>}
-            {tab === 'voucher' && vouchers.length === 0 && (
+            {vouchers.length === 0 && (
               <p className="md:col-span-4 text-xs text-amber-600">No open supplier vouchers to pay against. / भरण्यासाठी कोणतेही खुले पुरवठादार व्हाउचर नाहीत.</p>
             )}
           </form>
         </div>
       )}
 
-      <div className="bg-white rounded shadow overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead className="bg-gray-100">
-            <tr>
-              <th className="text-left p-2">#</th>
-              {!canPay && <th className="text-left p-2">Dealer / डीलर</th>}
-              {showDirection && <th className="text-left p-2">Direction / दिशा</th>}
-              {showParty && <th className="text-left p-2">{showDirection ? 'Party / पक्ष' : 'Supplier / पुरवठादार'}</th>}
-              <th className="text-left p-2">Voucher / व्हाउचर</th>
-              <th className="text-left p-2">Amount / रक्कम</th>
-              <th className="text-left p-2">Mode / पद्धत</th>
-              <th className="text-left p-2">Reference</th>
-              <th className="text-left p-2">Date / दिनांक</th>
-            </tr>
-          </thead>
-          <tbody>
-            {payments.map((p) => {
-              // A Payment row is either the dealer paying a supplier
-              // (supplierId set) or a retailer paying the dealer
-              // (retailerId set — see receipts.js POST /, which creates
-              // one of these alongside every retailer receipt) — never
-              // both, so this is enough to tell them apart.
-              const isFromRetailer = !!p.retailerId;
+      {canPay && (
+        <>
+          <div className="mb-4 flex items-end gap-6 flex-wrap">
+            <div>
+              <label className="text-xs text-gray-500">Supplier <span className="text-gray-400">/ पुरवठादार</span></label>
+              <select className="border rounded px-2 py-1 text-sm w-full md:w-64 mt-1"
+                value={supplierFilter} onChange={(e) => setSupplierFilter(e.target.value)}>
+                <option value="">All / सर्व</option>
+                {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <span className="text-sm text-gray-500">Grand Total :</span>{' '}
+              <span className="text-sm text-gray-400">/ एकूण रक्कम:</span>{' '}
+              <span className="text-2xl font-bold text-red-600">₹{grandTotal.toFixed(2)}</span>
+            </div>
+          </div>
+
+          <div className="space-y-4 max-h-[75vh] overflow-y-auto">
+            {groupBySupplier(filteredPayments).map((g) => {
+              const groupTotal = g.items.reduce((sum, p) => sum + Number(p.amount), 0);
               return (
-                <tr key={p.id} className="border-t">
-                  <td className="p-2">{p.id}</td>
-                  {!canPay && <td className="p-2">{p.dealer?.name || p.dealerId}</td>}
-                  {showDirection && (
-                    <td className="p-2">
-                      {isFromRetailer ? (
-                        <span className="text-emerald-700">Received / मिळाले</span>
-                      ) : (
-                        <span className="text-amber-700">Paid / भरले</span>
-                      )}
-                    </td>
-                  )}
-                  {showParty && (
-                    <td className="p-2">
-                      {isFromRetailer ? (p.retailer?.name || p.retailerId) : (p.supplier?.name || p.supplierId || '—')}
-                    </td>
-                  )}
-                  {/* A payment with no voucherId is either the old generic
-                      "dealer -> manufacturer" payment (no supplierId either)
-                      or a sold-products settlement (POST /sold-products/pay
-                      — supplierId set, but never tied to a specific
-                      voucher, since it settles a batch of SoldProduct rows
-                      instead). Label the two differently so they aren't
-                      both shown as a bare "—". */}
-                  <td className="p-2">
-                    {p.voucherId ? `#${p.voucherId}` : (
-                      p.supplierId
-                        ? <span className="text-xs text-gray-500">Sold products / विकलेली उत्पादने</span>
-                        : <span className="text-xs text-gray-500">General / सर्वसाधारण</span>
-                    )}
-                  </td>
-                  <td className="p-2">₹{Number(p.amount).toFixed(2)}</td>
-                  <td className="p-2">{p.mode}</td>
-                  <td className="p-2">{p.reference || '—'}</td>
-                  <td className="p-2">{new Date(p.date).toLocaleDateString()}</td>
-                </tr>
+                <div key={g.supplierId ?? 'none'} className="bg-white rounded shadow overflow-x-auto">
+                  <div className="flex items-center justify-between px-3 py-2 bg-gray-50 border-b">
+                    <span className="text-sm font-medium">
+                      {g.supplierName} <span className="text-gray-400 font-normal">({g.items.length})</span>
+                    </span>
+                    <span className="text-sm font-semibold text-red-600">Sub Total : ₹{groupTotal.toFixed(2)}</span>
+                  </div>
+                  <table className="w-full text-sm">
+                    <thead className="bg-gray-100 sticky top-0 z-10">
+                      <tr>
+                        <th className="text-left p-2">#</th>
+                        <th className="text-left p-2">Voucher / व्हाउचर</th>
+                        <th className="text-left p-2">Amount / रक्कम</th>
+                        <th className="text-left p-2">Mode / पद्धत</th>
+                        <th className="text-left p-2">Reference</th>
+                        <th className="text-left p-2">Date / दिनांक</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {g.items.map((p) => (
+                        <tr key={p.id} className="border-t">
+                          <td className="p-2">{p.id}</td>
+                          <td className="p-2">
+                            {p.voucherId ? `#${p.voucherId}` : (
+                              p.supplierId
+                                ? <span className="text-xs text-gray-500">Sold products / विकलेली उत्पादने</span>
+                                : <span className="text-xs text-gray-500">General / सर्वसाधारण</span>
+                            )}
+                          </td>
+                          <td className="p-2">₹{Number(p.amount).toFixed(2)}</td>
+                          <td className="p-2">{p.mode}</td>
+                          <td className="p-2">{p.reference || '—'}</td>
+                          <td className="p-2">{new Date(p.date).toLocaleDateString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               );
             })}
-            {payments.length === 0 && (
-              <tr><td className="p-3 text-gray-400" colSpan={(canPay ? 6 : 7) + (showDirection ? 1 : 0) + (showParty ? 1 : 0)}>No payments yet. / अद्याप कोणतेही देयक नाही.</td></tr>
+            {filteredPayments.length === 0 && (
+              <div className="bg-white rounded shadow p-3 text-gray-400">
+                No payments yet. / अद्याप कोणतेही देयक नाही.
+              </div>
             )}
-          </tbody>
-        </table>
-      </div>
+          </div>
+        </>
+      )}
+
+      {!canPay && (
+        <div className="bg-white rounded shadow overflow-x-auto max-h-[75vh] overflow-y-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-100 sticky top-0 z-10">
+              <tr>
+                <th className="text-left p-2">#</th>
+                <th className="text-left p-2">Dealer / डीलर</th>
+                {showDirection && <th className="text-left p-2">Direction / दिशा</th>}
+                {showParty && <th className="text-left p-2">{showDirection ? 'Party / पक्ष' : 'Supplier / पुरवठादार'}</th>}
+                <th className="text-left p-2">Voucher / व्हाउचर</th>
+                <th className="text-left p-2">Amount / रक्कम</th>
+                <th className="text-left p-2">Mode / पद्धत</th>
+                <th className="text-left p-2">Reference</th>
+                <th className="text-left p-2">Date / दिनांक</th>
+              </tr>
+            </thead>
+            <tbody>
+              {payments.map((p) => {
+                // A Payment row is either the dealer paying a supplier
+                // (supplierId set) or a retailer paying the dealer
+                // (retailerId set — see receipts.js POST /, which creates
+                // one of these alongside every retailer receipt) — never
+                // both, so this is enough to tell them apart.
+                const isFromRetailer = !!p.retailerId;
+                return (
+                  <tr key={p.id} className="border-t">
+                    <td className="p-2">{p.id}</td>
+                    <td className="p-2">{p.dealer?.name || p.dealerId}</td>
+                    {showDirection && (
+                      <td className="p-2">
+                        {isFromRetailer ? (
+                          <span className="text-emerald-700">Received / मिळाले</span>
+                        ) : (
+                          <span className="text-amber-700">Paid / भरले</span>
+                        )}
+                      </td>
+                    )}
+                    {showParty && (
+                      <td className="p-2">
+                        {isFromRetailer ? (p.retailer?.name || p.retailerId) : (p.supplier?.name || p.supplierId || '—')}
+                      </td>
+                    )}
+                    {/* A payment with no voucherId is either the old generic
+                        "dealer -> manufacturer" payment (no supplierId either)
+                        or a sold-products settlement (POST /sold-products/pay
+                        — supplierId set, but never tied to a specific
+                        voucher, since it settles a batch of SoldProduct rows
+                        instead). Label the two differently so they aren't
+                        both shown as a bare "—". */}
+                    <td className="p-2">
+                      {p.voucherId ? `#${p.voucherId}` : (
+                        p.supplierId
+                          ? <span className="text-xs text-gray-500">Sold products / विकलेली उत्पादने</span>
+                          : <span className="text-xs text-gray-500">General / सर्वसाधारण</span>
+                      )}
+                    </td>
+                    <td className="p-2">₹{Number(p.amount).toFixed(2)}</td>
+                    <td className="p-2">{p.mode}</td>
+                    <td className="p-2">{p.reference || '—'}</td>
+                    <td className="p-2">{new Date(p.date).toLocaleDateString()}</td>
+                  </tr>
+                );
+              })}
+              {payments.length === 0 && (
+                <tr><td className="p-3 text-gray-400" colSpan={7 + (showDirection ? 1 : 0) + (showParty ? 1 : 0)}>No payments yet. / अद्याप कोणतेही देयक नाही.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

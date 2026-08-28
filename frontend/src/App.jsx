@@ -10,6 +10,7 @@ import Categories from './pages/Categories.jsx';
 import Products from './pages/Products.jsx';
 import Inventory from './pages/Inventory.jsx';
 import Purchases from './pages/Purchases.jsx';
+import GoodsReturns from './pages/GoodsReturns.jsx';
 import Sales from './pages/Sales.jsx';
 import SoldProducts from './pages/SoldProducts.jsx';
 import Vouchers from './pages/Vouchers.jsx';
@@ -52,6 +53,7 @@ export default function App() {
       <Route path="/products" element={<Protected><Products /></Protected>} />
       <Route path="/inventory" element={<RoleProtected roles={['DEALER', 'RETAILER']}><Inventory /></RoleProtected>} />
       <Route path="/purchases" element={<RoleProtected roles={['DEALER', 'RETAILER']}><Purchases /></RoleProtected>} />
+      <Route path="/goods-returns" element={<RoleProtected roles={['DEALER', 'RETAILER']}><GoodsReturns /></RoleProtected>} />
       <Route path="/sales" element={<RoleProtected roles={['DEALER', 'RETAILER']}><Sales /></RoleProtected>} />
       <Route path="/sold-products" element={<RoleProtected roles={['DEALER', 'RETAILER']}><SoldProducts /></RoleProtected>} />
       <Route path="/vouchers" element={<RoleProtected roles={['DEALER', 'RETAILER']}><Vouchers /></RoleProtected>} />

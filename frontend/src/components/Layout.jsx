@@ -43,8 +43,8 @@ const NAV = {
     ['/categories', 'Categories', 'श्रेण्या'],
     ['/products', 'Products', 'उत्पादने'],
     ['/purchases', 'Purchases (Inwards)', 'खरेदी (आवक)'],
+    ['/goods-returns', 'Goods Returned', 'मालाची परत'],
     ['/sales', 'Sales (POS)', 'विक्री (पीओएस)'],
-    ['/inventory', 'Inventory', 'साठा'],
     ['/sold-products', 'Sold Products (Pay Supplier)', 'विकलेली उत्पादने (पुरवठादाराला भरा)'],
     ['/vouchers', 'Vouchers', 'व्हाउचर'],
     // Receipts a retailer has recorded against the dealer's own RECEIVABLE
@@ -61,8 +61,8 @@ const NAV = {
   RETAILER: [
     ['/products', 'Products', 'उत्पादने'],
     ['/purchases', 'Purchases (Inwards)', 'खरेदी (आवक)'],
+    ['/goods-returns', 'Goods Returned', 'मालाची परत'],
     ['/sales', 'Sales (POS)', 'विक्री (पीओएस)'],
-    ['/inventory', 'Inventory', 'साठा'],
     ['/sold-products', 'Sold Products (Pay Dealer)', 'विकलेली उत्पादने (डीलरला भरा)'],
     ['/vouchers', 'Vouchers Received', 'मिळालेले व्हाउचर'],
     ['/receipts', 'Payments (Pay Dealer)', 'देयके (डीलरला पैसे द्या)'],

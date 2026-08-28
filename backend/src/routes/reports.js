@@ -134,7 +134,12 @@ router.get('/payments', authRequired, async (req, res) => {
       groups: groupByStatus(
         payments,
         RETAILER_PAYMENT_STATUSES,
-        (p) => p.receipt?.status ?? 'TO_BE_CONFIRMED'
+        // A goods-return credit (see goodsReturns.js) has no Receipt row —
+        // it's created only once the dealer has already confirmed receipt
+        // of the goods, so it's settled from the moment it exists, unlike
+        // an ordinary cash/UPI/card payment which sits TO_BE_CONFIRMED
+        // until the dealer separately confirms the money arrived.
+        (p) => p.receipt?.status ?? (p.mode === 'GOODS_RETURN' ? 'PAID' : 'TO_BE_CONFIRMED')
       ),
     });
   }
@@ -181,6 +186,7 @@ function serializeVoucher(v, { includeDealer = false } = {}) {
     status: v.status,
     amount: v.amount,
     description: v.description,
+    counterpartyId: v.supplierId ?? v.retailerId ?? null,
     counterpartyName: v.supplier?.name ?? v.retailer?.name ?? null,
     ...(includeDealer ? { dealerName: v.dealer?.name ?? null } : {}),
   };
@@ -193,6 +199,7 @@ function serializeVoucherPayment(p, { includeDealer = false } = {}) {
     amount: p.amount,
     mode: p.mode,
     reference: p.reference,
+    counterpartyId: p.supplierId ?? p.retailerId ?? null,
     counterpartyName: p.supplier?.name ?? p.retailer?.name ?? null,
     voucherStatus: p.voucher?.status ?? null,
     ...(includeDealer ? { dealerName: p.dealer?.name ?? null } : {}),
@@ -257,13 +264,66 @@ router.get('/vouchers', authRequired, async (req, res) => {
   });
 });
 
-// Inventory report (with low-stock flag) - reused by dealer or retailer login
+// Inventory report (with low-stock flag) - reused by dealer or retailer
+// login. Always a flat array, for every role (ADMIN/ORGANISATION included) -
+// other consumers of this endpoint (e.g. dashboard widgets) rely on that
+// shape, so it's left exactly as it always was. The ADMIN-only dealer/
+// retailer split used by the Reports screen lives at
+// /reports/inventory-by-owner below instead of changing this response.
 router.get('/inventory', authRequired, async (req, res) => {
   let where = {};
   if (req.user.role === 'DEALER') where = { ownerType: 'DEALER', dealerId: req.user.dealerId };
   if (req.user.role === 'RETAILER') where = { ownerType: 'RETAILER', retailerId: req.user.retailerId };
   const rows = await prisma.inventory.findMany({ where, include: { product: true } });
   res.json(rows.map(r => ({ ...r, lowStock: r.quantity <= r.reorderLevel })));
+});
+
+// Inventory split by owner type (dealer-owned vs retailer-owned) - used
+// only by the admin/organisation Reports screen's Dealer Inventory /
+// Retailer Inventory tabs. DEALER and RETAILER logins don't need this
+// split (their /reports/inventory above is already scoped to just their
+// own stock), so this route only serves ADMIN/ORGANISATION.
+router.get('/inventory-by-owner', authRequired, async (req, res) => {
+  if (req.user.role === 'DEALER' || req.user.role === 'RETAILER') {
+    return res.status(403).json({ error: 'Not available for this role' });
+  }
+
+  // Retailer rows also carry their owning dealer's id/name, so the
+  // frontend can offer a dealer filter over retailer inventory (mirroring
+  // the dealer scoping used for retailer vouchers/payments above).
+  const [dealerRows, retailerRows] = await Promise.all([
+    prisma.inventory.findMany({ where: { ownerType: 'DEALER' }, include: { product: true, dealer: true } }),
+    prisma.inventory.findMany({
+      where: { ownerType: 'RETAILER' },
+      include: { product: true, retailer: { include: { dealer: true } } },
+    }),
+  ]);
+
+  const dealerMap = new Map();
+  const retailerInventory = retailerRows.map((r) => {
+    const dealer = r.retailer?.dealer ?? null;
+    if (dealer) dealerMap.set(dealer.id, dealer.name);
+    return {
+      ...r,
+      retailerName: r.retailer?.name ?? null,
+      dealerId: dealer?.id ?? null,
+      dealerName: dealer?.name ?? null,
+      lowStock: r.quantity <= r.reorderLevel,
+    };
+  });
+
+  res.json({
+    context: 'ALL',
+    dealers: [...dealerMap.entries()]
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    dealerInventory: dealerRows.map((r) => ({
+      ...r,
+      dealerName: r.dealer?.name ?? null,
+      lowStock: r.quantity <= r.reorderLevel,
+    })),
+    retailerInventory,
+  });
 });
 
 // Sales summary (for dashboards)

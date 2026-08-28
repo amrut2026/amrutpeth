@@ -25,7 +25,7 @@ router.get('/', authRequired, requireRole('RETAILER', 'DEALER', 'ADMIN'), async 
       ],
     };
   }
-  const receipts = await prisma.receipt.findMany({ where, include: { voucher: true, payment: true }, orderBy: { date: 'desc' } });
+  const receipts = await prisma.receipt.findMany({ where, include: { voucher: true, payment: true, retailer: true }, orderBy: { date: 'desc' } });
   res.json(receipts);
 });
 

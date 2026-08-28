@@ -83,7 +83,7 @@ function VoucherTable({ vouchers }) {
 // type, rather than an empty section header: a RETAILER, for instance, can
 // never have a PAYABLE voucher of their own, so that whole section simply
 // doesn't appear for that role instead of showing up empty every time.
-function VoucherSection({ title, titleMr, vouchers, isPayable }) {
+function VoucherSection({ title, titleMr, vouchers, isPayable, isDealer }) {
   if (!vouchers.length) return null;
   const groups = groupByCounterparty(vouchers, isPayable);
   const total = vouchers.reduce((sum, v) => sum + Number(v.amount), 0);
@@ -95,10 +95,13 @@ function VoucherSection({ title, titleMr, vouchers, isPayable }) {
           {title} <span className="text-sm font-normal text-gray-500">({titleMr})</span>
         </h2>
         <div className="text-sm">
-          <span className="text-gray-500">Total</span> <span className="text-gray-400">/ एकूण:</span>{' '}
-          <span className="font-semibold">₹{total.toFixed(2)}</span>
+          <span className={isDealer ? 'font-bold text-red-600' : 'text-gray-500'}>Total</span>{' '}
+          <span className={isDealer ? 'font-bold text-red-600' : 'text-gray-400'}>/ एकूण:</span>{' '}
+          <span className={isDealer ? 'font-bold text-red-600' : 'font-semibold'}>₹{total.toFixed(2)}</span>
           {totalRemaining > 0 && (
-            <span className="text-gray-500"> (₹{totalRemaining.toFixed(2)} remaining / शिल्लक)</span>
+            <span className={isDealer ? 'font-bold text-red-600' : 'text-gray-500'}>
+              {' '}(₹{totalRemaining.toFixed(2)} remaining / शिल्लक)
+            </span>
           )}
         </div>
       </div>
@@ -167,11 +170,11 @@ export default function Vouchers() {
 
       <VoucherSection
         title="Payable Vouchers (to Supplier)" titleMr="पुरवठादाराला देय व्हाउचर"
-        vouchers={payableVouchers} isPayable
+        vouchers={payableVouchers} isPayable isDealer={user.role === 'DEALER'}
       />
       <VoucherSection
         title="Receivable Vouchers (from Retailer)" titleMr="किरकोळ विक्रेत्याकडून प्राप्य व्हाउचर"
-        vouchers={receivableVouchers} isPayable={false}
+        vouchers={receivableVouchers} isPayable={false} isDealer={user.role === 'DEALER'}
       />
 
       {vouchers.length === 0 && (

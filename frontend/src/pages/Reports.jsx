@@ -13,6 +13,7 @@ const STATUS_LABELS = {
   ORDERED: 'Ordered / ऑर्डर केले',
   IN_TRANSIT: 'In Transit / वाहतुकीत',
   RECEIVED: 'Received / प्राप्त झाले',
+  CANCELLED: 'Cancelled / रद्द केले',
   TO_BE_CONFIRMED: 'To Be Confirmed / पुष्टीकरण प्रलंबित',
   PARTIALLY_PAID: 'Partially Paid / अंशतः दिले',
   PAID: 'Paid / दिले',
@@ -40,8 +41,12 @@ function groupByVoucherStatus(rows, statusOf) {
   return VOUCHER_STATUS_ORDER.map((status) => ({ status, items: groups[status] }));
 }
 
-const RETAILER_PURCHASE_STATUS_ORDER = ['PENDING', 'IN_REVIEW', 'ORDERED', 'IN_TRANSIT', 'RECEIVED'];
-const DEALER_PURCHASE_STATUS_ORDER = ['PENDING', 'IN_REVIEW', 'CONFIRMED'];
+// CANCELLED sits at the end of both — it's a terminal state reachable only
+// from PENDING/IN_REVIEW (see purchases.js PATCH /:id/status), so without
+// its own bucket here a cancelled purchase would silently disappear from
+// this report instead of showing up in a group of its own.
+const RETAILER_PURCHASE_STATUS_ORDER = ['PENDING', 'IN_REVIEW', 'ORDERED', 'IN_TRANSIT', 'RECEIVED', 'CANCELLED'];
+const DEALER_PURCHASE_STATUS_ORDER = ['PENDING', 'IN_REVIEW', 'CONFIRMED', 'CANCELLED'];
 
 function purchaseStatusOrder(context) {
   if (context === 'DEALER') return DEALER_PURCHASE_STATUS_ORDER;
@@ -84,6 +89,230 @@ function StatusGroup({ label, count, children }) {
   );
 }
 
+// Same sizeWeight/flavour/brand join and product cell used in
+// Purchases.jsx, so a product looks identical wherever it's shown.
+function productDetails(product) {
+  return [product?.sizeWeight, product?.flavour, product?.brand].filter(Boolean).join(' · ');
+}
+
+function ProductCell({ product }) {
+  if (!product) return '—';
+  const details = productDetails(product);
+  return (
+    <>
+      <div>{product.name}</div>
+      {details && <div className="text-xs text-gray-400">{details}</div>}
+    </>
+  );
+}
+
+function InventoryTable({ rows, extraColumns = [] }) {
+  return (
+    <div className="bg-white rounded shadow overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead className="bg-gray-100 sticky top-0 z-10">
+          <tr>
+            <th className="text-left p-2">Product <span className="text-gray-400 font-normal">/ उत्पादन</span></th>
+            {extraColumns.map((c) => (
+              <th key={c.key} className="text-left p-2">{c.label} <span className="text-gray-400 font-normal">/ {c.labelMr}</span></th>
+            ))}
+            <th className="text-left p-2">Barcode <span className="text-gray-400 font-normal">/ बारकोड</span></th>
+            <th className="text-left p-2">Batch <span className="text-gray-400 font-normal">/ बॅच</span></th>
+            <th className="text-left p-2">Expiry <span className="text-gray-400 font-normal">/ एक्सपायरी</span></th>
+            <th className="text-left p-2">MRP <span className="text-gray-400 font-normal">/ एमआरपी</span></th>
+            <th className="text-left p-2">Quantity <span className="text-gray-400 font-normal">/ प्रमाण</span></th>
+            <th className="text-left p-2">Reorder Level <span className="text-gray-400 font-normal">/ पुनर्क्रम पातळी</span></th>
+            <th className="text-left p-2">Status <span className="text-gray-400 font-normal">/ स्थिती</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.id} className={`border-t ${r.lowStock ? 'bg-red-50' : ''}`}>
+              <td className="p-2"><ProductCell product={r.product} /></td>
+              {extraColumns.map((c) => (
+                <td key={c.key} className="p-2">{c.render(r)}</td>
+              ))}
+              <td className="p-2">{r.product?.barcode}</td>
+              <td className="p-2">{r.batchName || '-'}</td>
+              <td className="p-2">{r.expiryDate ? new Date(r.expiryDate).toLocaleDateString() : '-'}</td>
+              <td className="p-2">{r.mrp != null ? `₹${Number(r.mrp).toFixed(2)}` : '-'}</td>
+              <td className="p-2">{r.quantity}</td>
+              <td className="p-2">{r.reorderLevel}</td>
+              <td className="p-2">
+                {r.lowStock
+                  ? <span className="text-red-600 font-semibold">⚠ Reorder now / आता पुन्हा मागवा</span>
+                  : <span className="text-green-600">OK / ठीक आहे</span>}
+              </td>
+            </tr>
+          ))}
+          {rows.length === 0 && (
+            <tr><td className="p-3 text-gray-400" colSpan={8 + extraColumns.length}>No inventory yet. / अद्याप साठा नाही.</td></tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// Distinct {id, name} pairs for a dealer dropdown, derived straight from
+// inventory rows rather than a separate fetch.
+function uniqueDealers(rows) {
+  const map = new Map();
+  for (const r of rows) {
+    if (r.dealerId != null) map.set(r.dealerId, r.dealerName || '-');
+  }
+  return [...map.entries()].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// Splits rows into groups by an id field, sorted by name, keeping the raw
+// rows per group so the detail table underneath each summary header has
+// something to show.
+function groupRows(rows, { idKey, nameKey }) {
+  const groups = new Map();
+  for (const r of rows) {
+    const id = r[idKey];
+    if (id == null) continue;
+    if (!groups.has(id)) groups.set(id, { id, name: r[nameKey] || '-', rows: [] });
+    groups.get(id).rows.push(r);
+  }
+  return [...groups.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// Summary numbers (distinct product count, total quantity, total value) for
+// a set of rows that already belong to one group.
+function summarizeRows(rows, priceKey) {
+  const productIds = new Set();
+  let quantity = 0;
+  let value = 0;
+  for (const r of rows) {
+    if (r.product?.id != null) productIds.add(r.product.id);
+    quantity += Number(r.quantity || 0);
+    value += Number(r.quantity || 0) * Number(r[priceKey] || 0);
+  }
+  return { productCount: productIds.size, quantity, value };
+}
+
+// One group's summary strip (product count / total quantity / total value)
+// followed by its full item-level inventory table.
+function GroupedInventorySection({ name, rows, priceKey, priceLabel, priceLabelMr }) {
+  const summary = summarizeRows(rows, priceKey);
+  return (
+    <div className="mb-6">
+      <div className="flex flex-wrap items-center justify-between gap-2 bg-orange-50 border border-orange-100 rounded px-3 py-2 mb-2">
+        <div className="font-semibold text-sm text-orange-900">{name}</div>
+        <div className="text-xs text-gray-600 flex gap-4">
+          <span>Products / उत्पादने: <b>{summary.productCount}</b></span>
+          <span>Total Quantity / एकूण प्रमाण: <b>{summary.quantity}</b></span>
+          <span>{priceLabel} / {priceLabelMr}: <b>{formatMoney(summary.value)}</b></span>
+        </div>
+      </div>
+      <InventoryTable rows={rows} />
+    </div>
+  );
+}
+
+// Admin/Organisation-only: dealer inventory grouped by dealer - each
+// dealer's aggregate (product count, total quantity, total cost value)
+// with that dealer's full item-level inventory underneath it. Dealer
+// filter above defaults to All. Own local selection state so switching
+// away from and back to this tab resets the filter to All.
+function DealerInventoryPanel({ rows }) {
+  const [selectedDealer, setSelectedDealer] = useState('ALL');
+  const dealers = uniqueDealers(rows);
+  const filtered = selectedDealer === 'ALL' ? rows : rows.filter((r) => String(r.dealerId) === String(selectedDealer));
+  const groups = groupRows(filtered, { idKey: 'dealerId', nameKey: 'dealerName' });
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-4">
+        <label className="text-sm font-medium">Dealer / डीलर:</label>
+        <select
+          className="border rounded px-2 py-1 text-sm bg-white"
+          value={selectedDealer}
+          onChange={(e) => setSelectedDealer(e.target.value)}
+        >
+          <option value="ALL">All / सर्व</option>
+          {dealers.map((d) => (
+            <option key={d.id} value={String(d.id)}>{d.name}</option>
+          ))}
+        </select>
+      </div>
+
+      {groups.length === 0 ? (
+        <div className="bg-white rounded shadow p-3 text-gray-400 text-sm">
+          No dealer inventory yet. / अद्याप डीलर साठा नाही.
+        </div>
+      ) : (
+        groups.map((g) => (
+          <GroupedInventorySection
+            key={g.id}
+            name={g.name}
+            rows={g.rows}
+            priceKey="rate"
+            priceLabel="Total Cost Price"
+            priceLabelMr="एकूण खरेदी किंमत"
+          />
+        ))
+      )}
+    </div>
+  );
+}
+
+// Admin/Organisation-only: retailer inventory grouped by dealer, then by
+// retailer within each dealer - the retailer is the aggregation sub-level
+// (product count, total quantity, total selling-price value) with that
+// retailer's full item-level inventory underneath it. Dealer filter above
+// defaults to All. `dealers` comes from the backend (derived from retailer
+// inventory rows), so it only lists dealers that actually have retailers
+// carrying stock.
+function RetailerInventoryPanel({ dealers, rows }) {
+  const [selectedDealer, setSelectedDealer] = useState('ALL');
+  const filtered = selectedDealer === 'ALL' ? rows : rows.filter((r) => String(r.dealerId) === String(selectedDealer));
+  const dealerGroups = groupRows(filtered, { idKey: 'dealerId', nameKey: 'dealerName' });
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-4">
+        <label className="text-sm font-medium">Dealer / डीलर:</label>
+        <select
+          className="border rounded px-2 py-1 text-sm bg-white"
+          value={selectedDealer}
+          onChange={(e) => setSelectedDealer(e.target.value)}
+        >
+          <option value="ALL">All / सर्व</option>
+          {dealers.map((d) => (
+            <option key={d.id} value={String(d.id)}>{d.name}</option>
+          ))}
+        </select>
+      </div>
+
+      {dealerGroups.length === 0 ? (
+        <div className="bg-white rounded shadow p-3 text-gray-400 text-sm">
+          No retailer inventory yet. / अद्याप किरकोळ विक्रेता साठा नाही.
+        </div>
+      ) : (
+        dealerGroups.map((dg) => (
+          <div key={dg.id} className="mb-8">
+            <h3 className="text-base font-semibold mb-3 text-orange-800">{dg.name}</h3>
+            <div className="pl-2 border-l-2 border-orange-100">
+              {groupRows(dg.rows, { idKey: 'retailerId', nameKey: 'retailerName' }).map((rg) => (
+                <GroupedInventorySection
+                  key={rg.id}
+                  name={rg.name}
+                  rows={rg.rows}
+                  priceKey="sellingPrice"
+                  priceLabel="Total Selling Price"
+                  priceLabelMr="एकूण विक्री किंमत"
+                />
+              ))}
+            </div>
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+
 function formatMoney(value) {
   return value != null ? `₹${Number(value).toFixed(2)}` : '-';
 }
@@ -98,32 +327,63 @@ function purchaseTotal(purchase, context) {
 }
 
 function PurchasesPanel({ data, selectedCounterparty, onSelectCounterparty }) {
+  // Own local selection state, same pattern as DealerInventoryPanel's
+  // selectedDealer - so switching away from and back to this tab resets
+  // the filter to All rather than persisting a stale status filter.
+  const [selectedStatus, setSelectedStatus] = useState('ALL');
+
   if (!data) return null;
   const context = data.context;
   const dropdownLabel = context === 'DEALER' ? 'Supplier / पुरवठादार' : 'Dealer / डीलर';
   const priceLabel = context === 'DEALER' ? 'Cost Price / खरेदी किंमत' : 'Selling Price / विक्री किंमत';
   const counterparties = data.counterparties || [];
+  const statusOptions = purchaseStatusOrder(context);
+  // RETAILER only ever has the one primary dealer (see /reports/purchases
+  // comments), so there's nothing for an "All" option to add there - keep
+  // it DEALER/ADMIN-ORGANISATION only, where there can be several
+  // suppliers (or, for ALL, several dealers/suppliers combined).
+  const showAllOption = context !== 'RETAILER';
   // <select> values are always strings, so compare/select on the string
   // form of the id to avoid a number/string mismatch once the user changes
   // the dropdown themselves.
-  const filtered = data.purchases.filter((p) => String(p.counterpartyId) === String(selectedCounterparty));
-  const groups = groupPurchasesByStatus(filtered, context);
+  const filtered = selectedCounterparty === 'ALL'
+    ? data.purchases
+    : data.purchases.filter((p) => String(p.counterpartyId) === String(selectedCounterparty));
+  const groups = groupPurchasesByStatus(filtered, context)
+    .filter((g) => selectedStatus === 'ALL' || g.status === selectedStatus);
 
   return (
     <div>
-      <div className="flex items-center gap-2 mb-4">
-        <label className="text-sm font-medium">{dropdownLabel}:</label>
-        <select
-          className="border rounded px-2 py-1 text-sm bg-white"
-          value={selectedCounterparty != null ? String(selectedCounterparty) : ''}
-          disabled={counterparties.length <= 1}
-          onChange={(e) => onSelectCounterparty(e.target.value)}
-        >
-          {counterparties.length === 0 && <option value="">-</option>}
-          {counterparties.map((c) => (
-            <option key={c.id} value={String(c.id)}>{c.name}</option>
-          ))}
-        </select>
+      <div className="flex flex-wrap items-center gap-4 mb-4">
+        <div className="flex items-center gap-2">
+          <label className="text-sm font-medium">{dropdownLabel}:</label>
+          <select
+            className="border rounded px-2 py-1 text-sm bg-white"
+            value={selectedCounterparty != null ? String(selectedCounterparty) : ''}
+            disabled={!showAllOption && counterparties.length <= 1}
+            onChange={(e) => onSelectCounterparty(e.target.value)}
+          >
+            {showAllOption && <option value="ALL">All / सर्व</option>}
+            {counterparties.length === 0 && !showAllOption && <option value="">-</option>}
+            {counterparties.map((c) => (
+              <option key={c.id} value={String(c.id)}>{c.name}</option>
+            ))}
+          </select>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <label className="text-sm font-medium">Status / स्थिती:</label>
+          <select
+            className="border rounded px-2 py-1 text-sm bg-white"
+            value={selectedStatus}
+            onChange={(e) => setSelectedStatus(e.target.value)}
+          >
+            <option value="ALL">All / सर्व</option>
+            {statusOptions.map((s) => (
+              <option key={s} value={s}>{STATUS_LABELS[s] || s}</option>
+            ))}
+          </select>
+        </div>
       </div>
 
       {counterparties.length === 0 && (
@@ -167,7 +427,7 @@ function PurchasesPanel({ data, selectedCounterparty, onSelectCounterparty }) {
                       <tbody>
                         {p.items.map((i) => (
                           <tr key={i.id} className="border-t">
-                            <td className="pr-2 py-1">{i.product.name}</td>
+                            <td className="pr-2 py-1"><ProductCell product={i.product} /></td>
                             <td className="pr-2 py-1">{i.batchName || '-'}</td>
                             <td className="pr-2 py-1">{i.quantity}</td>
                             <td className="pr-2 py-1">
@@ -188,15 +448,39 @@ function PurchasesPanel({ data, selectedCounterparty, onSelectCounterparty }) {
   );
 }
 
-function VoucherSection({ heading, headingMr, counterpartyLabel, data, showDealerColumn }) {
-  if (!data) return null;
-  const voucherGroups = groupByVoucherStatus(data.vouchers, (v) => v.status);
-  const paymentGroups = groupByVoucherStatus(data.payments, (p) => p.voucherStatus || 'PAID');
+function VoucherSection({ heading, headingMr, counterpartyLabel, data, showDealerColumn, showCounterpartyFilter = false }) {
+  // Own local selection state, same pattern as DealerInventoryPanel's
+  // selectedDealer - so switching away from and back to this tab resets
+  // the filter to All rather than persisting a stale selection.
+  const [selectedCounterparty, setSelectedCounterparty] = useState('ALL');
 
-  const openVoucherTotal = data.vouchers
+  if (!data) return null;
+
+  // Distinct {id, name} pairs across both vouchers and payments - a
+  // counterparty might only show up in one of the two lists (e.g. a
+  // supplier with an open voucher but no payment yet).
+  const counterpartyMap = new Map();
+  for (const row of [...data.vouchers, ...data.payments]) {
+    if (row.counterpartyId != null) counterpartyMap.set(row.counterpartyId, row.counterpartyName || '-');
+  }
+  const counterparties = [...counterpartyMap.entries()]
+    .map(([id, name]) => ({ id, name }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const vouchers = selectedCounterparty === 'ALL'
+    ? data.vouchers
+    : data.vouchers.filter((v) => String(v.counterpartyId) === String(selectedCounterparty));
+  const payments = selectedCounterparty === 'ALL'
+    ? data.payments
+    : data.payments.filter((p) => String(p.counterpartyId) === String(selectedCounterparty));
+
+  const voucherGroups = groupByVoucherStatus(vouchers, (v) => v.status);
+  const paymentGroups = groupByVoucherStatus(payments, (p) => p.voucherStatus || 'PAID');
+
+  const openVoucherTotal = vouchers
     .filter((v) => v.status === 'OPEN')
     .reduce((sum, v) => sum + Number(v.amount || 0), 0);
-  const paidPaymentTotal = data.payments
+  const paidPaymentTotal = payments
     .filter((p) => (p.voucherStatus || 'PAID') === 'PAID')
     .reduce((sum, p) => sum + Number(p.amount || 0), 0);
 
@@ -206,6 +490,22 @@ function VoucherSection({ heading, headingMr, counterpartyLabel, data, showDeale
         <h2 className="text-lg font-semibold mb-3">
           {heading} <span className="text-sm font-normal text-gray-500">({headingMr})</span>
         </h2>
+      )}
+
+      {showCounterpartyFilter && (
+        <div className="flex items-center gap-2 mb-3">
+          <label className="text-sm font-medium">{counterpartyLabel}:</label>
+          <select
+            className="border rounded px-2 py-1 text-sm bg-white"
+            value={selectedCounterparty}
+            onChange={(e) => setSelectedCounterparty(e.target.value)}
+          >
+            <option value="ALL">All / सर्व</option>
+            {counterparties.map((c) => (
+              <option key={c.id} value={String(c.id)}>{c.name}</option>
+            ))}
+          </select>
+        </div>
       )}
 
       {/* Vouchers and payments shown side by side rather than stacked. */}
@@ -315,6 +615,7 @@ function VouchersPanel({ data }) {
         counterpartyLabel="Supplier / पुरवठादार"
         data={data.supplier}
         showDealerColumn={showDealerColumn}
+        showCounterpartyFilter
       />
       <VoucherSection
         heading="Retailer Vouchers"
@@ -322,6 +623,7 @@ function VouchersPanel({ data }) {
         counterpartyLabel="Retailer / किरकोळ विक्रेता"
         data={data.retailer}
         showDealerColumn={showDealerColumn}
+        showCounterpartyFilter
       />
     </div>
   );
@@ -332,18 +634,30 @@ export default function Reports() {
   const [purchases, setPurchases] = useState(null);
   const [vouchers, setVouchers] = useState(null);
   const [inventory, setInventory] = useState([]);
+  // Admin/Organisation-only split view: null until loaded (and never loaded
+  // at all for DEALER/RETAILER, since the API rejects it for those roles).
+  const [inventoryByOwner, setInventoryByOwner] = useState(null);
   const [selectedCounterparty, setSelectedCounterparty] = useState(null);
 
   useEffect(() => {
     api.get('/reports/purchases').then((r) => {
       setPurchases(r.data);
-      // Auto-select: the retailer's single primary dealer, or the first
-      // supplier alphabetically for a dealer.
-      setSelectedCounterparty(r.data.counterparties?.[0]?.id ?? null);
+      // Auto-select: the retailer's single primary dealer (no "All" option
+      // there - see PurchasesPanel), or "All" suppliers/dealers for
+      // DEALER/ADMIN-ORGANISATION so the report opens showing everything.
+      setSelectedCounterparty(r.data.context === 'RETAILER' ? (r.data.counterparties?.[0]?.id ?? null) : 'ALL');
     });
     api.get('/reports/vouchers').then((r) => setVouchers(r.data));
     api.get('/reports/inventory').then((r) => setInventory(r.data));
   }, []);
+
+  // The split view is admin/organisation-only, so this second fetch only
+  // fires once we know the role from /reports/purchases (rather than
+  // firing for every role and having DEALER/RETAILER hit the 403 above).
+  useEffect(() => {
+    if (purchases?.context !== 'ALL') return;
+    api.get('/reports/inventory-by-owner').then((r) => setInventoryByOwner(r.data));
+  }, [purchases?.context]);
 
   // Role context should agree across every /reports/* response (it's
   // derived from req.user.role), so any loaded endpoint can tell us which
@@ -372,7 +686,8 @@ export default function Reports() {
     tabs = [
       ['purchases', `${purchasesText.title} / ${purchasesText.titleMr}`],
       ['vouchers', 'Vouchers / व्हाउचर'],
-      ['inventory', 'Product Inventory / उत्पादन साठा'],
+      ['inventory-dealer', 'Dealer Inventory / डीलर साठा'],
+      ['inventory-retailer', 'Retailer Inventory / किरकोळ विक्रेता साठा'],
     ];
   }
 
@@ -406,6 +721,7 @@ export default function Reports() {
             counterpartyLabel="Supplier / पुरवठादार"
             data={vouchers?.supplier}
             showDealerColumn={false}
+            showCounterpartyFilter
           />
         )}
 
@@ -414,45 +730,23 @@ export default function Reports() {
             counterpartyLabel="Retailer / किरकोळ विक्रेता"
             data={vouchers?.retailer}
             showDealerColumn={false}
+            showCounterpartyFilter
           />
         )}
 
         {tab === 'inventory' && (
-          <div className="bg-white rounded shadow overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-gray-100 sticky top-0 z-10">
-                <tr>
-                  <th className="text-left p-2">Product <span className="text-gray-400 font-normal">/ उत्पादन</span></th>
-                  <th className="text-left p-2">Barcode <span className="text-gray-400 font-normal">/ बारकोड</span></th>
-                  <th className="text-left p-2">Batch <span className="text-gray-400 font-normal">/ बॅच</span></th>
-                  <th className="text-left p-2">Expiry <span className="text-gray-400 font-normal">/ एक्सपायरी</span></th>
-                  <th className="text-left p-2">MRP <span className="text-gray-400 font-normal">/ एमआरपी</span></th>
-                  <th className="text-left p-2">Quantity <span className="text-gray-400 font-normal">/ प्रमाण</span></th>
-                  <th className="text-left p-2">Reorder Level <span className="text-gray-400 font-normal">/ पुनर्क्रम पातळी</span></th>
-                  <th className="text-left p-2">Status <span className="text-gray-400 font-normal">/ स्थिती</span></th>
-                </tr>
-              </thead>
-              <tbody>
-                {inventory.map((r) => (
-                  <tr key={r.id} className={`border-t ${r.lowStock ? 'bg-red-50' : ''}`}>
-                    <td className="p-2">{r.product?.name} ({r.product?.sizeWeight})</td>
-                    <td className="p-2">{r.product?.barcode}</td>
-                    <td className="p-2">{r.batchName || '-'}</td>
-                    <td className="p-2">{r.expiryDate ? new Date(r.expiryDate).toLocaleDateString() : '-'}</td>
-                    <td className="p-2">{r.mrp != null ? `₹${Number(r.mrp).toFixed(2)}` : '-'}</td>
-                    <td className="p-2">{r.quantity}</td>
-                    <td className="p-2">{r.reorderLevel}</td>
-                    <td className="p-2">
-                      {r.lowStock
-                        ? <span className="text-red-600 font-semibold">⚠ Reorder now / आता पुन्हा मागवा</span>
-                        : <span className="text-green-600">OK / ठीक आहे</span>}
-                    </td>
-                  </tr>
-                ))}
-                {inventory.length === 0 && <tr><td className="p-3 text-gray-400" colSpan={8}>No inventory yet. / अद्याप साठा नाही.</td></tr>}
-              </tbody>
-            </table>
-          </div>
+          <InventoryTable rows={inventory} />
+        )}
+
+        {tab === 'inventory-dealer' && (
+          <DealerInventoryPanel rows={inventoryByOwner?.dealerInventory || []} />
+        )}
+
+        {tab === 'inventory-retailer' && (
+          <RetailerInventoryPanel
+            dealers={inventoryByOwner?.dealers || []}
+            rows={inventoryByOwner?.retailerInventory || []}
+          />
         )}
       </div>
     </div>

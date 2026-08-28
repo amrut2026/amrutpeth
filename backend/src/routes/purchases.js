@@ -288,6 +288,27 @@ router.patch('/:id/status', authRequired, requireRole('DEALER', 'RETAILER'), asy
   if (!owns) return res.status(403).json({ error: 'You can only update your own purchases' });
 
   const currentStatus = existing.status || 'PENDING';
+
+  // Cancelling is available to either role, from either of the two
+  // pre-inventory stages (PENDING or IN_REVIEW) — before stock is credited
+  // and, for a retailer, before the mirror Sale/voucher machinery below
+  // ever fires. It's handled here as a special case rather than folded
+  // into nextStatusByRole below, since it's not a forward step in that
+  // per-role workflow and is available identically to both roles. Once
+  // CANCELLED, currentStatus can never match a key in nextStatusByRole
+  // again either, so this is also a dead end for every other transition.
+  if (status === 'CANCELLED') {
+    if (currentStatus !== 'PENDING' && currentStatus !== 'IN_REVIEW') {
+      return res.status(400).json({ error: `Cannot cancel a purchase once it is ${currentStatus}` });
+    }
+    const cancelled = await prisma.purchase.update({
+      where: { id },
+      data: { status: 'CANCELLED' },
+      include: { items: { include: { product: true } }, supplier: true, sourceDealer: true }
+    });
+    return res.json(cancelled);
+  }
+
   // DEALER purchases (from a supplier) move straight to CONFIRMED once
   // reviewed. RETAILER purchases (from their own dealer) fork instead:
   // once reviewed, the retailer places the order (ORDERED) and it's then

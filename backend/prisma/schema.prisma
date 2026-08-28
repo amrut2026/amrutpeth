@@ -27,6 +27,10 @@ enum PaymentMode {
   CASH
   UPI
   CARD
+  // A goods-return credit rather than money actually changing hands — see
+  // goodsReturns.js. Kept as its own mode so a return-based settlement is
+  // never confused with a real cash/UPI/card payment in the ledger.
+  GOODS_RETURN
 }
 
 enum CustomerType {
@@ -92,6 +96,41 @@ enum PurchaseStatus {
   // visibly distinct from an untouched CONFIRMED purchase. Never applies to
   // a RETAILER's own purchase (that side has no price-correction route).
   MODIFIED
+  // Voluntarily cancelled by the owner (dealer or retailer) while it was
+  // still PENDING or IN_REVIEW — i.e. before inventory was ever credited
+  // or a voucher/mirror-sale was ever raised (see purchases.js PATCH
+  // /:id/status). A terminal state: nothing about a CANCELLED purchase can
+  // be edited or transitioned further.
+  CANCELLED
+}
+
+// GoodsReturn's status workflow, by ownerType:
+//   RETAILER (returning to their own dealer): OPEN -> IN_REVIEW ->
+//     CONFIRMED — mirrors Purchase's own PENDING -> IN_REVIEW ->
+//     CONFIRMED/RECEIVED shape, except the confirming party here is the
+//     DEALER the goods are going back to, not the retailer who raised it
+//     (see goodsReturns.js PATCH /:id/status). Inventory is only
+//     decremented, and the credit Payment only raised, on that CONFIRMED
+//     step.
+//   DEALER (returning to a supplier): raised already CONFIRMED — a
+//     supplier has no login of their own in this system to confirm
+//     receipt, same reasoning PAYABLE Voucher and a DEALER's own
+//     SoldProduct row use elsewhere. Inventory is decremented and the
+//     credit Payment raised in the same step it's created.
+enum GoodsReturnStatus {
+  OPEN
+  IN_REVIEW
+  CONFIRMED
+  // Cancelled before ever reaching CONFIRMED — reachable only from OPEN or
+  // IN_REVIEW (see goodsReturns.js PATCH /:id/status). For a RETAILER's own
+  // return, cancelled by them, from either stage. For a DEALER's own
+  // return to a supplier — which has no IN_REVIEW stage at all, since a
+  // supplier has no login to put it in front of — only from OPEN, and
+  // cancelled by that same dealer. Terminal, same as CANCELLED on
+  // PurchaseStatus below: nothing decrements inventory or touches a
+  // voucher/payment either way, since neither ever happens before
+  // CONFIRMED.
+  CANCELLED
 }
 
 // A regular POS sale (walk-in cash sale, a dealer selling on the spot to a
@@ -186,6 +225,8 @@ model Dealer {
   vouchers               Voucher[]
   payments               Payment[]
   soldProductSettlements SoldProduct[]
+  goodsReturns              GoodsReturn[] @relation("DealerGoodsReturns")
+  goodsReturnsFromRetailers GoodsReturn[] @relation("GoodsReturnToDealer")
 }
 
 model DealerBankAccount {
@@ -217,6 +258,7 @@ model Retailer {
   vouchers     Voucher[]
   receipts     Receipt[]
   payments     Payment[]
+  goodsReturns GoodsReturn[] @relation("RetailerGoodsReturns")
 }
 
 model RetailerBankAccount {
@@ -347,6 +389,7 @@ model Product {
   saleItems     SaleItem[]
   purchaseItems PurchaseItem[]
   soldProducts  SoldProduct[]
+  goodsReturnItems GoodsReturnItem[]
 
   // The same supplier+category+name+sizeWeight+flavour+brand combination is
   // one product — this is what "Clone to another supplier" (Products.jsx)
@@ -397,6 +440,7 @@ model Supplier {
   products     Product[]
   vouchers     Voucher[]
   payments     Payment[]
+  goodsReturns GoodsReturn[]
 }
 
 model SupplierBankAccount {
@@ -449,6 +493,11 @@ model Inventory {
   originDealerRate     Decimal?  @db.Decimal(10, 2)
 
   updatedAt DateTime @updatedAt
+
+  // Inverse of GoodsReturnItem.inventoryId — every return raised against
+  // this exact batch (see goodsReturns.js). Purely for lookups; a return
+  // never mutates this list directly, only Inventory.quantity itself.
+  goodsReturnItems GoodsReturnItem[]
 
   // batchName is part of the identity now — same product+owner can have
   // multiple batch rows. batchName defaults to "" rather than being
@@ -548,6 +597,93 @@ model PurchaseItem {
   originDealerRate     Decimal?  @db.Decimal(10, 2)
 
   saleItem SaleItem? // inverse of SaleItem.purchaseItemId, for a retailer-order line
+}
+
+// ---------------- Goods Returns ----------------
+// The mirror image of a Purchase: stock and money flow backward, one
+// Inventory batch at a time, instead of forward. Shaped and scoped just
+// like Purchase for the same reason (ownerType + dealerId/retailerId for
+// who owns/raised it, supplierId/sourceDealerId for who it's going back
+// TO) — see the GoodsReturnStatus enum above for the two very different
+// confirmation workflows this drives depending on ownerType.
+//
+// Every line item is tied to a specific Inventory row (inventoryId) — a
+// return is only ever possible against a batch the owner actually still
+// holds in their own Inventory (see goodsReturns.js), never an arbitrary
+// product/quantity.
+model GoodsReturn {
+  id             Int               @id @default(autoincrement())
+  ownerType      OwnerType
+  dealerId       Int?
+  dealer         Dealer?           @relation("DealerGoodsReturns", fields: [dealerId], references: [id])
+  retailerId     Int?
+  retailer       Retailer?         @relation("RetailerGoodsReturns", fields: [retailerId], references: [id])
+  // Who the return is TO. supplierId is set for a DEALER's own return (the
+  // supplier chosen on the form); sourceDealerId is set for a RETAILER's
+  // return (always their own primary dealer, derived server-side — never
+  // trusted from the client, same as Purchase.sourceDealerId).
+  supplierId     Int?
+  supplier       Supplier?         @relation(fields: [supplierId], references: [id])
+  sourceDealerId Int?
+  sourceDealer   Dealer?           @relation("GoodsReturnToDealer", fields: [sourceDealerId], references: [id])
+  date           DateTime          @default(now())
+  status         GoodsReturnStatus @default(OPEN)
+  items          GoodsReturnItem[]
+
+  // Optional — the specific outstanding voucher (RECEIVABLE for a
+  // RETAILER's return, PAYABLE for a DEALER's) this return's credit was
+  // applied against, chosen by whoever confirms/raises it. Left null if
+  // it was recorded as a general credit rather than against one
+  // particular voucher — same as an ordinary Payment can have a null
+  // voucherId.
+  voucherId Int?
+  voucher   Voucher? @relation(fields: [voucherId], references: [id])
+
+  // Set once the credit is raised — immediately for a DEALER-initiated
+  // return (created already CONFIRMED), or on the dealer's confirmation
+  // for a RETAILER-initiated one (see goodsReturns.js PATCH /:id/status).
+  // Null until then.
+  paymentId Int?     @unique
+  payment   Payment? @relation(fields: [paymentId], references: [id])
+}
+
+model GoodsReturnItem {
+  id            Int         @id @default(autoincrement())
+  goodsReturnId Int
+  goodsReturn   GoodsReturn @relation(fields: [goodsReturnId], references: [id])
+  inventoryId   Int
+  inventory     Inventory   @relation(fields: [inventoryId], references: [id])
+  productId     Int
+  product       Product     @relation(fields: [productId], references: [id])
+  batchName     String
+  quantity      Int
+  // Snapshot of Inventory.rate (this owner's own cost for the batch,
+  // whichever party they bought it from) at the moment the return is
+  // created — a fixed number to settle the credit against, immune to the
+  // batch's price being corrected later (see purchases.js PATCH
+  // /:id/prices). Deliberately always `rate`, never `sellingPrice` or
+  // `retailerSellingPrice` — Inventory.rate already means "this owner's
+  // own unit cost from their immediate upstream party" regardless of
+  // ownerType (dealer's cost from supplier, or retailer's cost from
+  // dealer), so the same field works unmodified for both directions.
+  rate          Decimal     @db.Decimal(10, 2)
+  // Null until the dealer actually acts on this line. For a RETAILER's
+  // return: null while OPEN/IN_REVIEW, then set by the dealer at
+  // confirmation — see goodsReturns.js PATCH /:id/status — to whatever
+  // quantity they're actually accepting back, which need not equal
+  // `quantity` (the retailer's original request); inventory is decremented
+  // and the credit is calculated off this value, not the request. For a
+  // DEALER's own return: set equal to `quantity` immediately at creation,
+  // since it's auto-confirmed with no counterparty to partially approve it
+  // (see GoodsReturnStatus above).
+  approvedQuantity Int?
+  // Required whenever approvedQuantity differs from the retailer's own
+  // `quantity` — the dealer's reason for a partial approval (damaged
+  // goods, wrong batch, etc.), enforced in goodsReturns.js PATCH
+  // /:id/status so a quantity mismatch is never left unexplained. Stays
+  // null whenever the line is approved in full, including a DEALER's own
+  // auto-confirmed return (which is always approved in full — see above).
+  approvalNote     String?
 }
 
 // ---------------- Sales / POS ----------------
@@ -719,6 +855,12 @@ model Voucher {
   // purchaseId above, for the sale side of a price-correction cascade.
   saleId Int?  @unique
   sale   Sale? @relation(fields: [saleId], references: [id])
+
+  // Every GoodsReturn whose credit was applied against this specific
+  // voucher (an optional choice made when the return is confirmed/raised
+  // — see goodsReturns.js). A voucher can have more than one, same as it
+  // can have more than one ordinary Payment.
+  goodsReturns GoodsReturn[]
 }
 
 // ---------------- Receipts (money received against vouchers) ----------------
@@ -807,6 +949,11 @@ model Payment {
   // raised via soldProducts.js POST /pay rather than the ordinary
   // voucher/receipt flow above.
   soldProducts SoldProduct[]
+
+  // Inverse of GoodsReturn.paymentId — set when this Payment was raised as
+  // the credit for a confirmed goods return (see goodsReturns.js) rather
+  // than an ordinary cash/UPI/card payment or a sold-products settlement.
+  goodsReturn GoodsReturn?
 }
 
 // ============================================================

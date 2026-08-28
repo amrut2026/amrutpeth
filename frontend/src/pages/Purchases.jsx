@@ -427,6 +427,22 @@ export default function Purchases() {
     }
   }
 
+  // Cancels a purchase that's still PENDING or IN_REVIEW — before any
+  // inventory has been credited or (for a retailer) before the order's
+  // been placed with the dealer. Available to either role. Terminal: once
+  // CANCELLED, statusAction below no longer offers any action on it.
+  async function cancelPurchase(purchaseId) {
+    if (!window.confirm('Cancel this purchase? This cannot be undone. / ही खरेदी रद्द करायची? हे पूर्ववत करता येणार नाही.')) {
+      return;
+    }
+    try {
+      await api.patch(`/purchases/${purchaseId}/status`, { status: 'CANCELLED' });
+      load();
+    } catch (err) {
+      alert(err.response?.data?.error || 'Failed to cancel purchase / खरेदी रद्द करण्यात अयशस्वी');
+    }
+  }
+
   // Opens the print-quantity prompt for a CONFIRMED purchase, defaulting
   // each item's label count to the quantity purchased. Also reachable later
   // from that purchase's card, to reprint without reconfirming — this is the
@@ -464,10 +480,16 @@ export default function Purchases() {
     const status = p.status || 'PENDING';
     if (status === 'PENDING') {
       return (
-        <button type="button" onClick={() => markForReview(p.id)}
-          className="text-xs bg-amber-100 text-amber-800 px-3 py-1.5 rounded hover:bg-amber-200">
-          Mark for Review<span className="block">पुनरावलोकनासाठी चिन्हांकित करा</span>
-        </button>
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={() => markForReview(p.id)}
+            className="text-xs bg-amber-100 text-amber-800 px-3 py-1.5 rounded hover:bg-amber-200">
+            Mark for Review<span className="block">पुनरावलोकनासाठी चिन्हांकित करा</span>
+          </button>
+          <button type="button" onClick={() => cancelPurchase(p.id)}
+            className="text-xs bg-white border border-red-300 text-red-700 px-3 py-1.5 rounded hover:bg-red-50">
+            Cancel<span className="block">रद्द करा</span>
+          </button>
+        </div>
       );
     }
     if (status === 'IN_REVIEW') {
@@ -484,6 +506,10 @@ export default function Purchases() {
             ) : (
               <>Place Order<span className="block">ऑर्डर द्या</span></>
             )}
+          </button>
+          <button type="button" onClick={() => cancelPurchase(p.id)}
+            className="text-xs bg-white border border-red-300 text-red-700 px-3 py-1.5 rounded hover:bg-red-50">
+            Cancel<span className="block">रद्द करा</span>
           </button>
         </div>
       );
@@ -505,6 +531,13 @@ export default function Purchases() {
           className="text-xs bg-emerald-700 text-white px-3 py-1.5 rounded hover:bg-emerald-800">
           Mark Received<span className="block">प्राप्त झाले असे चिन्हांकित करा</span>
         </button>
+      );
+    }
+    if (status === 'CANCELLED') {
+      return (
+        <span className="text-xs bg-red-50 text-red-700 font-medium px-3 py-1.5 rounded border border-red-200">
+          Cancelled / रद्द केले
+        </span>
       );
     }
     return (
@@ -629,6 +662,10 @@ export default function Purchases() {
                     {['CONFIRMED', 'MODIFIED', 'RECEIVED'].includes(status) ? (
                       <span className="text-xs bg-emerald-50 text-emerald-700 font-medium px-2 py-1 rounded border border-emerald-200">
                         {status === 'CONFIRMED' ? 'Confirmed' : status === 'MODIFIED' ? 'Modified' : 'Received'}
+                      </span>
+                    ) : status === 'CANCELLED' ? (
+                      <span className="text-xs bg-red-50 text-red-700 font-medium px-2 py-1 rounded border border-red-200">
+                        Cancelled
                       </span>
                     ) : (
                       <span className="text-xs bg-amber-50 text-amber-800 font-medium px-2 py-1 rounded border border-amber-200">
@@ -773,6 +810,7 @@ export default function Purchases() {
                           <th className="text-left p-1">Original Qty / मूळ प्रमाण</th>
                           <th className="text-left p-1">Qty / प्रमाण</th>
                           <th className="text-left p-1">Batch / बॅच</th>
+                          <th className="text-left p-1">Cost Price / क्रय किंमत</th>
                           <th className="text-left p-1">MRP / एमआरपी</th>
                           <th className="text-left p-1">Retailer Price / किरकोळ किंमत</th>
                           <th className="text-left p-1">Exp (mm-yyyy) / कालबाह्यता</th>
@@ -799,10 +837,13 @@ export default function Purchases() {
                                     onChange={(e) => setQuantityEdits((prev) => ({ ...prev, [it.id]: e.target.value }))} />
                                 ) : it.quantity}
                               </td>
-                              {/* batch/MRP/price/expiry are only known once the dealer
+                              {/* batch/cost/MRP/price/expiry are only known once the dealer
                                   has dispatched the order (IN_TRANSIT/RECEIVED) — blank
-                                  until then, since a retailer never enters them. */}
+                                  until then, since a retailer never enters them. Cost
+                                  Price here is the retailer's own purchase cost — see
+                                  purchaseTotals() above for why sellingPrice is that. */}
                               <td className="p-1">{it.batchName || '—'}</td>
+                              <td className="p-1">{it.sellingPrice != null ? `₹${it.sellingPrice}` : '—'}</td>
                               <td className="p-1">{it.mrp != null ? `₹${it.mrp}` : '—'}</td>
                               <td className="p-1">{it.retailerSellingPrice != null ? `₹${it.retailerSellingPrice}` : '—'}</td>
                               <td className="p-1">{it.expiryDate ? formatMMYYYY(it.expiryDate) : '—'}</td>
