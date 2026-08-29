@@ -30,12 +30,13 @@ const NAV = {
   // dealers.js / divisions.js). Suppliers/Manufacturers is read-only here —
   // creation and edits now live with DEALER (see suppliers.js), since a
   // dealer is the one actually transacting with a supplier. ADMIN keeps
-  // its own read-only Suppliers entry above too, for oversight. Listed
-  // last since it's the one read-only, non-managed item in this nav.
+  // its own read-only Suppliers entry above too, for oversight. Reports
+  // comes last, same as every other role's nav.
   ORGANISATION: [
     ['/divisions', 'Divisions', 'विभाग'],
     ['/dealers', 'Dealers', 'डीलर्स'],
     ['/suppliers', 'Suppliers / Manufacturers', 'पुरवठादार / उत्पादक'],
+    ['/reports', 'Reports', 'अहवाल'],
   ],
   DEALER: [
     ['/retailers', 'My Retailers', 'माझे किरकोळ विक्रेते'],
