@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import api from '../api.js';
+import Dashboard from './Dashboard.jsx';
 
 const STATUS_LABELS = {
   PENDING: 'Pending / प्रलंबित',
@@ -669,6 +670,7 @@ export default function Reports() {
   let tabs;
   if (roleContext === 'DEALER') {
     tabs = [
+      ['dashboard', 'Dashboard / डॅशबोर्ड'],
       ['purchases', `${purchasesText.title} / ${purchasesText.titleMr}`],
       ['vouchers-supplier', 'Voucher/Payments to Supplier / पुरवठादाराला व्हाउचर/देयके'],
       ['vouchers-retailer', 'Voucher/Payments from Retailer / किरकोळ विक्रेत्याकडून व्हाउचर/देयके'],
@@ -678,12 +680,14 @@ export default function Reports() {
     // No separate "Payments to Dealer" tab - it now lives side by side
     // with vouchers inside the renamed vouchers tab below.
     tabs = [
+      ['dashboard', 'Dashboard / डॅशबोर्ड'],
       ['purchases', `${purchasesText.title} / ${purchasesText.titleMr}`],
       ['vouchers', 'Voucher/Payments to Dealer / डीलरला व्हाउचर/देयके'],
       ['inventory', 'Product Inventory / उत्पादन साठा'],
     ];
   } else {
     tabs = [
+      ['dashboard', 'Dashboard / डॅशबोर्ड'],
       ['purchases', `${purchasesText.title} / ${purchasesText.titleMr}`],
       ['vouchers', 'Vouchers / व्हाउचर'],
       ['inventory-dealer', 'Dealer Inventory / डीलर साठा'],
@@ -706,6 +710,8 @@ export default function Reports() {
       </div>
 
       <div className="overflow-y-auto max-h-[75vh] pr-1">
+        {tab === 'dashboard' && <Dashboard showWelcome={false} />}
+
         {tab === 'purchases' && (
           <PurchasesPanel
             data={purchases}

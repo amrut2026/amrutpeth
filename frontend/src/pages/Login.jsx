@@ -37,9 +37,6 @@ export default function Login() {
         </div>
         {error && <p className="text-red-600 text-sm mb-3">{error}</p>}
         <button className="w-full bg-orange-600 text-white py-2 rounded hover:bg-orange-700">Log in / लॉग इन करा</button>
-        <p className="text-xs text-gray-400 mt-4">
-          Demo logins / डेमो लॉगिन (after seeding / सीड केल्यानंतर): admin/admin123, dealer1/dealer123, retailer1/retailer123
-        </p>
       </form>
     </div>
   );
