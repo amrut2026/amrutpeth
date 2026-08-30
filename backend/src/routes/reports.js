@@ -481,13 +481,51 @@ router.get('/org-summary', authRequired, async (req, res) => {
   res.json({ context: req.user.role, organisations: orgRows, totals: grandTotals });
 });
 
+// Status orderings for each category below, used both to decide which
+// order a cell's per-state breakdown is listed in and, for
+// payments (which has no status of its own), which underlying workflow to
+// read a state from. Purchase/Sale/GoodsReturn/Receipt/Voucher orderings
+// mirror their enums in schema.prisma; RETAILER_PAYMENT_STATUSES /
+// DEALER_PAYMENT_STATUSES are the same two orderings already used by
+// GET /payments above.
+const PURCHASE_STATUS_ORDER = ['PENDING', 'IN_REVIEW', 'CONFIRMED', 'ORDERED', 'IN_TRANSIT', 'RECEIVED', 'MODIFIED', 'CANCELLED'];
+const SALE_STATUS_ORDER = ['COMPLETED', 'IN_PENDING', 'DISPATCHED'];
+const SOLD_PRODUCT_STATUS_ORDER = ['OPEN', 'TO_BE_CONFIRMED', 'PAID'];
+const GOODS_RETURN_STATUS_ORDER = ['OPEN', 'IN_REVIEW', 'CONFIRMED', 'CANCELLED'];
+const RECEIPT_STATUS_ORDER = ['TO_BE_CONFIRMED', 'PARTIALLY_PAID', 'PAID'];
+const VOUCHER_STATUS_ORDER = ['OPEN', 'PARTIALLY_PAID', 'PAID'];
+
+// A running { count, amount } total plus the same broken down per status —
+// the shape every category below accumulates into, so the dashboard can
+// show both the total and its state breakdown in one table cell.
+function newBucket() {
+  return { count: 0, amount: 0, byStatus: new Map() };
+}
+function addToBucket(bucket, status, amount) {
+  bucket.count += 1;
+  bucket.amount += amount;
+  if (!bucket.byStatus.has(status)) bucket.byStatus.set(status, { status, count: 0, amount: 0 });
+  const s = bucket.byStatus.get(status);
+  s.count += 1;
+  s.amount += amount;
+}
+// Only the statuses that actually occurred are included (in canonical
+// order), so an empty/rare state doesn't clutter every cell.
+function serializeBucket(bucket, order) {
+  return {
+    count: bucket.count,
+    amount: bucket.amount,
+    byStatus: order.map((s) => bucket.byStatus.get(s)).filter(Boolean),
+  };
+}
+
 // Activity summary (purchases/sales/soldProducts/goodsReturns/payments/
-// receipts/vouchers) grouped by dealer and by retailer — for the
-// ADMIN/ORGANISATION Dashboard's per-dealer and per-retailer breakdown
-// tables. Same ADMIN-sees-everything / ORGANISATION-sees-its-own-org
-// scoping as /org-summary above, for the same reason (a dealer/retailer
-// listing is dealer/retailer-management data, which stays inside its own
-// organisation everywhere else in the app).
+// receipts/vouchers) grouped by dealer and by retailer, each broken down by
+// status — for the ADMIN/ORGANISATION Dashboard's per-dealer and
+// per-retailer breakdown tables. Same ADMIN-sees-everything /
+// ORGANISATION-sees-its-own-org scoping as /org-summary above, for the same
+// reason (a dealer/retailer listing is dealer/retailer-management data,
+// which stays inside its own organisation everywhere else in the app).
 //
 // Amounts are computed the same way each entity already prices things
 // elsewhere in this file/schema, not a flat "amount" column that doesn't
@@ -496,21 +534,30 @@ router.get('/org-summary', authRequired, async (req, res) => {
 //     their supplier); retailer's own = qty × PurchaseItem.sellingPrice
 //     (what they paid their dealer — PurchaseItem.rate on a retailer's own
 //     line is the dealer's upstream cost, not what the retailer paid, see
-//     schema.prisma).
-//   - sales: Sale.totalAmount, straight off the row. A dealer's sales are
-//     additionally split into cash (customerType CASH) vs retailer
-//     (customerType RETAILER) sub-totals — a retailer's own sales aren't
-//     split, since a retailer only ever sells to a cash end customer.
+//     schema.prisma). Bucketed by Purchase.status.
+//   - sales: Sale.totalAmount, straight off the row, bucketed by
+//     Sale.status. A dealer's sales are additionally split into cash
+//     (customerType CASH) vs retailer (customerType RETAILER) sub-totals —
+//     a retailer's own sales aren't split, since a retailer only ever
+//     sells to a cash end customer.
 //   - soldProducts: no amount field of its own — settles at the linked
 //     SaleItem's rate (dealer's own cash sale), sellingPrice (retailer's
 //     own cash sale), or originDealerRate (the second, dealer-scoped
 //     obligation raised when a retailer resells dealer-sourced stock —
-//     see SoldProduct.owedBy in schema.prisma).
+//     see SoldProduct.owedBy in schema.prisma). Bucketed by
+//     SoldProduct.status.
 //   - goodsReturns: qty(approvedQuantity ?? quantity) × item.rate, which
 //     is already always "this owner's own unit cost" regardless of
 //     ownerType (see GoodsReturnItem.rate comment in schema.prisma).
-//   - payments / receipts / vouchers: read straight off their own amount
-//     field.
+//     Bucketed by GoodsReturn.status.
+//   - payments: Payment.amount, but Payment has no status of its own —
+//     bucketed the same way GET /payments above already groups it: a
+//     dealer's own payment (to a supplier) by its Voucher's status
+//     (defaulting to PAID if unlinked), a retailer's payment (to their
+//     dealer) by its Receipt's status (defaulting to PAID for a
+//     goods-return credit, TO_BE_CONFIRMED otherwise).
+//   - receipts / vouchers: Receipt.amount / Voucher.amount, bucketed by
+//     their own status directly.
 router.get('/activity-summary', authRequired, async (req, res) => {
   if (req.user.role === 'DEALER' || req.user.role === 'RETAILER') {
     return res.status(403).json({ error: 'Not available for this role' });
@@ -547,34 +594,30 @@ router.get('/activity-summary', authRequired, async (req, res) => {
     return res.json({ context: req.user.role, dealers: [], retailers: [] });
   }
 
-  const emptyActivity = () => ({ count: 0, amount: 0 });
-  const emptySettlement = () => ({ count: 0, amount: 0, paidAmount: 0, pendingAmount: 0 });
-  const emptyVoucher = () => ({ count: 0, amount: 0, openAmount: 0 });
   // A dealer's sale can be to a walk-in cash customer or to one of their
-  // retailers (Sale.customerType) — split out here so the dashboard can
-  // show both in the same "Sales" cell. Not needed on the retailer side:
-  // a retailer's own Sale is always to a CASH end customer (only a dealer
-  // sale ever has customerType RETAILER — see schema.prisma).
-  const emptySalesSplit = () => ({ count: 0, amount: 0, cash: emptyActivity(), retailer: emptyActivity() });
-
+  // retailers (Sale.customerType) — tracked alongside the status bucket so
+  // the dashboard can show both breakdowns in the same "Sales" cell. Not
+  // needed on the retailer side: a retailer's own Sale is always to a CASH
+  // end customer (only a dealer sale ever has customerType RETAILER — see
+  // schema.prisma).
   const dealerActivity = new Map(dealerIds.map((id) => [id, {
-    purchases: emptyActivity(),
-    sales: emptySalesSplit(),
-    soldProducts: emptySettlement(),
-    goodsReturns: emptyActivity(),
-    payments: emptyActivity(),
-    receipts: { count: 0, amount: 0, pendingAmount: 0 },
-    payableVouchers: emptyVoucher(),
-    receivableVouchers: emptyVoucher(),
+    purchases: newBucket(),
+    sales: newBucket(),
+    salesByCustomer: { cash: newBucket(), retailer: newBucket() },
+    soldProducts: newBucket(),
+    goodsReturns: newBucket(),
+    payments: newBucket(),
+    receipts: newBucket(),
+    payableVouchers: newBucket(),
+    receivableVouchers: newBucket(),
   }]));
   const retailerActivity = new Map(retailerIds.map((id) => [id, {
-    purchases: emptyActivity(),
-    sales: emptyActivity(),
-    soldProducts: emptySettlement(),
-    goodsReturns: emptyActivity(),
-    payments: emptyActivity(),
-    receipts: { count: 0, amount: 0, pendingAmount: 0 },
-    vouchers: emptyVoucher(),
+    purchases: newBucket(),
+    sales: newBucket(),
+    soldProducts: newBucket(),
+    goodsReturns: newBucket(),
+    payments: newBucket(),
+    vouchers: newBucket(),
   }]));
 
   const [
@@ -588,22 +631,22 @@ router.get('/activity-summary', authRequired, async (req, res) => {
   ] = await Promise.all([
     prisma.purchase.findMany({
       where: { ownerType: 'DEALER', dealerId: { in: dealerIds } },
-      select: { dealerId: true, items: { select: { quantity: true, rate: true } } },
+      select: { dealerId: true, status: true, items: { select: { quantity: true, rate: true } } },
     }),
     retailerIds.length
       ? prisma.purchase.findMany({
           where: { ownerType: 'RETAILER', retailerId: { in: retailerIds } },
-          select: { retailerId: true, items: { select: { quantity: true, sellingPrice: true } } },
+          select: { retailerId: true, status: true, items: { select: { quantity: true, sellingPrice: true } } },
         })
       : [],
     prisma.sale.findMany({
       where: { ownerType: 'DEALER', dealerId: { in: dealerIds } },
-      select: { dealerId: true, totalAmount: true, customerType: true },
+      select: { dealerId: true, totalAmount: true, customerType: true, status: true },
     }),
     retailerIds.length
       ? prisma.sale.findMany({
           where: { ownerType: 'RETAILER', retailerId: { in: retailerIds } },
-          select: { retailerId: true, totalAmount: true },
+          select: { retailerId: true, totalAmount: true, status: true },
         })
       : [],
     // Dealer's own cash-sale settlement (owedBy DEALER, dealerId null —
@@ -627,17 +670,25 @@ router.get('/activity-summary', authRequired, async (req, res) => {
       : [],
     prisma.goodsReturn.findMany({
       where: { ownerType: 'DEALER', dealerId: { in: dealerIds } },
-      select: { dealerId: true, items: { select: { quantity: true, approvedQuantity: true, rate: true } } },
+      select: { dealerId: true, status: true, items: { select: { quantity: true, approvedQuantity: true, rate: true } } },
     }),
     retailerIds.length
       ? prisma.goodsReturn.findMany({
           where: { ownerType: 'RETAILER', retailerId: { in: retailerIds } },
-          select: { retailerId: true, items: { select: { quantity: true, approvedQuantity: true, rate: true } } },
+          select: { retailerId: true, status: true, items: { select: { quantity: true, approvedQuantity: true, rate: true } } },
         })
       : [],
     prisma.payment.findMany({
       where: { dealerId: { in: dealerIds } },
-      select: { dealerId: true, retailerId: true, supplierId: true, amount: true },
+      select: {
+        dealerId: true,
+        retailerId: true,
+        supplierId: true,
+        amount: true,
+        mode: true,
+        voucher: { select: { status: true } },
+        receipt: { select: { status: true } },
+      },
     }),
     retailerIds.length
       ? prisma.receipt.findMany({
@@ -655,82 +706,68 @@ router.get('/activity-summary', authRequired, async (req, res) => {
     }),
   ]);
 
-  const OPEN_VOUCHER_STATUSES = ['OPEN', 'PARTIALLY_PAID'];
-  const addSettlement = (bucket, amount, status) => {
-    bucket.count += 1;
-    bucket.amount += amount;
-    if (status === 'PAID') bucket.paidAmount += amount; else bucket.pendingAmount += amount;
-  };
-
   // ---- purchases ----
   for (const p of dealerPurchases) {
-    const a = dealerActivity.get(p.dealerId).purchases;
-    a.count += 1;
-    a.amount += p.items.reduce((s, i) => s + (i.rate != null ? Number(i.rate) * i.quantity : 0), 0);
+    const bucket = dealerActivity.get(p.dealerId).purchases;
+    const amount = p.items.reduce((s, i) => s + (i.rate != null ? Number(i.rate) * i.quantity : 0), 0);
+    addToBucket(bucket, p.status, amount);
   }
   for (const p of retailerPurchases) {
-    const a = retailerActivity.get(p.retailerId).purchases;
-    a.count += 1;
-    a.amount += p.items.reduce((s, i) => s + (i.sellingPrice != null ? Number(i.sellingPrice) * i.quantity : 0), 0);
+    const bucket = retailerActivity.get(p.retailerId).purchases;
+    const amount = p.items.reduce((s, i) => s + (i.sellingPrice != null ? Number(i.sellingPrice) * i.quantity : 0), 0);
+    addToBucket(bucket, p.status, amount);
   }
 
   // ---- sales ----
   for (const s of dealerSales) {
-    const bucket = dealerActivity.get(s.dealerId).sales;
+    const activity = dealerActivity.get(s.dealerId);
     const amount = Number(s.totalAmount ?? 0);
-    bucket.count += 1;
-    bucket.amount += amount;
-    const sub = s.customerType === 'RETAILER' ? bucket.retailer : bucket.cash;
-    sub.count += 1;
-    sub.amount += amount;
+    addToBucket(activity.sales, s.status, amount);
+    addToBucket(s.customerType === 'RETAILER' ? activity.salesByCustomer.retailer : activity.salesByCustomer.cash, s.status, amount);
   }
   for (const s of retailerSales) {
-    const a = retailerActivity.get(s.retailerId).sales;
-    a.count += 1;
-    a.amount += Number(s.totalAmount ?? 0);
+    const bucket = retailerActivity.get(s.retailerId).sales;
+    addToBucket(bucket, s.status, Number(s.totalAmount ?? 0));
   }
 
   // ---- soldProducts (settlement obligations) ----
   for (const sp of dealerOwnSoldProducts) {
     const bucket = dealerActivity.get(sp.sale.dealerId)?.soldProducts;
     if (!bucket) continue;
-    addSettlement(bucket, Number(sp.saleItem.rate ?? 0) * sp.saleItem.quantity, sp.status);
+    addToBucket(bucket, sp.status, Number(sp.saleItem.rate ?? 0) * sp.saleItem.quantity);
   }
   for (const sp of dealerOriginSoldProducts) {
     const bucket = dealerActivity.get(sp.dealerId)?.soldProducts;
     if (!bucket) continue;
-    addSettlement(bucket, Number(sp.saleItem.originDealerRate ?? 0) * sp.saleItem.quantity, sp.status);
+    addToBucket(bucket, sp.status, Number(sp.saleItem.originDealerRate ?? 0) * sp.saleItem.quantity);
   }
   for (const sp of retailerSoldProducts) {
     const bucket = retailerActivity.get(sp.sale.retailerId)?.soldProducts;
     if (!bucket) continue;
-    addSettlement(bucket, Number(sp.saleItem.sellingPrice ?? 0) * sp.saleItem.quantity, sp.status);
+    addToBucket(bucket, sp.status, Number(sp.saleItem.sellingPrice ?? 0) * sp.saleItem.quantity);
   }
 
   // ---- goods returns ----
   const returnAmount = (items) => items.reduce((s, i) => s + Number(i.rate) * (i.approvedQuantity ?? i.quantity), 0);
   for (const g of dealerGoodsReturns) {
-    const a = dealerActivity.get(g.dealerId).goodsReturns;
-    a.count += 1;
-    a.amount += returnAmount(g.items);
+    const bucket = dealerActivity.get(g.dealerId).goodsReturns;
+    addToBucket(bucket, g.status, returnAmount(g.items));
   }
   for (const g of retailerGoodsReturns) {
-    const a = retailerActivity.get(g.retailerId).goodsReturns;
-    a.count += 1;
-    a.amount += returnAmount(g.items);
+    const bucket = retailerActivity.get(g.retailerId).goodsReturns;
+    addToBucket(bucket, g.status, returnAmount(g.items));
   }
 
   // ---- payments ----
   for (const p of payments) {
+    const amount = Number(p.amount);
     if (p.supplierId && dealerActivity.has(p.dealerId)) {
-      const a = dealerActivity.get(p.dealerId).payments;
-      a.count += 1;
-      a.amount += Number(p.amount);
+      const status = p.voucher?.status ?? 'PAID';
+      addToBucket(dealerActivity.get(p.dealerId).payments, status, amount);
     }
     if (p.retailerId && retailerActivity.has(p.retailerId)) {
-      const a = retailerActivity.get(p.retailerId).payments;
-      a.count += 1;
-      a.amount += Number(p.amount);
+      const status = p.receipt?.status ?? (p.mode === 'GOODS_RETURN' ? 'PAID' : 'TO_BE_CONFIRMED');
+      addToBucket(retailerActivity.get(p.retailerId).payments, status, amount);
     }
   }
 
@@ -739,42 +776,39 @@ router.get('/activity-summary', authRequired, async (req, res) => {
     const info = retailerInfo.get(r.retailerId);
     if (!info) continue;
     const amount = Number(r.amount);
-    const pending = r.status === 'TO_BE_CONFIRMED';
-
-    const ra = retailerActivity.get(r.retailerId).receipts;
-    ra.count += 1;
-    ra.amount += amount;
-    if (pending) ra.pendingAmount += amount;
-
-    const da = dealerActivity.get(info.dealerId).receipts;
-    da.count += 1;
-    da.amount += amount;
-    if (pending) da.pendingAmount += amount;
+    addToBucket(dealerActivity.get(info.dealerId).receipts, r.status, amount);
   }
 
   // ---- vouchers ----
   for (const v of payableVouchers) {
-    const a = dealerActivity.get(v.dealerId).payableVouchers;
-    a.count += 1;
-    a.amount += Number(v.amount);
-    if (OPEN_VOUCHER_STATUSES.includes(v.status)) a.openAmount += Number(v.amount);
+    addToBucket(dealerActivity.get(v.dealerId).payableVouchers, v.status, Number(v.amount));
   }
   for (const v of receivableVouchers) {
     const amount = Number(v.amount);
-    const open = OPEN_VOUCHER_STATUSES.includes(v.status);
-
-    const da = dealerActivity.get(v.dealerId).receivableVouchers;
-    da.count += 1;
-    da.amount += amount;
-    if (open) da.openAmount += amount;
-
+    addToBucket(dealerActivity.get(v.dealerId).receivableVouchers, v.status, amount);
     if (v.retailerId && retailerActivity.has(v.retailerId)) {
-      const ra = retailerActivity.get(v.retailerId).vouchers;
-      ra.count += 1;
-      ra.amount += amount;
-      if (open) ra.openAmount += amount;
+      addToBucket(retailerActivity.get(v.retailerId).vouchers, v.status, amount);
     }
   }
+
+  const serializeDealer = (a) => ({
+    purchases: serializeBucket(a.purchases, PURCHASE_STATUS_ORDER),
+    sales: { ...serializeBucket(a.sales, SALE_STATUS_ORDER), cash: serializeBucket(a.salesByCustomer.cash, SALE_STATUS_ORDER), retailer: serializeBucket(a.salesByCustomer.retailer, SALE_STATUS_ORDER) },
+    soldProducts: serializeBucket(a.soldProducts, SOLD_PRODUCT_STATUS_ORDER),
+    goodsReturns: serializeBucket(a.goodsReturns, GOODS_RETURN_STATUS_ORDER),
+    payments: serializeBucket(a.payments, DEALER_PAYMENT_STATUSES),
+    receipts: serializeBucket(a.receipts, RECEIPT_STATUS_ORDER),
+    payableVouchers: serializeBucket(a.payableVouchers, VOUCHER_STATUS_ORDER),
+    receivableVouchers: serializeBucket(a.receivableVouchers, VOUCHER_STATUS_ORDER),
+  });
+  const serializeRetailer = (a) => ({
+    purchases: serializeBucket(a.purchases, PURCHASE_STATUS_ORDER),
+    sales: serializeBucket(a.sales, SALE_STATUS_ORDER),
+    soldProducts: serializeBucket(a.soldProducts, SOLD_PRODUCT_STATUS_ORDER),
+    goodsReturns: serializeBucket(a.goodsReturns, GOODS_RETURN_STATUS_ORDER),
+    payments: serializeBucket(a.payments, RETAILER_PAYMENT_STATUSES),
+    vouchers: serializeBucket(a.vouchers, VOUCHER_STATUS_ORDER),
+  });
 
   const dealers = dealerIds.map((id) => {
     const info = dealerInfo.get(id);
@@ -783,7 +817,7 @@ router.get('/activity-summary', authRequired, async (req, res) => {
       dealerName: info.name,
       organisationId: info.organisationId,
       organisationName: info.organisationName,
-      ...dealerActivity.get(id),
+      ...serializeDealer(dealerActivity.get(id)),
     };
   });
   const retailers = retailerIds.map((id) => {
@@ -796,7 +830,7 @@ router.get('/activity-summary', authRequired, async (req, res) => {
       dealerName: owningDealer?.name ?? null,
       organisationId: owningDealer?.organisationId ?? null,
       organisationName: owningDealer?.organisationName ?? null,
-      ...retailerActivity.get(id),
+      ...serializeRetailer(retailerActivity.get(id)),
     };
   });
 

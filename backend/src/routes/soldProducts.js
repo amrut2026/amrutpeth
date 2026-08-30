@@ -34,16 +34,38 @@ function scopedWhere(scope, extra = {}) {
   };
 }
 
+// Same as scopedWhere's DEALER branch, PLUS every one of this dealer's
+// retailers' own owedBy: RETAILER rows — what they owe THIS dealer for
+// their own cash sales, in any status (OPEN and PAID included, not just
+// TO_BE_CONFIRMED as before). Used only by GET / below, for visibility —
+// NOT by POST /pay, which must keep using scopedWhere: a dealer can view a
+// retailer's row here, but can never settle it, only the retailer can (and
+// this dealer can only confirm it once submitted, via PATCH
+// /pay/:paymentId/confirm below).
+function dealerViewWhere(scope, extra = {}) {
+  const own = scopedWhere(scope, {}).OR;
+  return {
+    ...extra,
+    OR: [
+      ...own,
+      { owedBy: 'RETAILER', sale: { ownerType: 'RETAILER', retailer: { primaryDealerId: scope.dealerId } } },
+    ],
+  };
+}
+
 // What's owed upstream is settled off a snapshot on the SaleItem, never the
 // sale's own price (what the walk-in customer was charged) — see
 // schema.prisma SaleItem.rate/sellingPrice/originDealerRate.
 //  - A row with dealerId set is the "sold by a retailer" row: the
 //    ORIGINATING dealer owes their own supplier the batch's originDealerRate.
-//  - Otherwise: a DEALER seller owes their supplier the batch's rate; a
-//    RETAILER seller owes their dealer the batch's sellingPrice.
-function settlementPrice(scope, row) {
+//  - Otherwise keyed off the row's own owedBy (NOT the viewing scope — a
+//    dealer's list now also includes their retailers' owedBy: RETAILER
+//    rows for visibility, see dealerViewWhere below, so scope and owedBy
+//    can differ): a DEALER-owed row owes the batch's rate, a RETAILER-owed
+//    row owes the batch's sellingPrice.
+function settlementPrice(row) {
   if (row.dealerId != null) return row.saleItem.originDealerRate;
-  return scope.ownerType === 'DEALER' ? row.saleItem.rate : row.saleItem.sellingPrice;
+  return row.owedBy === 'DEALER' ? row.saleItem.rate : row.saleItem.sellingPrice;
 }
 
 // GET /api/sold-products?status=OPEN|TO_BE_CONFIRMED|PAID — the logged-in
@@ -58,15 +80,11 @@ router.get('/', authRequired, async (req, res) => {
 
   const status = ['OPEN', 'TO_BE_CONFIRMED', 'PAID'].includes(req.query.status) ? req.query.status : undefined;
 
-  // A DEALER's own obligations (scopedWhere, owedBy: DEALER) are always
-  // raised already PAID — never TO_BE_CONFIRMED, that status only ever
-  // belongs to a RETAILER's own payment awaiting this dealer's confirmation
-  // (see POST /pay, PATCH /pay/:paymentId/confirm below) — so route that
-  // one status to a dedicated query instead of scopedWhere, which would
-  // otherwise just return nothing for it.
-  const where = (scope.ownerType === 'DEALER' && status === 'TO_BE_CONFIRMED')
-    ? { status, owedBy: 'RETAILER', sale: { ownerType: 'RETAILER', retailer: { primaryDealerId: scope.dealerId } } }
-    : scopedWhere(scope, { status });
+  // A DEALER's view includes their retailers' owedBy: RETAILER rows too
+  // (what those retailers owe THIS dealer), not just their own — for
+  // visibility only, see dealerViewWhere above. A RETAILER only ever has
+  // their own rows, so scopedWhere alone is still right for them.
+  const where = scope.ownerType === 'DEALER' ? dealerViewWhere(scope, { status }) : scopedWhere(scope, { status });
 
   const rows = await prisma.soldProduct.findMany({
     where,
@@ -75,7 +93,7 @@ router.get('/', authRequired, async (req, res) => {
   });
 
   res.json(rows.map((r) => {
-    const price = settlementPrice(scope, r);
+    const price = settlementPrice(r);
     return {
       id: r.id,
       saleId: r.saleId,
@@ -108,11 +126,23 @@ router.get('/', authRequired, async (req, res) => {
       // dealer confirming a payment wants to know which retailer it came
       // from). Not the same as `remark` below, which only marks the
       // separate dealer-owed-to-supplier row.
+      retailerId: r.owedBy === 'RETAILER' ? r.sale.retailerId : null,
       retailerName: r.owedBy === 'RETAILER' ? (r.sale.retailer?.name || null) : null,
       // Only present on a "sold by retailer" row (see above) — the
       // originating dealer's own reference, so it's clear in their list
       // this wasn't a sale they made directly themselves.
       remark: r.dealerId != null ? `Sold by retailer ${r.sale.retailer?.name || r.sale.retailerId}` : null,
+      // Same "sold by retailer" condition as remark above, as an explicit
+      // boolean — lets the frontend split a DEALER's own payable rows into
+      // "sold by your retailers" (dealerId set) vs "your own direct cash
+      // sales" (dealerId null) without parsing remark's text.
+      soldByRetailer: r.dealerId != null,
+      // True when this row is the viewer's own obligation (so it's
+      // selectable/payable by them via POST /pay below); false for a
+      // retailer-owed row shown to a DEALER purely for visibility — see
+      // dealerViewWhere above. Always true for a RETAILER, who never sees
+      // anyone else's rows.
+      payableByMe: r.owedBy === scope.ownerType,
     };
   }));
 });
@@ -189,11 +219,11 @@ router.post('/pay', authRequired, async (req, res) => {
     if (scope.ownerType === 'DEALER' && rows.some((r) => r.product.supplierId !== supplierId)) {
       return res.status(400).json({ error: 'All selected items must belong to the chosen supplier' });
     }
-    if (rows.some((r) => settlementPrice(scope, r) == null)) {
+    if (rows.some((r) => settlementPrice(r) == null)) {
       return res.status(400).json({ error: 'One or more selected items has no price yet' });
     }
 
-    const amount = rows.reduce((sum, r) => sum + Number(settlementPrice(scope, r)) * r.saleItem.quantity, 0);
+    const amount = rows.reduce((sum, r) => sum + Number(settlementPrice(r)) * r.saleItem.quantity, 0);
     const nextStatus = scope.ownerType === 'RETAILER' ? 'TO_BE_CONFIRMED' : 'PAID';
 
     const payment = await prisma.$transaction(async (tx) => {

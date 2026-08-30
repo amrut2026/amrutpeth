@@ -106,35 +106,38 @@ function RetailerInventoryTable({ dealers }) {
   );
 }
 
-// One amount+count pair from reports.js GET /reports/activity-summary,
-// e.g. { count, amount } or the richer { count, amount, openAmount } /
-// { count, amount, paidAmount, pendingAmount } shapes for vouchers/
-// receipts/soldProducts. `sub` picks which secondary field (if any) to
-// show under the amount, so each table can surface what actually matters
-// for that column (outstanding for vouchers, pending for receipts/sold
-// products) without every column needing the same shape.
-function ActivityCell({ activity, sub }) {
+// SCREAMING_SNAKE_CASE status -> "Screaming snake case", for the
+// byStatus breakdown below.
+function statusLabel(status) {
+  return status.toLowerCase().split('_').map((w) => w[0].toUpperCase() + w.slice(1)).join(' ');
+}
+
+// One { count, amount, byStatus: [{status, count, amount}] } bucket from
+// reports.js GET /reports/activity-summary — the same shape for every
+// category (purchases/sales/soldProducts/goodsReturns/payments/receipts/
+// vouchers). byStatus only lists states that actually occurred, in each
+// category's own canonical order, so the cell only ever shows what's
+// actually there.
+function ActivityCell({ activity }) {
   if (!activity) return <td className="p-2 text-right text-gray-300">-</td>;
-  const subValue = sub ? activity[sub.key] : null;
   return (
     <td className="p-2 text-right">
       <div>{formatMoney(activity.amount)}</div>
-      <div className="text-xs text-gray-400">
-        {activity.count} {activity.count === 1 ? 'txn' : 'txns'}
-        {sub && subValue > 0 && <> · {sub.label} {formatMoney(subValue)}</>}
-      </div>
+      {activity.byStatus.length > 0 && (
+        <div className="text-xs text-gray-400">
+          {activity.byStatus.map((b) => `${statusLabel(b.status)} ${formatMoney(b.amount)} (${b.count})`).join(' · ')}
+        </div>
+      )}
     </td>
   );
 }
 
-const OPEN_SUB = { key: 'openAmount', label: 'open' };
-const PENDING_SUB = { key: 'pendingAmount', label: 'pending' };
-
 // A dealer's Sales cell — cash and retailer sales shown separately in the
 // same cell (Sale.customerType split from reports.js GET
-// /reports/activity-summary). Retailer's own sales don't need this split,
-// since a retailer only ever sells to a cash end customer — that column
-// keeps using the plain ActivityCell below.
+// /reports/activity-summary), each on its own line, plus the combined
+// by-status breakdown underneath. Retailer's own sales don't need the
+// cash/retailer split, since a retailer only ever sells to a cash end
+// customer — that column keeps using the plain ActivityCell above.
 function SalesCell({ sales }) {
   if (!sales) return <td className="p-2 text-right text-gray-300">-</td>;
   return (
@@ -143,6 +146,11 @@ function SalesCell({ sales }) {
       <div className="text-xs text-gray-400">
         Cash / रोख {formatMoney(sales.cash.amount)} ({sales.cash.count}) · Retailer / किरकोळ {formatMoney(sales.retailer.amount)} ({sales.retailer.count})
       </div>
+      {sales.byStatus.length > 0 && (
+        <div className="text-xs text-gray-400">
+          {sales.byStatus.map((b) => `${statusLabel(b.status)} ${formatMoney(b.amount)} (${b.count})`).join(' · ')}
+        </div>
+      )}
     </td>
   );
 }
@@ -172,12 +180,12 @@ function DealerActivityTable({ rows }) {
               <td className="p-2">{d.dealerName}</td>
               <ActivityCell activity={d.purchases} />
               <SalesCell sales={d.sales} />
-              <ActivityCell activity={d.soldProducts} sub={PENDING_SUB} />
+              <ActivityCell activity={d.soldProducts} />
               <ActivityCell activity={d.goodsReturns} />
               <ActivityCell activity={d.payments} />
-              <ActivityCell activity={d.receipts} sub={PENDING_SUB} />
-              <ActivityCell activity={d.payableVouchers} sub={OPEN_SUB} />
-              <ActivityCell activity={d.receivableVouchers} sub={OPEN_SUB} />
+              <ActivityCell activity={d.receipts} />
+              <ActivityCell activity={d.payableVouchers} />
+              <ActivityCell activity={d.receivableVouchers} />
             </tr>
           ))}
           {rows.length === 0 && (
@@ -217,10 +225,10 @@ function RetailerActivityTable({ rows }) {
               <td className="p-2">{r.retailerName}</td>
               <ActivityCell activity={r.purchases} />
               <ActivityCell activity={r.sales} />
-              <ActivityCell activity={r.soldProducts} sub={PENDING_SUB} />
+              <ActivityCell activity={r.soldProducts} />
               <ActivityCell activity={r.goodsReturns} />
               <ActivityCell activity={r.payments} />
-              <ActivityCell activity={r.vouchers} sub={OPEN_SUB} />
+              <ActivityCell activity={r.vouchers} />
             </tr>
           ))}
           {rows.length === 0 && (
@@ -367,23 +375,16 @@ function OperationalDashboard() {
   );
 }
 
-// showWelcome is false when this is embedded as a tab inside Reports.jsx,
-// which already has its own page heading - the "Welcome, {username}" header
-// only makes sense on Dashboard's own standalone page.
-export default function Dashboard({ showWelcome = true }) {
+export default function Dashboard() {
   const { user } = useAuth();
   const isOrgLevel = user.role === 'ADMIN' || user.role === 'ORGANISATION';
 
   return (
     <div>
-      {showWelcome && (
-        <>
-          <h1 className="text-2xl font-semibold mb-1">
-            Welcome / स्वागत आहे, {user.username}
-          </h1>
-          <p className="text-gray-500 mb-6">Role / भूमिका: {user.role}</p>
-        </>
-      )}
+      <h1 className="text-2xl font-semibold mb-1">
+        Welcome / स्वागत आहे, {user.username}
+      </h1>
+      <p className="text-gray-500 mb-6">Role / भूमिका: {user.role}</p>
 
       {isOrgLevel ? <OrgDashboard /> : <OperationalDashboard />}
     </div>
