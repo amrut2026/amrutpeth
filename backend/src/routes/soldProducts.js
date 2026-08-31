@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { prisma } from '../prisma.js';
 import { authRequired, ownerScope } from '../middleware/auth.js';
+import { adjustVouchersFifo } from './vouchers.js';
 
 const router = Router();
 
@@ -92,7 +93,38 @@ router.get('/', authRequired, async (req, res) => {
     orderBy: { createdAt: 'desc' },
   });
 
-  res.json(rows.map((r) => {
+  // A "sold by retailer" row (dealerId set) is this dealer's own debt to
+  // THEIR OWN supplier for stock a retailer resold. Until now it showed up
+  // as OPEN ("payable to supplier") as soon as it existed — which double-
+  // counts it against the sibling owedBy: RETAILER row for the same line
+  // item (shown separately as "Owed to you by retailer, not yet paid"):
+  // the same sale was appearing as owed money in both directions at once.
+  // It should only become payable to the supplier once the retailer has
+  // actually paid THIS dealer for it. So for every OPEN dealerId row, look
+  // up its sibling — the owedBy: RETAILER SoldProduct on the same
+  // saleItemId — and only keep the dealerId row if that sibling is PAID.
+  // A PAID dealerId row (already settled to the supplier) is left alone
+  // either way; it's history, not a pending item.
+  let retailerStatusBySaleItemId = new Map();
+  if (scope.ownerType === 'DEALER') {
+    const pendingSaleItemIds = rows
+      .filter((r) => r.dealerId != null && r.status === 'OPEN')
+      .map((r) => r.saleItemId);
+    if (pendingSaleItemIds.length) {
+      const siblings = await prisma.soldProduct.findMany({
+        where: { saleItemId: { in: pendingSaleItemIds }, owedBy: 'RETAILER' },
+        select: { saleItemId: true, status: true },
+      });
+      retailerStatusBySaleItemId = new Map(siblings.map((s) => [s.saleItemId, s.status]));
+    }
+  }
+
+  const visibleRows = rows.filter((r) => {
+    if (r.dealerId == null || r.status !== 'OPEN') return true;
+    return retailerStatusBySaleItemId.get(r.saleItemId) === 'PAID';
+  });
+
+  res.json(visibleRows.map((r) => {
     const price = settlementPrice(r);
     return {
       id: r.id,
@@ -122,12 +154,17 @@ router.get('/', authRequired, async (req, res) => {
       // single retailer payment that raised them, so one "Confirm" action
       // (PATCH /pay/:paymentId/confirm) can settle the whole batch.
       paymentId: r.paymentId,
-      // Who made the sale — present on every owedBy: RETAILER row (a
-      // dealer confirming a payment wants to know which retailer it came
-      // from). Not the same as `remark` below, which only marks the
-      // separate dealer-owed-to-supplier row.
-      retailerId: r.owedBy === 'RETAILER' ? r.sale.retailerId : null,
-      retailerName: r.owedBy === 'RETAILER' ? (r.sale.retailer?.name || null) : null,
+      // Who made the sale — present whenever the underlying Sale belongs to
+      // a retailer, which covers both an owedBy: RETAILER row (a dealer
+      // confirming a payment wants to know which retailer it came from)
+      // AND a "sold by retailer" owedBy: DEALER row (dealerId set — the
+      // retailer resold this dealer's stock, but it's still this dealer's
+      // own obligation to their supplier). A dealer's own direct cash sale
+      // has no retailer on its Sale at all, so this stays null there. Not
+      // the same as `remark` below, which only marks the separate
+      // dealer-owed-to-supplier row.
+      retailerId: r.sale.retailerId ?? null,
+      retailerName: r.sale.retailer?.name || null,
       // Only present on a "sold by retailer" row (see above) — the
       // originating dealer's own reference, so it's clear in their list
       // this wasn't a sale they made directly themselves.
@@ -170,12 +207,21 @@ router.get('/counterparties', authRequired, async (req, res) => {
 //      TO_BE_CONFIRMED, not PAID — mirrors the Receipt flow, the dealer
 //      must confirm the money actually arrived (PATCH
 //      /pay/:paymentId/confirm below) before it's considered settled.
-// Body (DEALER):    { soldProductIds, supplierId, mode, reference }
+// Body (DEALER):    { soldProductIds, supplierId, mode, reference, adjustVouchers }
 //   -> pays the chosen supplier. Selected rows may be a mix of the dealer's
 //      own cash sales and units a retailer resold on their behalf — both
 //      settle against the same chosen supplier in one Payment. No
 //      confirmation step — marked PAID immediately, same as a PAYABLE
 //      Voucher.
+//      adjustVouchers (DEALER only, optional, defaults false): when true,
+//      this same payment amount is also applied — FIFO, oldest date
+//      first — against this dealer's own OPEN/PARTIALLY_PAID PAYABLE
+//      vouchers for the chosen supplier (see vouchers.js
+//      adjustVouchersFifo). The frontend only sends this after the user
+//      explicitly confirms it via the pop-up shown when GET
+//      /vouchers/outstanding finds any such vouchers — this route itself
+//      doesn't check for their existence, it just applies whatever's
+//      asked for.
 // Creates one Payment for the total (never trusted from the client — always
 // recomputed here from each row's settlementPrice * quantity), then links
 // every selected row back to that Payment.
@@ -184,7 +230,7 @@ router.post('/pay', authRequired, async (req, res) => {
     const scope = ownerScope(req);
     if (!scope.ownerType) return res.status(403).json({ error: 'Only dealer/retailer accounts can pay for sold products' });
 
-    const { soldProductIds, mode, reference } = req.body;
+    const { soldProductIds, mode, reference, adjustVouchers } = req.body;
     if (!Array.isArray(soldProductIds) || !soldProductIds.length) {
       return res.status(400).json({ error: 'No sold products selected' });
     }
@@ -222,9 +268,35 @@ router.post('/pay', authRequired, async (req, res) => {
     if (rows.some((r) => settlementPrice(r) == null)) {
       return res.status(400).json({ error: 'One or more selected items has no price yet' });
     }
+    // Mirror the GET / visibility rule above: a DEALER can't pay their
+    // supplier for a "sold by retailer" row (dealerId set) until the
+    // retailer has actually paid THIS dealer for it — otherwise the two
+    // legs settle out of order. scopedWhere alone doesn't know about the
+    // sibling owedBy: RETAILER row, so check it explicitly here too;
+    // without this a client could still POST a dealerId row's id directly
+    // even though GET / now hides it from the picker.
+    if (scope.ownerType === 'DEALER') {
+      const pendingSaleItemIds = rows.filter((r) => r.dealerId != null).map((r) => r.saleItemId);
+      if (pendingSaleItemIds.length) {
+        const siblings = await prisma.soldProduct.findMany({
+          where: { saleItemId: { in: pendingSaleItemIds }, owedBy: 'RETAILER' },
+          select: { saleItemId: true, status: true },
+        });
+        const retailerStatusBySaleItemId = new Map(siblings.map((s) => [s.saleItemId, s.status]));
+        const notYetPaidByRetailer = rows.some(
+          (r) => r.dealerId != null && retailerStatusBySaleItemId.get(r.saleItemId) !== 'PAID'
+        );
+        if (notYetPaidByRetailer) {
+          return res.status(400).json({ error: 'One or more selected items has not been paid by the retailer yet' });
+        }
+      }
+    }
 
     const amount = rows.reduce((sum, r) => sum + Number(settlementPrice(r)) * r.saleItem.quantity, 0);
     const nextStatus = scope.ownerType === 'RETAILER' ? 'TO_BE_CONFIRMED' : 'PAID';
+    const shouldAdjustVouchers = scope.ownerType === 'DEALER' && !!adjustVouchers;
+
+    let voucherAdjustment = null;
 
     const payment = await prisma.$transaction(async (tx) => {
       const created = await tx.payment.create({
@@ -234,10 +306,22 @@ router.post('/pay', authRequired, async (req, res) => {
         where: { id: { in: rows.map((r) => r.id) } },
         data: { status: nextStatus, paymentId: created.id },
       });
+
+      if (shouldAdjustVouchers) {
+        voucherAdjustment = await adjustVouchersFifo(tx, {
+          dealerId,
+          supplierId,
+          amount,
+          mode,
+          reference: reference || null,
+          sourceDescription: `Sold Products Payment #${created.id}`,
+        });
+      }
+
       return created;
     });
 
-    res.json(payment);
+    res.json({ ...payment, voucherAdjustment });
   } catch (err) {
     console.error('sold-products pay failed:', err);
     res.status(500).json({ error: 'Failed to pay for sold products', detail: err.message });

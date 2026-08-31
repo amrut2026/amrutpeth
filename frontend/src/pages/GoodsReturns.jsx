@@ -91,8 +91,9 @@ function ReturnDetail({
           still OPEN/IN_REVIEW (editableQuantity) — never at the same time
           editableApproval is (that's the DEALER reviewing the same return,
           a different viewer entirely). */}
+      <div className="max-h-[60vh] overflow-y-auto">
       <table className="w-full text-sm">
-        <thead>
+        <thead className="sticky top-0 bg-white">
           <tr className="text-left text-gray-400 text-xs">
             <th className="py-1 font-normal">Product / उत्पादन</th>
             <th className="py-1 font-normal">Batch / बॅच</th>
@@ -157,6 +158,7 @@ function ReturnDetail({
           })}
         </tbody>
       </table>
+      </div>
 
       {editableQuantity && (
         <div className="pt-1">
@@ -297,7 +299,10 @@ export default function GoodsReturns() {
   const [returnsTab, setReturnsTab] = useState('toSupplier');
   function switchReturnsTab(tab) {
     setReturnsTab(tab);
-    const stillVisible = allReturns.some((gr) => String(gr.id) === selectedReturnId && gr.kind === tab);
+    const stillVisible = allReturns.some((gr) =>
+      String(gr.id) === selectedReturnId && gr.kind === tab
+      && (returnStatusTab === 'ALL' || gr.status === returnStatusTab)
+    );
     if (!stillVisible) setSelectedReturnId('');
   }
 
@@ -306,11 +311,46 @@ export default function GoodsReturns() {
   // retailer-initiated return has no supplierId of its own (it's tied to
   // sourceDealerId instead).
   const [returnSupplierFilter, setReturnSupplierFilter] = useState('');
-  const visibleReturns = !isDealer
-    ? allReturns
-    : allReturns
-        .filter((gr) => gr.kind === returnsTab)
-        .filter((gr) => returnsTab !== 'toSupplier' || !returnSupplierFilter || String(gr.supplierId) === returnSupplierFilter);
+
+  // DEALER only — same idea as the supplier filter above, but for the
+  // "From Retailers" tab. Options are built from whichever retailers
+  // actually appear in retailerReturns (rather than a separate /retailers
+  // call), so the dropdown always matches what could possibly show up in
+  // the list below. Defaults to '' — "All Retailers".
+  const [returnRetailerFilter, setReturnRetailerFilter] = useState('');
+  const retailerFilterOptions = [...new Map(
+    retailerReturns.filter((gr) => gr.retailer).map((gr) => [String(gr.retailerId), gr.retailer.name])
+  ).entries()]
+    .map(([id, name]) => ({ id, name }))
+    .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+
+  // Every status a goods return can be in, plus 'ALL' as the default —
+  // shown as its own row of tabs (see statusTabs render below) rather than
+  // a single combined list, so a long mixed-status history doesn't have to
+  // be scanned/scrolled through to find e.g. just what's still IN_REVIEW.
+  const STATUS_TABS = [
+    { id: 'ALL', label: 'All', labelMr: 'सर्व' },
+    { id: 'OPEN', label: 'Open', labelMr: 'उघडे' },
+    { id: 'IN_REVIEW', label: 'In Review', labelMr: 'पुनरावलोकनात' },
+    { id: 'CONFIRMED', label: 'Confirmed', labelMr: 'पुष्टी झाली' },
+    { id: 'CANCELLED', label: 'Cancelled', labelMr: 'रद्द केले' },
+  ];
+  const [returnStatusTab, setReturnStatusTab] = useState('ALL');
+  function switchReturnStatusTab(status) {
+    setReturnStatusTab(status);
+    const stillVisible = allReturns.some((gr) =>
+      String(gr.id) === selectedReturnId
+      && (!isDealer || gr.kind === returnsTab)
+      && (status === 'ALL' || gr.status === status)
+    );
+    if (!stillVisible) setSelectedReturnId('');
+  }
+
+  const visibleReturns = allReturns
+    .filter((gr) => !isDealer || gr.kind === returnsTab)
+    .filter((gr) => !isDealer || returnsTab !== 'toSupplier' || !returnSupplierFilter || String(gr.supplierId) === returnSupplierFilter)
+    .filter((gr) => !isDealer || returnsTab !== 'fromRetailer' || !returnRetailerFilter || String(gr.retailerId) === returnRetailerFilter)
+    .filter((gr) => returnStatusTab === 'ALL' || gr.status === returnStatusTab);
 
   function selectReturn(gr) {
     setSelectedReturnId(String(gr.id));
@@ -835,8 +875,9 @@ export default function GoodsReturns() {
                             Couldn't match this voucher to a specific purchase — showing all your stock instead / हे व्हाउचर विशिष्ट खरेदीशी जुळवता आले नाही — त्याऐवजी तुमचा संपूर्ण साठा दाखवत आहे
                           </div>
                         )}
+                        <div className="max-h-[60vh] overflow-y-auto">
                         <table className="w-full text-sm">
-                          <thead>
+                          <thead className="sticky top-0 bg-white">
                             <tr className="text-left text-gray-500 border-b">
                               <th className="py-2">Product / उत्पादन</th>
                               <th className="py-2">Batch / बॅच</th>
@@ -868,6 +909,7 @@ export default function GoodsReturns() {
                             ))}
                           </tbody>
                         </table>
+                        </div>
                       </>
                     )
                   )}
@@ -945,8 +987,9 @@ export default function GoodsReturns() {
                               Couldn't match this voucher to a specific purchase — showing all your stock instead / हे व्हाउचर विशिष्ट खरेदीशी जुळवता आले नाही — त्याऐवजी तुमचा संपूर्ण साठा दाखवत आहे
                             </div>
                           )}
+                          <div className="max-h-[60vh] overflow-y-auto">
                           <table className="w-full text-sm">
-                            <thead>
+                            <thead className="sticky top-0 bg-white">
                               <tr className="text-left text-gray-500 border-b">
                                 <th className="py-2 w-8"></th>
                                 <th className="py-2">Product / उत्पादन</th>
@@ -989,6 +1032,7 @@ export default function GoodsReturns() {
                               ))}
                             </tbody>
                           </table>
+                          </div>
                           {groupedRetailerRows.some((g) => g.rows.length > 1) && (
                             <div className="text-xs text-gray-400 mt-1">* combined quantity across more than one purchase, same product and batch / * एकाच उत्पादनाच्या आणि बॅचच्या अनेक खरेदींमधील एकत्रित प्रमाण</div>
                           )}
@@ -1064,6 +1108,42 @@ export default function GoodsReturns() {
                 </select>
               </div>
             )}
+
+            {isDealer && returnsTab === 'fromRetailer' && (
+              <div className="mb-3">
+                <label className="text-xs text-gray-500 flex flex-col leading-tight">
+                  <span>Filter by Retailer</span>
+                  <span className="text-orange-700">किरकोळ विक्रेत्यानुसार फिल्टर करा</span>
+                </label>
+                <select className="border rounded px-2 py-1 w-full mt-1"
+                  value={returnRetailerFilter}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    setReturnRetailerFilter(next);
+                    const stillVisible = !next || allReturns.some(
+                      (gr) => String(gr.id) === selectedReturnId && String(gr.retailerId) === next
+                    );
+                    if (!stillVisible) setSelectedReturnId('');
+                  }}>
+                  <option value="">All Retailers / सर्व किरकोळ विक्रेते</option>
+                  {retailerFilterOptions.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+                </select>
+              </div>
+            )}
+
+            <div className="flex border-b mb-3 overflow-x-auto">
+              {STATUS_TABS.map((tab) => (
+                <button key={tab.id} type="button"
+                  onClick={() => switchReturnStatusTab(tab.id)}
+                  className={`text-xs px-2.5 py-1.5 border-b-2 -mb-px whitespace-nowrap ${
+                    returnStatusTab === tab.id
+                      ? 'border-emerald-700 text-emerald-700 font-medium'
+                      : 'border-transparent text-gray-500 hover:text-gray-700'
+                  }`}>
+                  {tab.label}<span className="block text-[10px] font-normal">{tab.labelMr}</span>
+                </button>
+              ))}
+            </div>
 
             <label className="text-xs text-gray-500 flex flex-col leading-tight">
               <span>View Return</span>

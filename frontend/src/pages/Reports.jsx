@@ -410,7 +410,17 @@ function PurchasesPanel({ data, selectedCounterparty, onSelectCounterparty }) {
               {g.items.map((p) => (
                 <tr key={p.id} className="border-t align-top">
                   <td className="p-2">
-                    <div>{p.id}</div>
+                    <div className="flex items-center gap-1.5">
+                      <span>{p.id}</span>
+                      {p.status === 'MODIFIED' && (
+                        <span
+                          title="Pricing corrected after confirmation / पुष्टीनंतर किंमत दुरुस्त केली"
+                          className="text-[10px] font-semibold uppercase tracking-wide text-amber-700 bg-amber-100 border border-amber-200 rounded px-1.5 py-0.5"
+                        >
+                          Modified / सुधारित
+                        </span>
+                      )}
+                    </div>
                     <div className="text-xs text-gray-500 font-medium">{formatMoney(purchaseTotal(p, context))}</div>
                   </td>
                   <td className="p-2">{p.counterpartyName || '-'}</td>
@@ -449,11 +459,93 @@ function PurchasesPanel({ data, selectedCounterparty, onSelectCounterparty }) {
   );
 }
 
-function VoucherSection({ heading, headingMr, counterpartyLabel, data, showDealerColumn, showCounterpartyFilter = false }) {
+function escapeHtml(value) {
+  if (value == null) return '';
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// Builds a standalone printable HTML document for one VoucherSection's
+// currently filtered vouchers/payments (same grouping and totals as shown
+// on screen), so "Print" reflects whatever the counterparty/state
+// dropdowns are set to at the moment it's clicked.
+function buildVoucherPrintHtml({ title, subtitle, counterpartyLabel, showDealerColumn, voucherGroups, paymentGroups, openVoucherTotal, paidPaymentTotal }) {
+  const renderGroups = (groups, columns, rowFn) => groups.map((g) => `
+    <h3>${escapeHtml(STATUS_LABELS[g.status] || g.status)} (${g.items.length})</h3>
+    ${g.items.length === 0
+      ? '<p class="muted">None yet.</p>'
+      : `<table>
+          <thead><tr>${columns.map((c) => `<th>${escapeHtml(c)}</th>`).join('')}</tr></thead>
+          <tbody>${g.items.map((row) => `<tr>${rowFn(row).map((cell) => `<td>${cell}</td>`).join('')}</tr>`).join('')}</tbody>
+        </table>`}
+  `).join('');
+
+  const voucherColumns = ['Voucher #', 'Date', counterpartyLabel, ...(showDealerColumn ? ['Dealer'] : []), 'Amount', 'Description'];
+  const voucherHtml = renderGroups(voucherGroups, voucherColumns, (v) => [
+    escapeHtml(v.id),
+    escapeHtml(new Date(v.date).toLocaleDateString()),
+    escapeHtml(v.counterpartyName || v.dealerName || '-'),
+    ...(showDealerColumn ? [escapeHtml(v.dealerName || '-')] : []),
+    escapeHtml(formatMoney(v.amount)),
+    escapeHtml(v.description || '-'),
+  ]);
+
+  const paymentColumns = ['Payment #', 'Date', counterpartyLabel, ...(showDealerColumn ? ['Dealer'] : []), 'Amount', 'Mode', 'Reference'];
+  const paymentHtml = renderGroups(paymentGroups, paymentColumns, (p) => [
+    escapeHtml(p.id),
+    escapeHtml(new Date(p.date).toLocaleDateString()),
+    escapeHtml(p.counterpartyName || p.dealerName || '-'),
+    ...(showDealerColumn ? [escapeHtml(p.dealerName || '-')] : []),
+    escapeHtml(formatMoney(p.amount)),
+    escapeHtml(p.mode),
+    escapeHtml(p.reference || '-'),
+  ]);
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>${escapeHtml(title)}</title>
+<style>
+  body { font-family: Arial, sans-serif; padding: 24px; color: #111; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .subtitle { font-size: 12px; color: #555; margin-bottom: 20px; }
+  h2 { font-size: 15px; margin-top: 24px; border-bottom: 1px solid #ccc; padding-bottom: 4px; }
+  h3 { font-size: 13px; margin: 14px 0 4px; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 8px; font-size: 12px; }
+  th, td { border: 1px solid #ddd; padding: 4px 6px; text-align: left; }
+  th { background: #f3f3f3; }
+  .muted { color: #999; font-size: 12px; margin: 4px 0 12px; }
+  .totals { font-size: 12px; font-weight: bold; margin: 4px 0 8px; }
+  @media print { body { padding: 0; } }
+</style>
+</head>
+<body>
+  <h1>${escapeHtml(title)}</h1>
+  <div class="subtitle">${escapeHtml(subtitle)}${subtitle ? ' &middot; ' : ''}Printed ${escapeHtml(new Date().toLocaleString())}</div>
+
+  <h2>Vouchers</h2>
+  <div class="totals">Grand Total (Open): ${escapeHtml(formatMoney(openVoucherTotal))}</div>
+  ${voucherHtml}
+
+  <h2>Payments</h2>
+  <div class="totals">Grand Total (Paid): ${escapeHtml(formatMoney(paidPaymentTotal))}</div>
+  ${paymentHtml}
+</body>
+</html>`;
+}
+
+function VoucherSection({ heading, headingMr, printTitle, counterpartyLabel, data, showDealerColumn, showCounterpartyFilter = false, showStatusFilter = false }) {
   // Own local selection state, same pattern as DealerInventoryPanel's
   // selectedDealer - so switching away from and back to this tab resets
   // the filter to All rather than persisting a stale selection.
   const [selectedCounterparty, setSelectedCounterparty] = useState('ALL');
+  // State/status filter (OPEN / PARTIALLY_PAID / PAID) - defaults to All,
+  // same reset-on-remount behaviour as the counterparty filter above.
+  const [selectedStatus, setSelectedStatus] = useState('ALL');
 
   if (!data) return null;
 
@@ -468,12 +560,20 @@ function VoucherSection({ heading, headingMr, counterpartyLabel, data, showDeale
     .map(([id, name]) => ({ id, name }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
-  const vouchers = selectedCounterparty === 'ALL'
+  let vouchers = selectedCounterparty === 'ALL'
     ? data.vouchers
     : data.vouchers.filter((v) => String(v.counterpartyId) === String(selectedCounterparty));
-  const payments = selectedCounterparty === 'ALL'
+  let payments = selectedCounterparty === 'ALL'
     ? data.payments
     : data.payments.filter((p) => String(p.counterpartyId) === String(selectedCounterparty));
+
+  if (selectedStatus !== 'ALL') {
+    vouchers = vouchers.filter((v) => v.status === selectedStatus);
+    // A payment has no status of its own - it inherits its voucher's
+    // current status, same fallback groupByVoucherStatus below uses
+    // (a payment with no linked voucher counts as PAID).
+    payments = payments.filter((p) => (p.voucherStatus || 'PAID') === selectedStatus);
+  }
 
   const voucherGroups = groupByVoucherStatus(vouchers, (v) => v.status);
   const paymentGroups = groupByVoucherStatus(payments, (p) => p.voucherStatus || 'PAID');
@@ -485,27 +585,87 @@ function VoucherSection({ heading, headingMr, counterpartyLabel, data, showDeale
     .filter((p) => (p.voucherStatus || 'PAID') === 'PAID')
     .reduce((sum, p) => sum + Number(p.amount || 0), 0);
 
+  // Prints exactly what's currently on screen for this section - the
+  // vouchers/payments as narrowed by whichever counterparty/state
+  // dropdowns are set right now - in a separate window so the rest of the
+  // app UI (tabs, the other section, etc.) doesn't end up on the page.
+  const handlePrint = () => {
+    const selectedCounterpartyName = selectedCounterparty === 'ALL'
+      ? 'All'
+      : (counterparties.find((c) => String(c.id) === String(selectedCounterparty))?.name || selectedCounterparty);
+    const selectedStatusLabel = selectedStatus === 'ALL' ? 'All' : (STATUS_LABELS[selectedStatus] || selectedStatus);
+
+    const subtitleParts = [];
+    if (showCounterpartyFilter) subtitleParts.push(`${counterpartyLabel}: ${selectedCounterpartyName}`);
+    if (showStatusFilter) subtitleParts.push(`State: ${selectedStatusLabel}`);
+
+    const html = buildVoucherPrintHtml({
+      title: printTitle || heading || 'Vouchers & Payments',
+      subtitle: subtitleParts.join('  |  '),
+      counterpartyLabel,
+      showDealerColumn,
+      voucherGroups,
+      paymentGroups,
+      openVoucherTotal,
+      paidPaymentTotal,
+    });
+
+    const printWindow = window.open('', '_blank', 'width=900,height=700');
+    if (!printWindow) return; // popup blocked - nothing else to fall back to here
+    printWindow.document.write(html);
+    printWindow.document.close();
+    printWindow.focus();
+    printWindow.onload = () => printWindow.print();
+  };
+
   return (
     <div className="mb-8">
-      {heading && (
-        <h2 className="text-lg font-semibold mb-3">
-          {heading} <span className="text-sm font-normal text-gray-500">({headingMr})</span>
-        </h2>
-      )}
+      <div className="flex items-center justify-between gap-2 mb-3">
+        {heading ? (
+          <h2 className="text-lg font-semibold">
+            {heading} <span className="text-sm font-normal text-gray-500">({headingMr})</span>
+          </h2>
+        ) : <div />}
+        <button
+          onClick={handlePrint}
+          className="px-3 py-1.5 rounded text-sm bg-white border hover:bg-gray-50 shrink-0"
+        >
+          🖨 Print / छापा
+        </button>
+      </div>
 
-      {showCounterpartyFilter && (
-        <div className="flex items-center gap-2 mb-3">
-          <label className="text-sm font-medium">{counterpartyLabel}:</label>
-          <select
-            className="border rounded px-2 py-1 text-sm bg-white"
-            value={selectedCounterparty}
-            onChange={(e) => setSelectedCounterparty(e.target.value)}
-          >
-            <option value="ALL">All / सर्व</option>
-            {counterparties.map((c) => (
-              <option key={c.id} value={String(c.id)}>{c.name}</option>
-            ))}
-          </select>
+      {(showCounterpartyFilter || showStatusFilter) && (
+        <div className="flex flex-wrap items-center gap-4 mb-3">
+          {showCounterpartyFilter && (
+            <div className="flex items-center gap-2">
+              <label className="text-sm font-medium">{counterpartyLabel}:</label>
+              <select
+                className="border rounded px-2 py-1 text-sm bg-white"
+                value={selectedCounterparty}
+                onChange={(e) => setSelectedCounterparty(e.target.value)}
+              >
+                <option value="ALL">All / सर्व</option>
+                {counterparties.map((c) => (
+                  <option key={c.id} value={String(c.id)}>{c.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
+          {showStatusFilter && (
+            <div className="flex items-center gap-2">
+              <label className="text-sm font-medium">State / स्थिती:</label>
+              <select
+                className="border rounded px-2 py-1 text-sm bg-white"
+                value={selectedStatus}
+                onChange={(e) => setSelectedStatus(e.target.value)}
+              >
+                <option value="ALL">All / सर्व</option>
+                {VOUCHER_STATUS_ORDER.map((s) => (
+                  <option key={s} value={s}>{STATUS_LABELS[s] || s}</option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
       )}
 
@@ -591,15 +751,67 @@ function VoucherSection({ heading, headingMr, counterpartyLabel, data, showDeale
   );
 }
 
+// Retailer Vouchers / Supplier Vouchers as sub-tabs, used only for the
+// ADMIN/ORGANISATION ('ALL') split below - a status ("state") filter and
+// a scrollbar are added here too, since this is the split that tends to
+// grow tallest (every dealer's vouchers combined).
+function AdminVouchersPanel({ data }) {
+  const [subTab, setSubTab] = useState('retailer');
+  const subTabs = [
+    ['retailer', 'Retailer Vouchers', 'किरकोळ विक्रेता व्हाउचर'],
+    ['supplier', 'Supplier Vouchers', 'पुरवठादार व्हाउचर'],
+  ];
+
+  return (
+    <div>
+      <div className="flex gap-2 mb-4">
+        {subTabs.map(([key, label, labelMr]) => (
+          <button
+            key={key}
+            onClick={() => setSubTab(key)}
+            className={`px-3 py-1.5 rounded text-sm ${subTab === key ? 'bg-emerald-700 text-white' : 'bg-white border'}`}
+          >
+            {label} <span className={subTab === key ? 'text-emerald-100' : 'text-gray-500'}>({labelMr})</span>
+          </button>
+        ))}
+      </div>
+      {/* Scrolls independently once the detail tables push past the
+          monitor height, instead of growing the page indefinitely. */}
+      <div className="max-h-[70vh] overflow-y-auto pr-1">
+        {subTab === 'retailer' && (
+          <VoucherSection
+            printTitle="Retailer Vouchers"
+            counterpartyLabel="Retailer / किरकोळ विक्रेता"
+            data={data.retailer}
+            showDealerColumn
+            showCounterpartyFilter
+            showStatusFilter
+          />
+        )}
+        {subTab === 'supplier' && (
+          <VoucherSection
+            printTitle="Supplier Vouchers"
+            counterpartyLabel="Supplier / पुरवठादार"
+            data={data.supplier}
+            showDealerColumn
+            showCounterpartyFilter
+            showStatusFilter
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
 function VouchersPanel({ data }) {
   if (!data) return null;
-  const showDealerColumn = data.context === 'ALL';
 
   if (data.context === 'RETAILER') {
     // Tab title already reads "Voucher/Payments to Dealer / डीलरला व्हाउचर/देयके",
     // so no separate section heading is needed here.
     return (
       <VoucherSection
+        printTitle="Dealer Vouchers"
         counterpartyLabel="Dealer / डीलर"
         data={data.dealer}
         showDealerColumn={false}
@@ -607,7 +819,14 @@ function VouchersPanel({ data }) {
     );
   }
 
-  // DEALER and ALL both carry the same supplier/retailer split.
+  if (data.context === 'ALL') {
+    return <AdminVouchersPanel data={data} />;
+  }
+
+  // DEALER - stacked Supplier/Retailer sections. Dealer logins already
+  // get a tabbed view via Reports.jsx's own vouchers-supplier /
+  // vouchers-retailer tabs, so this combined "vouchers" tab is left as a
+  // quick stacked overview.
   return (
     <div>
       <VoucherSection
@@ -615,7 +834,7 @@ function VouchersPanel({ data }) {
         headingMr="पुरवठादार व्हाउचर"
         counterpartyLabel="Supplier / पुरवठादार"
         data={data.supplier}
-        showDealerColumn={showDealerColumn}
+        showDealerColumn={false}
         showCounterpartyFilter
       />
       <VoucherSection
@@ -623,7 +842,7 @@ function VouchersPanel({ data }) {
         headingMr="किरकोळ विक्रेता व्हाउचर"
         counterpartyLabel="Retailer / किरकोळ विक्रेता"
         data={data.retailer}
-        showDealerColumn={showDealerColumn}
+        showDealerColumn={false}
         showCounterpartyFilter
       />
     </div>
@@ -724,6 +943,7 @@ export default function Reports() {
 
         {tab === 'vouchers-supplier' && (
           <VoucherSection
+            printTitle="Supplier Vouchers"
             counterpartyLabel="Supplier / पुरवठादार"
             data={vouchers?.supplier}
             showDealerColumn={false}
@@ -733,6 +953,7 @@ export default function Reports() {
 
         {tab === 'vouchers-retailer' && (
           <VoucherSection
+            printTitle="Retailer Vouchers"
             counterpartyLabel="Retailer / किरकोळ विक्रेता"
             data={vouchers?.retailer}
             showDealerColumn={false}

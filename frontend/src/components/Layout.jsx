@@ -131,6 +131,19 @@ export default function Layout({ children }) {
       </aside>
       <main className="flex-1 flex flex-col overflow-y-auto">
         <div className="flex justify-end items-center gap-2 px-6 py-3 bg-white border-b">
+          {/* Lives in the top bar (not the role-specific nav) so every role —
+              ADMIN, ORGANISATION, DEALER, RETAILER — can reach it. Opens in a
+              new tab so it never interrupts whatever the user is doing. The
+              PDF itself is a static asset (see /public/user-manual.pdf), not
+              an API-served file, since its content never depends on who's
+              logged in. */}
+          <a
+            href="/user-manual.pdf"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="px-3 py-1.5 rounded border border-gray-300 text-gray-700 text-sm hover:bg-gray-100">
+            User Manual <span className="text-gray-400">· वापरकर्ता पुस्तिका</span>
+          </a>
           <button
             onClick={() => setShowChangePassword(true)}
             className="px-3 py-1.5 rounded border border-gray-300 text-gray-700 text-sm hover:bg-gray-100">

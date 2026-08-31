@@ -128,14 +128,41 @@ export default function SoldProducts() {
   const [pendingItems, setPendingItems] = useState([]); // TO_BE_CONFIRMED
   const [paidItems, setPaidItems] = useState([]);
   const [tab, setTab] = useState('open');
+  // DEALER only — which of the three Open-tab sections is showing. Shown
+  // as tabs (rather than the sections stacked one after another) so only
+  // one table is on screen at a time.
+  const [openSubTab, setOpenSubTab] = useState('soldByRetailer');
+  // DEALER only — same idea, for the Paid tab's three sections.
+  const [paidSubTab, setPaidSubTab] = useState('soldByRetailer');
+  // DEALER only — "Filter by Retailer" on the two Open-tab sections that
+  // actually involve a retailer (soldByRetailer/retailerOwed — the direct
+  // cash-sales section has no retailer to filter by). Default '' = All.
+  const [soldByRetailerFilter, setSoldByRetailerFilter] = useState('');
+  const [retailerOwedFilter, setRetailerOwedFilter] = useState('');
+  // DEALER only — same "Filter by Retailer" idea, for the Pending tab's
+  // "Retailer → Dealer — to be confirmed" section.
+  const [pendingRetailerFilter, setPendingRetailerFilter] = useState('');
+  // DEALER only — same idea, for the Paid tab's soldByRetailer/retailerPaid
+  // sections (the direct cash-sales section again has no retailer to
+  // filter by).
+  const [soldByRetailerPaidFilter, setSoldByRetailerPaidFilter] = useState('');
+  const [retailerPaidFilter, setRetailerPaidFilter] = useState('');
   const [suppliers, setSuppliers] = useState([]); // DEALER only
   const [supplierId, setSupplierId] = useState('');
   const [selected, setSelected] = useState(new Set());
   const [mode, setMode] = useState('CASH');
-  const [reference, setReference] = useState('');
+  const [reference, setReference] = useState('payment against sold products');
   const [paying, setPaying] = useState(false);
   const [confirmingId, setConfirmingId] = useState(null);
   const [error, setError] = useState('');
+  const [voucherNote, setVoucherNote] = useState('');
+  // DEALER only — set while the "adjust against outstanding vouchers?"
+  // pop-up (see initiatePayment below) is open. Holds the oldest-first
+  // OPEN/PARTIALLY_PAID PAYABLE vouchers for the chosen supplier, from GET
+  // /vouchers/outstanding, so the pop-up can show what would be adjusted
+  // before the user confirms.
+  const [voucherPrompt, setVoucherPrompt] = useState(null);
+  const [checkingVouchers, setCheckingVouchers] = useState(false);
 
   async function load() {
     const [open, pending, paid] = await Promise.all([
@@ -216,6 +243,18 @@ export default function SoldProducts() {
     return [...map.values()].map((g) => ({ ...g, label: g.retailerName || `Retailer #${g.key}` }));
   }
 
+  // Options for the "Filter by Retailer" dropdowns on the Open tab's
+  // soldByRetailer/retailerOwed sections — built from whichever retailers
+  // actually appear in that section's own items, so the dropdown never
+  // offers a retailer that couldn't show up in the list below it.
+  function retailerFilterOptions(items) {
+    return [...new Map(
+      items.filter((i) => i.retailerId != null).map((i) => [String(i.retailerId), i.retailerName || `Retailer #${i.retailerId}`])
+    ).entries()]
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  }
+
   // Selecting an item from a different supplier than what's currently
   // selected starts a fresh selection, and switches the Pay panel's
   // supplier to match — the backend only ever settles one supplier per
@@ -257,22 +296,57 @@ export default function SoldProducts() {
     .filter((i) => selected.has(i.id))
     .reduce((sum, i) => sum + Number(i.amount), 0);
 
-  async function pay() {
+  // Entry point for the "Pay Selected" button. For a DEALER, first checks
+  // whether the chosen supplier has any OPEN/PARTIALLY_PAID PAYABLE
+  // vouchers — if so, the FIFO-adjustment pop-up is shown (see
+  // voucherPrompt) and pay() itself waits for that response instead of
+  // running immediately. A RETAILER (who never carries a PAYABLE voucher
+  // to adjust) always pays immediately, same as before.
+  async function initiatePayment() {
     if (selected.size === 0 || paying) return;
     if (user.role === 'DEALER' && !supplierId) {
       setError('Choose a supplier to pay / भरणा करण्यासाठी पुरवठादार निवडा');
       return;
     }
     setError('');
+    setVoucherNote('');
+
+    if (user.role === 'DEALER') {
+      setCheckingVouchers(true);
+      try {
+        const res = await api.get('/vouchers/outstanding', { params: { supplierId } });
+        if (res.data.vouchers.length > 0) {
+          setVoucherPrompt(res.data);
+          setCheckingVouchers(false);
+          return; // wait for the user's Adjust & Pay / Skip choice below
+        }
+      } catch (err) {
+        // Outstanding-voucher check failing shouldn't block the payment
+        // itself — just proceed without offering the adjustment.
+      }
+      setCheckingVouchers(false);
+    }
+
+    await pay(false);
+  }
+
+  async function pay(adjustVouchers) {
     setPaying(true);
     try {
-      await api.post('/sold-products/pay', {
+      const res = await api.post('/sold-products/pay', {
         soldProductIds: [...selected],
         mode,
         reference: reference || undefined,
         supplierId: user.role === 'DEALER' ? supplierId : undefined,
+        adjustVouchers: user.role === 'DEALER' ? !!adjustVouchers : undefined,
       });
-      setReference('');
+      const touched = res.data?.voucherAdjustment?.touched;
+      if (touched?.length) {
+        const summary = touched.map((t) => `#${t.voucherId} (${t.newStatus === 'PAID' ? 'now Paid' : 'now Partially Paid'})`).join(', ');
+        setVoucherNote(`Adjusted ${formatMoney(res.data.amount)} against voucher ${summary}.`);
+      }
+      setReference('payment against sold products');
+      setVoucherPrompt(null);
       await load();
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to record payment / भरणा नोंदवण्यात अयशस्वी');
@@ -307,7 +381,7 @@ export default function SoldProducts() {
   function ItemsTable({ items, selectable }) {
     const groups = groupBySupplier(items);
     return (
-      <div className="space-y-4 max-h-[70vh] overflow-y-auto">
+      <div className="space-y-4 max-h-[70vh] lg:max-h-[calc(100vh-22rem)] overflow-y-auto">
         {groups.map((g) => {
           const groupSelectedCount = g.items.filter((i) => selected.has(i.id)).length;
           const { quantity: groupQty, amount: groupTotal } = sumItems(g.items);
@@ -391,7 +465,7 @@ export default function SoldProducts() {
     const groups = groupRetailerOwed(items);
 
     return (
-      <div className="space-y-4 max-h-[70vh] overflow-y-auto">
+      <div className="space-y-4 max-h-[70vh] lg:max-h-[calc(100vh-22rem)] overflow-y-auto">
         {groups.map((g) => {
           const { quantity: groupQty, amount: groupTotal } = sumItems(g.items);
           return (
@@ -473,6 +547,34 @@ export default function SoldProducts() {
   const soldByRetailerPaidItems = ownPaidItems.filter((i) => i.soldByRetailer);
   const directPaidItems = ownPaidItems.filter((i) => !i.soldByRetailer);
 
+  // Open tab only — soldByRetailerOpenItems/retailerOpenItems narrowed
+  // down by whichever retailer is picked in that section's own "Filter by
+  // Retailer" dropdown (soldByRetailerFilter/retailerOwedFilter above).
+  // Used by both the on-screen table and buildPrintSections below, so
+  // Print matches whatever's actually filtered on screen.
+  const soldByRetailerOpenItemsFiltered = soldByRetailerFilter
+    ? soldByRetailerOpenItems.filter((i) => String(i.retailerId) === soldByRetailerFilter)
+    : soldByRetailerOpenItems;
+  const retailerOpenItemsFiltered = retailerOwedFilter
+    ? retailerOpenItems.filter((i) => String(i.retailerId) === retailerOwedFilter)
+    : retailerOpenItems;
+
+  // Pending tab only — same idea, for pendingRetailerFilter above. Used by
+  // both the on-screen table and buildPrintSections, so Print matches
+  // whatever's filtered on screen.
+  const pendingItemsFiltered = pendingRetailerFilter
+    ? pendingItems.filter((i) => String(i.retailerId) === pendingRetailerFilter)
+    : pendingItems;
+
+  // Paid tab only — same idea, for soldByRetailerPaidFilter/
+  // retailerPaidFilter above.
+  const soldByRetailerPaidItemsFiltered = soldByRetailerPaidFilter
+    ? soldByRetailerPaidItems.filter((i) => String(i.retailerId) === soldByRetailerPaidFilter)
+    : soldByRetailerPaidItems;
+  const retailerPaidItemsFiltered = retailerPaidFilter
+    ? retailerPaidItems.filter((i) => String(i.retailerId) === retailerPaidFilter)
+    : retailerPaidItems;
+
   const TAB_LABELS = {
     open: 'Sold Products — Open / प्रलंबित',
     pending: 'Sold Products — To Be Confirmed / पुष्टीकरण प्रलंबित',
@@ -488,33 +590,34 @@ export default function SoldProducts() {
     if (user.role !== 'DEALER') {
       return [{ heading: null, groups: groupBySupplier(TAB_ITEMS[tab]) }];
     }
+    // Open tab is now shown as three separate sub-tabs (see openSubTab) —
+    // print only the one currently on screen, with the same retailer
+    // filter applied, rather than all three stacked as before.
     if (tab === 'open') {
-      return [
-        { heading: 'Sold by your retailers — payable to supplier', groups: groupBySupplier(soldByRetailerOpenItems) },
-        { heading: 'Your own cash sales — payable to supplier', groups: groupBySupplier(directOpenItems) },
-        {
+      if (openSubTab === 'direct') {
+        return [{ heading: 'Your own cash sales — payable to supplier', groups: groupBySupplier(directOpenItems) }];
+      }
+      if (openSubTab === 'retailerOwed') {
+        return [{
           heading: 'Owed to you by retailers — not yet paid',
           note: 'View only — your retailer has to pay this themselves.',
-          groups: groupRetailerOwed(retailerOpenItems),
-        },
-      ];
+          groups: groupRetailerOwed(retailerOpenItemsFiltered),
+        }];
+      }
+      return [{ heading: 'Sold by your retailers — payable to supplier', groups: groupBySupplier(soldByRetailerOpenItemsFiltered) }];
     }
     if (tab === 'pending') {
-      return [
-        {
-          heading: 'Dealer → Supplier — to be confirmed',
-          note: "Always empty — your own payments to a supplier settle immediately (Paid tab), there's no separate confirmation step for that direction today.",
-          groups: [],
-        },
-        { heading: 'Retailer → Dealer — to be confirmed', groups: groupRetailerOwed(pendingItems) },
-      ];
+      return [{ heading: 'Retailer → Dealer — to be confirmed', groups: groupRetailerOwed(pendingItemsFiltered) }];
     }
-    // paid
-    return [
-      { heading: 'Sold by your retailers — paid to supplier', groups: groupBySupplier(soldByRetailerPaidItems) },
-      { heading: 'Your own cash sales — paid to supplier', groups: groupBySupplier(directPaidItems) },
-      { heading: 'Paid by retailers', groups: groupRetailerOwed(retailerPaidItems) },
-    ];
+    // paid — shown as three separate sub-tabs (see paidSubTab), same as
+    // the Open tab — print only the one currently on screen.
+    if (paidSubTab === 'direct') {
+      return [{ heading: 'Your own cash sales — paid to supplier', groups: groupBySupplier(directPaidItems) }];
+    }
+    if (paidSubTab === 'retailerPaid') {
+      return [{ heading: 'Paid by retailers', groups: groupRetailerOwed(retailerPaidItemsFiltered) }];
+    }
+    return [{ heading: 'Sold by your retailers — paid to supplier', groups: groupBySupplier(soldByRetailerPaidItemsFiltered) }];
   }
 
   return (
@@ -554,13 +657,67 @@ export default function SoldProducts() {
             <TabTotals items={openItems} />
             {user.role === 'DEALER' ? (
               <>
-                <h3 className="text-sm font-semibold text-gray-600 mb-2">Sold by your retailers — payable to supplier <span className="text-gray-400 font-normal">/ किरकोळ विक्रेत्यांनी विकलेले — पुरवठादाराला देय</span></h3>
-                <ItemsTable items={soldByRetailerOpenItems} selectable />
-                <h3 className="text-sm font-semibold text-gray-600 mb-2 mt-4">Your own cash sales — payable to supplier <span className="text-gray-400 font-normal">/ स्वतःची रोख विक्री — पुरवठादाराला देय</span></h3>
-                <ItemsTable items={directOpenItems} selectable />
-                <h3 className="text-sm font-semibold text-gray-600 mb-2 mt-4">Owed to you by retailers — not yet paid <span className="text-gray-400 font-normal">/ किरकोळ विक्रेत्यांकडून येणे — अद्याप न भरलेले</span></h3>
-                <p className="text-xs text-gray-400 mb-2">View only — your retailer has to pay this themselves. / फक्त पाहण्यासाठी — हे तुमच्या किरकोळ विक्रेत्याला स्वतः भरावे लागेल.</p>
-                <RetailerOwedTable items={retailerOpenItems} showConfirm={false} />
+                <div className="flex gap-1 mb-3 border-b overflow-x-auto">
+                  {[
+                    ['soldByRetailer', 'Sold by your retailers — payable to supplier', 'किरकोळ विक्रेत्यांनी विकलेले — पुरवठादाराला देय', soldByRetailerOpenItems.length],
+                    ['direct', 'Your own cash sales — payable to supplier', 'स्वतःची रोख विक्री — पुरवठादाराला देय', directOpenItems.length],
+                    ['retailerOwed', 'Owed to you by retailers — not yet paid', 'किरकोळ विक्रेत्यांकडून येणे — अद्याप न भरलेले', retailerOpenItems.length],
+                  ].map(([key, label, labelMr, count]) => (
+                    <button key={key} type="button" onClick={() => setOpenSubTab(key)}
+                      className={`text-sm px-3 py-2 border-b-2 -mb-px whitespace-nowrap ${
+                        openSubTab === key
+                          ? 'border-emerald-700 text-emerald-700 font-medium'
+                          : 'border-transparent text-gray-500 hover:text-gray-700'
+                      }`}>
+                      {label} ({count})<span className="block text-xs font-normal">{labelMr}</span>
+                    </button>
+                  ))}
+                </div>
+
+                {openSubTab === 'soldByRetailer' && (
+                  <>
+                    <div className="flex justify-end mb-2">
+                      <label className="text-xs text-gray-500 flex flex-col leading-tight">
+                        <span>Filter by Retailer</span>
+                        <span className="text-gray-400">किरकोळ विक्रेत्यानुसार फिल्टर करा</span>
+                        <select className="border rounded px-2 py-1 text-sm mt-1"
+                          value={soldByRetailerFilter}
+                          onChange={(e) => setSoldByRetailerFilter(e.target.value)}>
+                          <option value="">All Retailers / सर्व किरकोळ विक्रेते</option>
+                          {retailerFilterOptions(soldByRetailerOpenItems).map((r) => (
+                            <option key={r.id} value={r.id}>{r.name}</option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                    <ItemsTable items={soldByRetailerOpenItemsFiltered} selectable />
+                  </>
+                )}
+
+                {openSubTab === 'direct' && (
+                  <ItemsTable items={directOpenItems} selectable />
+                )}
+
+                {openSubTab === 'retailerOwed' && (
+                  <>
+                    <div className="flex items-start justify-between flex-wrap gap-2 mb-2">
+                      <p className="text-xs text-gray-400">View only — your retailer has to pay this themselves. / फक्त पाहण्यासाठी — हे तुमच्या किरकोळ विक्रेत्याला स्वतः भरावे लागेल.</p>
+                      <label className="text-xs text-gray-500 flex flex-col leading-tight">
+                        <span>Filter by Retailer</span>
+                        <span className="text-gray-400">किरकोळ विक्रेत्यानुसार फिल्टर करा</span>
+                        <select className="border rounded px-2 py-1 text-sm mt-1"
+                          value={retailerOwedFilter}
+                          onChange={(e) => setRetailerOwedFilter(e.target.value)}>
+                          <option value="">All Retailers / सर्व किरकोळ विक्रेते</option>
+                          {retailerFilterOptions(retailerOpenItems).map((r) => (
+                            <option key={r.id} value={r.id}>{r.name}</option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                    <RetailerOwedTable items={retailerOpenItemsFiltered} showConfirm={false} />
+                  </>
+                )}
               </>
             ) : (
               <ItemsTable items={openItems} selectable />
@@ -572,14 +729,22 @@ export default function SoldProducts() {
             <TabTotals items={pendingItems} />
             {user.role === 'DEALER' ? (
               <>
-                <h3 className="text-sm font-semibold text-gray-600 mb-2">Dealer → Supplier — to be confirmed <span className="text-gray-400 font-normal">/ डीलर → पुरवठादार — पुष्टीकरण प्रलंबित</span></h3>
-                <p className="text-xs text-gray-400 mb-2">
-                  Always empty — your own payments to a supplier settle immediately (Paid tab), there's no separate confirmation step for that direction today.
-                  <span className="block">नेहमी रिकामे — पुरवठादाराला तुमचे स्वतःचे भरणे लगेच सेटल होते (भरलेले टॅब), त्या दिशेसाठी सध्या स्वतंत्र पुष्टीकरण पायरी नाही.</span>
-                </p>
-                <ItemsTable items={[]} selectable={false} />
-                <h3 className="text-sm font-semibold text-gray-600 mb-2 mt-4">Retailer → Dealer — to be confirmed <span className="text-gray-400 font-normal">/ किरकोळ विक्रेता → डीलर — पुष्टीकरण प्रलंबित</span></h3>
-                <RetailerOwedTable items={pendingItems} showConfirm />
+                <div className="flex items-start justify-between flex-wrap gap-2 mb-2">
+                  <h3 className="text-sm font-semibold text-gray-600">Retailer → Dealer — to be confirmed <span className="text-gray-400 font-normal">/ किरकोळ विक्रेता → डीलर — पुष्टीकरण प्रलंबित</span></h3>
+                  <label className="text-xs text-gray-500 flex flex-col leading-tight">
+                    <span>Filter by Retailer</span>
+                    <span className="text-gray-400">किरकोळ विक्रेत्यानुसार फिल्टर करा</span>
+                    <select className="border rounded px-2 py-1 text-sm mt-1"
+                      value={pendingRetailerFilter}
+                      onChange={(e) => setPendingRetailerFilter(e.target.value)}>
+                      <option value="">All Retailers / सर्व किरकोळ विक्रेते</option>
+                      {retailerFilterOptions(pendingItems).map((r) => (
+                        <option key={r.id} value={r.id}>{r.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <RetailerOwedTable items={pendingItemsFiltered} showConfirm />
               </>
             ) : (
               <RetailerOwedTable items={pendingItems} showConfirm />
@@ -591,12 +756,66 @@ export default function SoldProducts() {
             <TabTotals items={paidItems} />
             {user.role === 'DEALER' ? (
               <>
-                <h3 className="text-sm font-semibold text-gray-600 mb-2">Sold by your retailers — paid to supplier <span className="text-gray-400 font-normal">/ किरकोळ विक्रेत्यांनी विकलेले — पुरवठादाराला भरले</span></h3>
-                <ItemsTable items={soldByRetailerPaidItems} selectable={false} />
-                <h3 className="text-sm font-semibold text-gray-600 mb-2 mt-4">Your own cash sales — paid to supplier <span className="text-gray-400 font-normal">/ स्वतःची रोख विक्री — पुरवठादाराला भरले</span></h3>
-                <ItemsTable items={directPaidItems} selectable={false} />
-                <h3 className="text-sm font-semibold text-gray-600 mb-2 mt-4">Paid by retailers <span className="text-gray-400 font-normal">/ किरकोळ विक्रेत्यांनी भरलेले</span></h3>
-                <RetailerOwedTable items={retailerPaidItems} showConfirm={false} />
+                <div className="flex gap-1 mb-3 border-b overflow-x-auto">
+                  {[
+                    ['soldByRetailer', 'Sold by your retailers — paid to supplier', 'किरकोळ विक्रेत्यांनी विकलेले — पुरवठादाराला भरले', soldByRetailerPaidItems.length],
+                    ['direct', 'Your own cash sales — paid to supplier', 'स्वतःची रोख विक्री — पुरवठादाराला भरले', directPaidItems.length],
+                    ['retailerPaid', 'Paid by retailers', 'किरकोळ विक्रेत्यांनी भरलेले', retailerPaidItems.length],
+                  ].map(([key, label, labelMr, count]) => (
+                    <button key={key} type="button" onClick={() => setPaidSubTab(key)}
+                      className={`text-sm px-3 py-2 border-b-2 -mb-px whitespace-nowrap ${
+                        paidSubTab === key
+                          ? 'border-emerald-700 text-emerald-700 font-medium'
+                          : 'border-transparent text-gray-500 hover:text-gray-700'
+                      }`}>
+                      {label} ({count})<span className="block text-xs font-normal">{labelMr}</span>
+                    </button>
+                  ))}
+                </div>
+
+                {paidSubTab === 'soldByRetailer' && (
+                  <>
+                    <div className="flex justify-end mb-2">
+                      <label className="text-xs text-gray-500 flex flex-col leading-tight">
+                        <span>Filter by Retailer</span>
+                        <span className="text-gray-400">किरकोळ विक्रेत्यानुसार फिल्टर करा</span>
+                        <select className="border rounded px-2 py-1 text-sm mt-1"
+                          value={soldByRetailerPaidFilter}
+                          onChange={(e) => setSoldByRetailerPaidFilter(e.target.value)}>
+                          <option value="">All Retailers / सर्व किरकोळ विक्रेते</option>
+                          {retailerFilterOptions(soldByRetailerPaidItems).map((r) => (
+                            <option key={r.id} value={r.id}>{r.name}</option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                    <ItemsTable items={soldByRetailerPaidItemsFiltered} selectable={false} />
+                  </>
+                )}
+
+                {paidSubTab === 'direct' && (
+                  <ItemsTable items={directPaidItems} selectable={false} />
+                )}
+
+                {paidSubTab === 'retailerPaid' && (
+                  <>
+                    <div className="flex justify-end mb-2">
+                      <label className="text-xs text-gray-500 flex flex-col leading-tight">
+                        <span>Filter by Retailer</span>
+                        <span className="text-gray-400">किरकोळ विक्रेत्यानुसार फिल्टर करा</span>
+                        <select className="border rounded px-2 py-1 text-sm mt-1"
+                          value={retailerPaidFilter}
+                          onChange={(e) => setRetailerPaidFilter(e.target.value)}>
+                          <option value="">All Retailers / सर्व किरकोळ विक्रेते</option>
+                          {retailerFilterOptions(retailerPaidItems).map((r) => (
+                            <option key={r.id} value={r.id}>{r.name}</option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                    <RetailerOwedTable items={retailerPaidItemsFiltered} showConfirm={false} />
+                  </>
+                )}
               </>
             ) : (
               <ItemsTable items={paidItems} selectable={false} />
@@ -642,12 +861,13 @@ export default function SoldProducts() {
           onChange={(e) => setReference(e.target.value)} placeholder="UTR / cheque no. / ..." />
 
         {error && <p className="text-red-600 text-sm mb-2">{error}</p>}
+        {voucherNote && <p className="text-emerald-700 text-xs mb-2">{voucherNote}</p>}
 
         <button
-          disabled={selected.size === 0 || paying || (user.role === 'DEALER' && !supplierId)}
-          onClick={pay}
+          disabled={selected.size === 0 || paying || checkingVouchers || (user.role === 'DEALER' && !supplierId)}
+          onClick={initiatePayment}
           className="w-full bg-emerald-700 text-white py-3 rounded font-semibold hover:bg-emerald-800 disabled:opacity-40">
-          {paying ? 'Recording... / नोंदवत आहे...' : 'Pay Selected / निवडलेल्यांचे पैसे भरा'}
+          {paying ? 'Recording... / नोंदवत आहे...' : checkingVouchers ? 'Checking vouchers... / व्हाउचर तपासत आहे...' : 'Pay Selected / निवडलेल्यांचे पैसे भरा'}
         </button>
 
         {user.role === 'RETAILER' && (
@@ -656,6 +876,46 @@ export default function SoldProducts() {
           </p>
         )}
       </div>
+
+      {voucherPrompt && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded shadow-lg max-w-md w-full p-5">
+            <h3 className="font-semibold text-base mb-1">
+              Adjust against outstanding vouchers?
+              <span className="block text-xs font-normal text-gray-400">थकीत व्हाउचर्सविरुद्ध समायोजित करायचे का?</span>
+            </h3>
+            <p className="text-sm text-gray-600 mb-3">
+              {suppliers.find((s) => String(s.id) === String(supplierId))?.name || 'This supplier'} has {formatMoney(voucherPrompt.totalOutstanding)} outstanding
+              across {voucherPrompt.vouchers.length} voucher{voucherPrompt.vouchers.length === 1 ? '' : 's'}. This payment
+              of {formatMoney(selectedTotal)} can be applied FIFO — oldest voucher first — against it before it's recorded.
+            </p>
+            <ul className="text-xs text-gray-600 mb-4 max-h-36 overflow-y-auto border rounded divide-y">
+              {voucherPrompt.vouchers.map((v) => (
+                <li key={v.id} className="px-2 py-1.5 flex justify-between gap-2">
+                  <span>#{v.id} · {new Date(v.date).toLocaleDateString()} · {v.status === 'OPEN' ? 'Open' : 'Partially Paid'}</span>
+                  <span className="font-medium whitespace-nowrap">{formatMoney(v.outstanding)}</span>
+                </li>
+              ))}
+            </ul>
+            <div className="flex gap-2 justify-end">
+              <button
+                type="button"
+                disabled={paying}
+                onClick={() => { setVoucherPrompt(null); pay(false); }}
+                className="px-3 py-2 text-sm rounded border hover:bg-gray-50 disabled:opacity-40">
+                Skip / वगळा
+              </button>
+              <button
+                type="button"
+                disabled={paying}
+                onClick={() => pay(true)}
+                className="px-3 py-2 text-sm rounded bg-emerald-700 text-white hover:bg-emerald-800 disabled:opacity-40">
+                {paying ? 'Recording... / नोंदवत आहे...' : 'Adjust & Pay / समायोजित करा आणि भरा'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
