@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import api from '../api.js';
 import { useAuth } from '../context/AuthContext.jsx';
 
@@ -180,6 +181,10 @@ function ReturnDetail({
 export default function GoodsReturns() {
   const { user } = useAuth();
   const isDealer = user.role === 'DEALER';
+  const [searchParams] = useSearchParams();
+  // Guards the ?id= auto-select below to a single run per page load — see
+  // the same guard in Purchases.jsx for why.
+  const appliedIdParam = useRef(false);
 
   const [inventory, setInventory] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
@@ -357,6 +362,27 @@ export default function GoodsReturns() {
     setApprovals({});
     setApprovalNotes({});
   }
+
+  // Deep link from Reports > Downloads (?id=79) — switch to whichever
+  // tab/status/filter combination actually shows that return, then select
+  // it, once the combined return list has loaded.
+  useEffect(() => {
+    if (appliedIdParam.current) return;
+    const id = searchParams.get('id');
+    if (!id || allReturns.length === 0) return;
+    const gr = allReturns.find((x) => String(x.id) === id);
+    if (gr) {
+      if (isDealer) {
+        setReturnsTab(gr.kind);
+        setReturnSupplierFilter('');
+        setReturnRetailerFilter('');
+      }
+      setReturnStatusTab('ALL');
+      selectReturn(gr);
+    }
+    appliedIdParam.current = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allReturns]);
 
   function startNewReturn() {
     setSelectedReturnId('');

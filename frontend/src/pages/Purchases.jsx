@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import api from '../api.js';
 import { printBarcodeLabelsBatch } from '../components/Barcode.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -102,6 +103,12 @@ function purchaseTotals(purchase, role) {
 
 export default function Purchases() {
   const { user } = useAuth();
+  const [searchParams] = useSearchParams();
+  // Guards the ?id= auto-select below so it only ever fires once per page
+  // load — otherwise every background load() refresh (after saving
+  // quantities/prices, etc.) would re-run it and yank the user back to
+  // whatever purchase the URL originally pointed at.
+  const appliedIdParam = useRef(false);
   const [purchases, setPurchases] = useState([]);
   const [products, setProducts] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
@@ -391,6 +398,22 @@ export default function Purchases() {
     setError('');
     setSelectedPurchaseId(String(p.id));
   }
+
+  // Deep link from the Reports > Downloads screen (?id=79) — auto-open
+  // that purchase into the View/Edit panel the same way clicking it in the
+  // sidebar dropdown would, once the purchase list has actually loaded.
+  useEffect(() => {
+    if (appliedIdParam.current) return;
+    const id = searchParams.get('id');
+    if (!id || purchases.length === 0) return;
+    const p = purchases.find((x) => String(x.id) === id);
+    if (p) {
+      setPurchaseSupplierFilter('');
+      selectPurchase(p);
+    }
+    appliedIdParam.current = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [purchases]);
 
   // "+ New Purchase" — leaves whatever purchase is being viewed and
   // returns to a blank entry form, mirrors Sales' exitActiveSale.

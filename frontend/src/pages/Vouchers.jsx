@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import api from '../api.js';
 import { useAuth } from '../context/AuthContext.jsx';
 
@@ -29,7 +30,7 @@ function groupByCounterparty(vouchers, isPayable) {
   return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
 }
 
-function VoucherTable({ vouchers }) {
+function VoucherTable({ vouchers, highlightId }) {
   const subtotal = vouchers.reduce((sum, v) => sum + Number(v.amount), 0);
   const subtotalRemaining = vouchers.reduce((sum, v) => sum + balanceRemaining(v), 0);
   return (
@@ -47,7 +48,7 @@ function VoucherTable({ vouchers }) {
         {vouchers.map((v) => {
           const remaining = balanceRemaining(v);
           return (
-            <tr key={v.id} className="border-t">
+            <tr key={v.id} id={`voucher-row-${v.id}`} className={`border-t ${String(v.id) === highlightId ? 'bg-yellow-100' : ''}`}>
               <td className="p-2">{v.id}</td>
               <td className="p-2">₹{Number(v.amount).toFixed(2)}</td>
               <td className="p-2">{v.description}</td>
@@ -84,7 +85,7 @@ function VoucherTable({ vouchers }) {
 // never have a PAYABLE voucher of their own, so that whole section simply
 // doesn't appear (as a tab) for that role instead of showing up empty every
 // time.
-function VoucherSection({ title, titleMr, vouchers, isPayable, isDealer }) {
+function VoucherSection({ title, titleMr, vouchers, isPayable, isDealer, highlightId }) {
   if (!vouchers.length) return null;
   const groups = groupByCounterparty(vouchers, isPayable);
   const total = vouchers.reduce((sum, v) => sum + Number(v.amount), 0);
@@ -111,7 +112,7 @@ function VoucherSection({ title, titleMr, vouchers, isPayable, isDealer }) {
           <div key={counterparty}>
             <div className="text-sm font-medium text-gray-600 mb-1">{counterparty}</div>
             <div className="bg-white rounded shadow overflow-x-auto">
-              <VoucherTable vouchers={group} />
+              <VoucherTable vouchers={group} highlightId={highlightId} />
             </div>
           </div>
         ))}
@@ -127,6 +128,14 @@ export default function Vouchers() {
   const [form, setForm] = useState({ retailerId: '', amount: '', description: '' });
   const [activeTab, setActiveTab] = useState('PAYABLE');
 
+  // Deep link from Reports > Downloads (?id=79) — there's no per-voucher
+  // edit view here (vouchers are view/create only), so "opening" one means:
+  // switch to the tab that actually holds it (Payable vs Receivable), then
+  // scroll to and briefly highlight the row.
+  const [searchParams] = useSearchParams();
+  const [highlightVoucherId, setHighlightVoucherId] = useState(null);
+  const appliedIdParam = useRef(false);
+
   async function load() {
     const v = await api.get('/vouchers');
     setVouchers(v.data);
@@ -136,6 +145,23 @@ export default function Vouchers() {
     }
   }
   useEffect(() => { load(); }, []);
+
+  useEffect(() => {
+    if (appliedIdParam.current) return;
+    const id = searchParams.get('id');
+    if (!id || vouchers.length === 0) return;
+    const v = vouchers.find((x) => String(x.id) === id);
+    if (v) {
+      setActiveTab(v.type === 'PAYABLE' ? 'PAYABLE' : 'RECEIVABLE');
+      setHighlightVoucherId(String(v.id));
+      setTimeout(() => {
+        document.getElementById(`voucher-row-${v.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 50);
+      setTimeout(() => setHighlightVoucherId(null), 4000);
+    }
+    appliedIdParam.current = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vouchers]);
 
   async function submit(e) {
     e.preventDefault();
@@ -207,6 +233,7 @@ export default function Vouchers() {
               title={currentTab.label} titleMr={currentTab.labelMr}
               vouchers={currentTab.vouchers} isPayable={currentTab.isPayable}
               isDealer={user.role === 'DEALER'}
+              highlightId={highlightVoucherId}
             />
           )}
         </>

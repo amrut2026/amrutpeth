@@ -1,9 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import api from '../api.js';
 import { useAuth } from '../context/AuthContext.jsx';
 
 export default function Sales() {
   const { user } = useAuth();
+  const [searchParams] = useSearchParams();
+  // Guards the ?id= auto-select below to a single run per page load — see
+  // the same guard in Purchases.jsx for why.
+  const appliedIdParam = useRef(false);
   const [sales, setSales] = useState([]);
   const [retailers, setRetailers] = useState([]);
   const [availableItems, setAvailableItems] = useState([]); // batches from /sales/available-items
@@ -190,6 +195,23 @@ export default function Sales() {
     setDispatchError('');
     scanRef.current?.focus();
   }
+
+  // Deep link from Reports > Downloads (?id=79) — switch to the matching
+  // Recent Sales tab (Cash vs Retailer) and load that sale into the cart,
+  // once the sale list has actually loaded.
+  useEffect(() => {
+    if (appliedIdParam.current) return;
+    const id = searchParams.get('id');
+    if (!id || sales.length === 0) return;
+    const sale = sales.find((s) => String(s.id) === id);
+    if (sale) {
+      setRecentSalesTab(sale.customerType === 'CASH' ? 'CASH' : 'RETAILER');
+      setSaleRetailerFilter('');
+      loadSaleIntoCart(sale);
+    }
+    appliedIdParam.current = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sales]);
 
   // A batch chosen from the dropdown for a pending order line — price/mrp
   // come straight from that Inventory row (sellingPrice, the dealer's

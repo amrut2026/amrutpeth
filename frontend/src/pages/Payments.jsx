@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import api from '../api.js';
 import { useAuth } from '../context/AuthContext.jsx';
 
@@ -47,6 +48,14 @@ export default function Payments() {
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
+  // Deep link from Reports > Downloads (?id=79) — there's no per-payment
+  // edit view here (payments are an immutable ledger), so "opening" one
+  // means: make sure its row is actually visible (clear any supplier
+  // filter hiding it) then scroll to and briefly highlight it.
+  const [searchParams] = useSearchParams();
+  const [highlightPaymentId, setHighlightPaymentId] = useState(null);
+  const appliedIdParam = useRef(false);
+
   async function load() {
     const calls = [api.get('/payments')];
     if (canPay) { calls.push(api.get('/vouchers')); calls.push(api.get('/suppliers')); }
@@ -58,6 +67,23 @@ export default function Payments() {
     }
   }
   useEffect(() => { load(); }, []);
+
+  useEffect(() => {
+    if (appliedIdParam.current) return;
+    const id = searchParams.get('id');
+    if (!id || payments.length === 0) return;
+    const p = payments.find((x) => String(x.id) === id);
+    if (p) {
+      setSupplierFilter('');
+      setHighlightPaymentId(String(p.id));
+      setTimeout(() => {
+        document.getElementById(`payment-row-${p.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 50);
+      setTimeout(() => setHighlightPaymentId(null), 4000);
+    }
+    appliedIdParam.current = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [payments]);
 
   function remainingFor(voucherId) {
     const v = vouchers.find((x) => String(x.id) === String(voucherId));
@@ -200,7 +226,7 @@ export default function Payments() {
                     </thead>
                     <tbody>
                       {g.items.map((p) => (
-                        <tr key={p.id} className="border-t">
+                        <tr key={p.id} id={`payment-row-${p.id}`} className={`border-t ${String(p.id) === highlightPaymentId ? 'bg-yellow-100' : ''}`}>
                           <td className="p-2">{p.id}</td>
                           <td className="p-2">
                             {p.voucherId ? `#${p.voucherId}` : (

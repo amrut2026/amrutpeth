@@ -1481,6 +1481,227 @@ function VouchersPanel({ data }) {
   );
 }
 
+// The six report types the Downloads tab can print, backed by
+// GET /reports/downloads?type=...&from=...&to=... (see reports.js). Order
+// here is also the sub-tab order. RECEIPTS is filtered out for RETAILER
+// scope below - a retailer has no downstream to receive payments from in
+// this schema, so that endpoint always returns an empty list for them.
+const DOWNLOAD_REPORTS = [
+  ['PURCHASES', 'Purchases / खरेदी'],
+  ['GOODS_RETURN', 'Goods Return / माल परत'],
+  ['SALES', 'Sale / विक्री'],
+  ['PAYMENTS', 'Payments / देयके'],
+  ['RECEIPTS', 'Receipts / पावत्या'],
+  ['VOUCHERS', 'Vouchers / व्हाउचर'],
+];
+
+// Where each download type's ID links out to - the screen in the rest of
+// the app that shows that record (per App.jsx). None of these routes take
+// an :id path segment today (they're plain list pages: /purchases,
+// /goods-returns, /sales, /vouchers, /receipts, /payments) - an `id` query
+// param is appended so the target page CAN pick it out and scroll to /
+// highlight that one row once it's updated to read it - it doesn't do
+// that yet.
+//
+// PAYMENTS is a special case: a DEALER pays their own supplier via the
+// DEALER-only /payments page, but a RETAILER pays their dealer via
+// /receipts instead (App.jsx has no /payments route a RETAILER is even
+// allowed onto - see its RoleProtected roles={['DEALER']} comment) - so
+// which page a "Payments" row opens depends on who's logged in, not just
+// the download type.
+const DOWNLOAD_ENTITY_ROUTES = {
+  PURCHASES: '/purchases',
+  GOODS_RETURN: '/goods-returns',
+  SALES: '/sales',
+  RECEIPTS: '/receipts',
+  VOUCHERS: '/vouchers',
+};
+
+function downloadEntityHref(type, context, id) {
+  const path = type === 'PAYMENTS'
+    ? (context === 'RETAILER' ? '/receipts' : '/payments')
+    : DOWNLOAD_ENTITY_ROUTES[type];
+  return `${path || ''}?id=${id}`;
+}
+
+// Every target route above (per App.jsx) is RoleProtected to
+// DEALER/RETAILER only - an ADMIN/ORGANISATION login (context 'ALL') would
+// just get bounced back to the dashboard, so the id is only ever worth
+// linking for those two contexts. Everyone else sees the id as plain text.
+function canLinkToEntity(context) {
+  return context === 'DEALER' || context === 'RETAILER';
+}
+
+// Shared print shell for every Downloads sub-tab - same flat
+// id/date/counterparty/status/amount table regardless of report type, so
+// one builder covers all six instead of one per type. The ID is a real
+// link (absolute, since the print-out is a separate window/document) back
+// to that record's own screen, same target as the on-screen table.
+function buildDownloadPrintHtml({ type, context, title, subtitle, rows }) {
+  const total = rows.reduce((sum, r) => sum + Number(r.amount || 0), 0);
+  const linkable = canLinkToEntity(context);
+  const bodyRows = rows.map((r) => {
+    const idCell = linkable
+      ? `<a href="${escapeHtml(`${window.location.origin}${downloadEntityHref(type, context, r.id)}`)}">${escapeHtml(String(r.id))}</a>`
+      : escapeHtml(String(r.id));
+    return `<tr>
+      <td>${idCell}</td>
+      <td>${escapeHtml(new Date(r.date).toLocaleDateString())}</td>
+      <td>${escapeHtml(r.counterpartyName || '--')}</td>
+      <td>${escapeHtml(r.status || '--')}</td>
+      <td>${escapeHtml(formatMoney(r.amount))}</td>
+    </tr>`;
+  }).join('');
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>${escapeHtml(title)}</title>
+<style>
+  body { font-family: Arial, sans-serif; padding: 24px; color: #111; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .subtitle { font-size: 12px; color: #555; margin-bottom: 20px; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 8px; font-size: 12px; }
+  th, td { border: 1px solid #ddd; padding: 4px 6px; text-align: left; }
+  th { background: #f3f3f3; }
+  a { color: #047857; }
+  tfoot td { font-weight: bold; background: #f9f9f9; }
+  .muted { color: #999; font-size: 12px; margin: 4px 0 12px; }
+  @media print { body { padding: 0; } }
+</style>
+</head>
+<body>
+  <h1>${escapeHtml(title)}</h1>
+  <div class="subtitle">${escapeHtml(subtitle)} &middot; Printed ${escapeHtml(new Date().toLocaleString())}</div>
+  <table>
+    <thead><tr><th>ID</th><th>Date</th><th>Counterparty</th><th>Status</th><th>Amount</th></tr></thead>
+    <tbody>${bodyRows || '<tr><td colspan="5" class="muted">No records in this date range.</td></tr>'}</tbody>
+    ${rows.length ? `<tfoot><tr><td colspan="4">Total</td><td>${escapeHtml(formatMoney(total))}</td></tr></tfoot>` : ''}
+  </table>
+</body>
+</html>`;
+}
+
+// "Downloads" main tab: a date-windowed, printable version of the six core
+// transaction lists (purchases / goods return / sale / payments / receipts
+// / vouchers), each living under its own sub-tab within this one screen.
+// Scope (which sub-tabs are offered, and what rows come back for each) is
+// handled server-side by GET /reports/downloads based on the logged-in
+// dealer/retailer/admin - this component just drives the date range and
+// active sub-tab and prints whatever the API returns.
+function DownloadsPanel({ context }) {
+  const types = DOWNLOAD_REPORTS.filter(([key]) => !(key === 'RECEIPTS' && context === 'RETAILER'));
+  const [subTab, setSubTab] = useState(types[0][0]);
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
+  const [rows, setRows] = useState(null);
+
+  useEffect(() => {
+    setRows(null);
+    const params = new URLSearchParams({ type: subTab });
+    if (fromDate) params.set('from', fromDate);
+    if (toDate) params.set('to', toDate);
+    api.get(`/reports/downloads?${params.toString()}`).then((r) => setRows(r.data.rows));
+  }, [subTab, fromDate, toDate]);
+
+  function handlePrint() {
+    const label = types.find(([key]) => key === subTab)?.[1] || subTab;
+    const rangeLabel = (fromDate || toDate)
+      ? `${fromDate ? new Date(fromDate).toLocaleDateString() : 'Start'} - ${toDate ? new Date(toDate).toLocaleDateString() : 'Today'}`
+      : 'All dates';
+    const html = buildDownloadPrintHtml({ type: subTab, context, title: label, subtitle: rangeLabel, rows: rows || [] });
+    const printWindow = window.open('', '_blank', 'width=900,height=700');
+    if (!printWindow) return; // popup blocked - nothing else to fall back to here
+    printWindow.document.write(html);
+    printWindow.document.close();
+    printWindow.focus();
+    printWindow.onload = () => printWindow.print();
+  }
+
+  const total = (rows || []).reduce((sum, r) => sum + Number(r.amount || 0), 0);
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-end gap-3 mb-4">
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">From date <span className="text-gray-400">/ पासून तारीख</span></label>
+          <input type="date" value={fromDate} max={toDate || undefined}
+            onChange={(e) => setFromDate(e.target.value)} className="border rounded px-2 py-1 text-sm" />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">To date <span className="text-gray-400">/ पर्यंत तारीख</span></label>
+          <input type="date" value={toDate} min={fromDate || undefined}
+            onChange={(e) => setToDate(e.target.value)} className="border rounded px-2 py-1 text-sm" />
+        </div>
+        <button onClick={handlePrint} disabled={!rows}
+          className="px-4 py-2 rounded text-sm bg-emerald-700 text-white disabled:opacity-50">
+          Print <span className="font-normal">/ प्रिंट</span>
+        </button>
+      </div>
+
+      <div className="flex gap-2 mb-4 border-b overflow-x-auto">
+        {types.map(([key, label]) => (
+          <button key={key} onClick={() => setSubTab(key)}
+            className={`px-3 py-2 text-sm whitespace-nowrap -mb-px border-b-2 ${subTab === key ? 'border-emerald-700 text-emerald-700 font-semibold' : 'border-transparent text-gray-500'}`}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <table className="w-full text-sm">
+        <thead className="bg-gray-100 sticky top-0 z-10">
+          <tr>
+            <th className="text-left p-2">ID</th>
+            <th className="text-left p-2 border-l">Date <span className="text-gray-400 font-normal">/ तारीख</span></th>
+            <th className="text-left p-2 border-l">Counterparty <span className="text-gray-400 font-normal">/ व्यापारी</span></th>
+            <th className="text-left p-2 border-l">Status <span className="text-gray-400 font-normal">/ स्थिती</span></th>
+            <th className="text-left p-2 border-l">Amount <span className="text-gray-400 font-normal">/ रक्कम</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows === null && (
+            <tr><td className="p-3 text-gray-400" colSpan={5}>Loading... <span className="text-gray-400">/ लोड होत आहे...</span></td></tr>
+          )}
+          {rows?.length === 0 && (
+            <tr><td className="p-3 text-gray-400" colSpan={5}>No records in this date range. <span className="text-gray-400">/ या कालावधीत नोंदी नाहीत.</span></td></tr>
+          )}
+          {rows?.map((r) => (
+            <tr key={r.id} className="border-t">
+              <td className="p-2">
+                {/* Opens that record's own screen in a new tab - see the
+                    DOWNLOAD_ENTITY_ROUTES comment above for the route
+                    prefixes. Only DEALER/RETAILER can actually reach those
+                    routes (RoleProtected in App.jsx) - anyone else (ADMIN/
+                    ORGANISATION) just sees the plain id, not a dead link. */}
+                {canLinkToEntity(context) ? (
+                  <a href={downloadEntityHref(subTab, context, r.id)} target="_blank" rel="noopener noreferrer"
+                    className="text-emerald-700 underline hover:text-emerald-900">
+                    {r.id}
+                  </a>
+                ) : (
+                  r.id
+                )}
+              </td>
+              <td className="p-2 border-l">{new Date(r.date).toLocaleDateString()}</td>
+              <td className="p-2 border-l">{r.counterpartyName || '--'}</td>
+              <td className="p-2 border-l">{r.status || '--'}</td>
+              <td className="p-2 border-l">{formatMoney(r.amount)}</td>
+            </tr>
+          ))}
+        </tbody>
+        {rows?.length > 0 && (
+          <tfoot>
+            <tr className="border-t font-semibold bg-gray-50">
+              <td className="p-2" colSpan={4}>Total <span className="font-normal text-gray-500">/ एकूण</span></td>
+              <td className="p-2 border-l">{formatMoney(total)}</td>
+            </tr>
+          </tfoot>
+        )}
+      </table>
+    </div>
+  );
+}
+
 export default function Reports() {
   const [tab, setTab] = useState('dashboard');
   const [purchases, setPurchases] = useState(null);
@@ -1550,6 +1771,7 @@ export default function Reports() {
       ['vouchers-retailer', 'Voucher/Payments from Retailer / किरकोळ विक्रेत्याकडून व्हाउचर/देयके'],
       ['sold-products', 'Sold Products / विकलेली उत्पादने'],
       ['inventory', 'Product Inventory / उत्पादन साठा'],
+      ['downloads', 'Downloads / डाउनलोड्स'],
     ];
   } else if (roleContext === 'RETAILER') {
     // No separate "Payments to Dealer" tab - it now lives side by side
@@ -1560,6 +1782,7 @@ export default function Reports() {
       ['vouchers', 'Voucher/Payments to Dealer / डीलरला व्हाउचर/देयके'],
       ['sold-products', 'Sold Products / विकलेली उत्पादने'],
       ['inventory', 'Product Inventory / उत्पादन साठा'],
+      ['downloads', 'Downloads / डाउनलोड्स'],
     ];
   } else {
     tabs = [
@@ -1569,6 +1792,7 @@ export default function Reports() {
       ['sold-products', 'Sold Products / विकलेली उत्पादने'],
       ['inventory-dealer', 'Dealer Inventory / डीलर साठा'],
       ['inventory-retailer', 'Retailer Inventory / किरकोळ विक्रेता साठा'],
+      ['downloads', 'Downloads / डाउनलोड्स'],
     ];
   }
 
@@ -1637,6 +1861,8 @@ export default function Reports() {
             rows={inventoryByOwner?.retailerInventory || []}
           />
         )}
+
+        {tab === 'downloads' && <DownloadsPanel context={roleContext} />}
       </div>
     </div>
   );

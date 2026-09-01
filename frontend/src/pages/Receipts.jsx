@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import api from '../api.js';
 import { useAuth } from '../context/AuthContext.jsx';
 
@@ -16,6 +17,15 @@ export default function Receipts() {
   const [confirmingId, setConfirmingId] = useState(null);
   const [confirmError, setConfirmError] = useState('');
 
+  // Deep link from Reports > Downloads (?id=79, for either a RECEIPTS row
+  // or a RETAILER's own PAYMENTS row — see Reports.jsx downloadEntityHref
+  // for why both land here). No per-receipt edit view exists, so "opening"
+  // one means: clear any retailer filter hiding it, then scroll to and
+  // briefly highlight the row.
+  const [searchParams] = useSearchParams();
+  const [highlightReceiptId, setHighlightReceiptId] = useState(null);
+  const appliedIdParam = useRef(false);
+
   async function load() {
     const calls = [api.get('/receipts')];
     if (canPay) calls.push(api.get('/vouchers'));
@@ -27,6 +37,23 @@ export default function Receipts() {
     if (canConfirm) { setRetailers(results[next].data); }
   }
   useEffect(() => { load(); }, []);
+
+  useEffect(() => {
+    if (appliedIdParam.current) return;
+    const id = searchParams.get('id');
+    if (!id || receipts.length === 0) return;
+    const r = receipts.find((x) => String(x.id) === id);
+    if (r) {
+      if (canConfirm) setRetailerFilter('');
+      setHighlightReceiptId(String(r.id));
+      setTimeout(() => {
+        document.getElementById(`receipt-row-${r.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 50);
+      setTimeout(() => setHighlightReceiptId(null), 4000);
+    }
+    appliedIdParam.current = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [receipts]);
 
   async function submit(e) {
     e.preventDefault();
@@ -173,7 +200,7 @@ export default function Receipts() {
                       {g.items.map((r) => {
                         const status = statusLabel(r.status);
                         return (
-                          <tr key={r.id} className="border-t">
+                          <tr key={r.id} id={`receipt-row-${r.id}`} className={`border-t ${String(r.id) === highlightReceiptId ? 'bg-yellow-100' : ''}`}>
                             <td className="p-2">{r.id}</td>
                             <td className="p-2">
                               {r.voucherId
@@ -227,7 +254,7 @@ export default function Receipts() {
               {receipts.map((r) => {
                 const status = statusLabel(r.status);
                 return (
-                  <tr key={r.id} className="border-t">
+                  <tr key={r.id} id={`receipt-row-${r.id}`} className={`border-t ${String(r.id) === highlightReceiptId ? 'bg-yellow-100' : ''}`}>
                     <td className="p-2">{r.id}</td>
                     {!canPay && <td className="p-2">{r.retailer?.name || '-'}</td>}
                     <td className="p-2">

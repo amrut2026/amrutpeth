@@ -1237,5 +1237,174 @@ router.get('/sold-products', authRequired, async (req, res) => {
   res.json({ context: 'ALL', suppliers: serializeSupplierPivot(pivot) });
 });
 
+// ---------------------------------------------------------------------
+// Downloads report: a single date-windowed, printable list for one of six
+// transaction types (purchases / goods returns / sales / payments /
+// receipts / vouchers), scoped by role the same way every other endpoint
+// in this file is. The frontend's Downloads tab renders each type as its
+// own sub-tab and prints straight from the flat `rows` array below, so the
+// shape here is deliberately the same regardless of type: one row per
+// transaction with a date, counterparty, status and amount.
+const DOWNLOAD_TYPES = ['PURCHASES', 'GOODS_RETURN', 'SALES', 'PAYMENTS', 'RECEIPTS', 'VOUCHERS'];
+
+// Inclusive [from, to] on the `date` column every transactional model here
+// carries (Purchase/Sale/GoodsReturn/Payment/Receipt/Voucher.date, same
+// field every other /reports/* route above already orders by). Either
+// bound is optional - an open date filters just the other side.
+function dateRangeWhere(from, to) {
+  const range = {};
+  if (from) range.gte = new Date(`${from}T00:00:00.000Z`);
+  if (to) range.lte = new Date(`${to}T23:59:59.999Z`);
+  return Object.keys(range).length ? { date: range } : {};
+}
+
+function lineItemsTotal(items, priceKey) {
+  return items.reduce((sum, it) => sum + Number(it.quantity ?? 0) * Number(it[priceKey] ?? 0), 0);
+}
+
+router.get('/downloads', authRequired, async (req, res) => {
+  const { type, from, to } = req.query;
+  if (!DOWNLOAD_TYPES.includes(type)) {
+    return res.status(400).json({ error: `type must be one of ${DOWNLOAD_TYPES.join(', ')}` });
+  }
+  const dateWhere = dateRangeWhere(from, to);
+  const role = req.user.role;
+  const dealerId = req.user.dealerId;
+  const retailerId = req.user.retailerId;
+  const context = role === 'DEALER' || role === 'RETAILER' ? role : 'ALL';
+
+  // Receipts (money a DEALER has received from their RETAILERs) only exist
+  // for a role with a downstream to receive from - a RETAILER has none in
+  // this schema, so their Downloads screen simply doesn't offer that tab
+  // (see availableDownloadTypes on the frontend) and this guards the API
+  // the same way if it's ever hit directly.
+  if (type === 'RECEIPTS' && role === 'RETAILER') {
+    return res.json({ context, type, rows: [] });
+  }
+
+  let rows = [];
+
+  if (type === 'PURCHASES') {
+    const where = {
+      ...dateWhere,
+      ...(role === 'DEALER' ? { ownerType: 'DEALER', dealerId } : {}),
+      ...(role === 'RETAILER' ? { ownerType: 'RETAILER', retailerId } : {}),
+    };
+    const purchases = await prisma.purchase.findMany({
+      where, orderBy: { date: 'desc' },
+      include: { items: true, sourceDealer: true, supplier: true },
+    });
+    rows = purchases.map((p) => ({
+      id: p.id,
+      date: p.date,
+      counterpartyName: p.sourceDealer?.name ?? p.supplier?.name ?? null,
+      status: p.status,
+      amount: lineItemsTotal(p.items, p.ownerType === 'RETAILER' ? 'sellingPrice' : 'rate'),
+    }));
+  }
+
+  if (type === 'GOODS_RETURN') {
+    const where = {
+      ...dateWhere,
+      ...(role === 'DEALER' ? { ownerType: 'DEALER', dealerId } : {}),
+      ...(role === 'RETAILER' ? { ownerType: 'RETAILER', retailerId } : {}),
+    };
+    const returns = await prisma.goodsReturn.findMany({
+      where, orderBy: { date: 'desc' },
+      include: { items: true, dealer: true, retailer: true },
+    });
+    rows = returns.map((g) => ({
+      id: g.id,
+      date: g.date,
+      counterpartyName: g.ownerType === 'DEALER' ? (g.dealer?.name ?? null) : (g.retailer?.name ?? null),
+      status: g.status,
+      amount: lineItemsTotal(g.items.map((it) => ({ ...it, quantity: it.approvedQuantity ?? it.quantity })), 'rate'),
+    }));
+  }
+
+  if (type === 'SALES') {
+    const where = {
+      ...dateWhere,
+      ...(role === 'DEALER' ? { ownerType: 'DEALER', dealerId } : {}),
+      ...(role === 'RETAILER' ? { ownerType: 'RETAILER', retailerId } : {}),
+    };
+    const sales = await prisma.sale.findMany({
+      where, orderBy: { date: 'desc' },
+      include: { retailer: true },
+    });
+    rows = sales.map((s) => ({
+      id: s.id,
+      date: s.date,
+      counterpartyName: s.retailer?.name ?? (s.customerType ? s.customerType.replace(/_/g, ' ') : null),
+      status: s.status,
+      amount: Number(s.totalAmount ?? 0),
+    }));
+  }
+
+  if (type === 'PAYMENTS') {
+    // What THIS scope paid upward - a dealer paying their supplier, a
+    // retailer paying their dealer. For ADMIN/ORGANISATION, both legs of
+    // the chain (every payment is somebody's outgoing payment).
+    const where = {
+      ...dateWhere,
+      ...(role === 'DEALER' ? { dealerId, supplierId: { not: null } } : {}),
+      ...(role === 'RETAILER' ? { retailerId } : {}),
+    };
+    const payments = await prisma.payment.findMany({
+      where, orderBy: { date: 'desc' },
+      include: { supplier: true, dealer: true, retailer: true, voucher: true, receipt: true },
+    });
+    rows = payments.map((p) => ({
+      id: p.id,
+      date: p.date,
+      counterpartyName: p.supplier?.name ?? p.dealer?.name ?? null,
+      status: p.receipt?.status ?? p.voucher?.status ?? 'PAID',
+      amount: Number(p.amount ?? 0),
+    }));
+  }
+
+  if (type === 'RECEIPTS') {
+    // What THIS scope received from downstream - only a DEALER (from their
+    // retailers) or ADMIN/ORGANISATION (rolled up across every dealer) has
+    // one; see the RETAILER short-circuit above.
+    const where = {
+      ...dateWhere,
+      ...(role === 'DEALER' ? { dealerId, retailerId: { not: null } } : { retailerId: { not: null } }),
+    };
+    const payments = await prisma.payment.findMany({
+      where, orderBy: { date: 'desc' },
+      include: { retailer: true, receipt: true },
+    });
+    rows = payments.map((p) => ({
+      id: p.id,
+      date: p.date,
+      counterpartyName: p.retailer?.name ?? null,
+      status: p.receipt?.status ?? 'PAID',
+      amount: Number(p.amount ?? 0),
+    }));
+  }
+
+  if (type === 'VOUCHERS') {
+    const where = {
+      ...dateWhere,
+      ...(role === 'DEALER' ? { dealerId } : {}),
+      ...(role === 'RETAILER' ? { retailerId } : {}),
+    };
+    const vouchers = await prisma.voucher.findMany({
+      where, orderBy: { date: 'desc' },
+      include: { supplier: true, dealer: true, retailer: true },
+    });
+    rows = vouchers.map((v) => ({
+      id: v.id,
+      date: v.date,
+      counterpartyName: v.supplier?.name ?? v.retailer?.name ?? v.dealer?.name ?? null,
+      status: v.status,
+      amount: Number(v.amount ?? 0),
+    }));
+  }
+
+  res.json({ context, type, rows });
+});
+
 export default router;
 
