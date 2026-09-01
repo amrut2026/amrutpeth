@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import api from '../api.js';
 import Dashboard from './Dashboard.jsx';
 
@@ -318,6 +318,292 @@ function formatMoney(value) {
   return value != null ? `₹${Number(value).toFixed(2)}` : '-';
 }
 
+// Fixed left-to-right state order for the pivoted sold-products table below
+// - every row shows all three, in this order, regardless of which ones
+// actually occurred for that dealer/retailer.
+const SOLD_PRODUCT_STATES = ['OPEN', 'TO_BE_CONFIRMED', 'PAID'];
+
+// Looks up one state's entry within a byStatus array (see
+// /reports/sold-products in reports.js), or null if that dealer/retailer
+// had no sold products in that state at all.
+function findStateEntry(byStatus, status) {
+  return (byStatus || []).find((s) => s.status === status) || null;
+}
+
+// One dealer's or retailer's sold-products summary, one row, with every
+// state (Open/To Be Confirmed/Paid) shown side by side as its own group of
+// Sold Quantity / Cost Price / Selling Price columns - rather than one row
+// per state. A state with no sold products at all for this dealer/retailer
+// shows 0 for quantity and "--" for the two price columns instead of being
+// left out, so every row lines up under the same fixed set of columns.
+function SoldProductsTable({ rows }) {
+  return (
+    <table className="w-full text-sm">
+      <thead className="bg-gray-100 sticky top-0 z-10">
+        <tr>
+          <th rowSpan={2} className="text-left p-2 align-bottom">Dealer / Retailer <span className="text-gray-400 font-normal">/ डीलर / किरकोळ विक्रेता</span></th>
+          {SOLD_PRODUCT_STATES.map((s) => (
+            <th key={s} colSpan={3} className="text-center p-2 border-l">{STATUS_LABELS[s] || s}</th>
+          ))}
+        </tr>
+        <tr>
+          {SOLD_PRODUCT_STATES.map((s) => (
+            <Fragment key={s}>
+              <th className="text-left p-2 border-l text-xs font-normal text-gray-500">Qty <span className="text-gray-400">/ प्रमाण</span></th>
+              <th className="text-left p-2 text-xs font-normal text-gray-500">Cost <span className="text-gray-400">/ खरेदी</span></th>
+              <th className="text-left p-2 text-xs font-normal text-gray-500">Selling <span className="text-gray-400">/ विक्री</span></th>
+            </Fragment>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((row) => (
+          <tr key={row.id} className={`border-t ${row.indent ? '' : 'bg-orange-50/40 font-semibold'}`}>
+            <td className={`p-2 ${row.indent ? 'pl-6 font-normal text-gray-700' : ''}`}>{row.name}</td>
+            {SOLD_PRODUCT_STATES.map((s) => {
+              const entry = findStateEntry(row.byStatus, s);
+              return (
+                <Fragment key={s}>
+                  <td className="p-2 border-l font-normal">{entry ? entry.quantity : 0}</td>
+                  <td className="p-2 font-normal">{entry ? formatMoney(entry.costPrice) : '--'}</td>
+                  <td className="p-2 font-normal">{entry ? formatMoney(entry.sellingPrice) : '--'}</td>
+                </Fragment>
+              );
+            })}
+          </tr>
+        ))}
+        {rows.length === 0 && (
+          <tr>
+            <td className="p-3 text-gray-400" colSpan={1 + SOLD_PRODUCT_STATES.length * 3}>
+              No sold products yet. / अद्याप विकलेली उत्पादने नाहीत.
+            </td>
+          </tr>
+        )}
+      </tbody>
+    </table>
+  );
+}
+
+// Sold Products tab: grouped by origin SUPPLIER first - each supplier's
+// own summary row followed immediately by a "Sold By" breakdown of which
+// dealer and/or retailer actually made those sales (a DEALER's own direct
+// cash sales, and/or each of their retailers' own cash sales; at the
+// ADMIN/ORGANISATION level, potentially several different dealers and
+// their retailers at once). Nesting the "Sold By" breakdown directly under
+// its own supplier's summary row (rather than pulling it out into one
+// combined section) is what makes it useful for reconciliation: summing a
+// supplier's own "Sold By" rows for any given state should reproduce that
+// supplier's own byStatus total shown just above it - a quick visual check
+// that the two add up. A RETAILER login only ever has one seller -
+// themselves - so their "Sold By" row would just repeat the supplier row
+// above it; it's left out for them (see showSellers below). Supplier
+// filter defaults to All, same pattern as the inventory panels (own local
+// state so leaving and returning to the tab resets it).
+function buildSoldPivotHtml(rows, firstColumnLabel) {
+  if (rows.length === 0) return '<p class="muted">None yet.</p>';
+  const stateHeaderCells = SOLD_PRODUCT_STATES.map((s) => `<th colspan="3">${escapeHtml(STATUS_LABELS[s] || s)}</th>`).join('');
+  const subHeaderCells = SOLD_PRODUCT_STATES.map(() => '<th>Qty</th><th>Cost</th><th>Selling</th>').join('');
+  const bodyRows = rows.map((row) => {
+    const cells = SOLD_PRODUCT_STATES.map((s) => {
+      const entry = findStateEntry(row.byStatus, s);
+      return `<td>${entry ? entry.quantity : 0}</td><td>${escapeHtml(entry ? formatMoney(entry.costPrice) : '--')}</td><td>${escapeHtml(entry ? formatMoney(entry.sellingPrice) : '--')}</td>`;
+    }).join('');
+    return `<tr><td class="${row.indent ? 'indent' : 'bold'}">${escapeHtml(row.name)}</td>${cells}</tr>`;
+  }).join('');
+  return `<table>
+    <thead>
+      <tr><th rowspan="2">${escapeHtml(firstColumnLabel)}</th>${stateHeaderCells}</tr>
+      <tr>${subHeaderCells}</tr>
+    </thead>
+    <tbody>${bodyRows}</tbody>
+  </table>`;
+}
+
+// One supplier "block" for print: its own summary row (as a one-row pivot
+// table) immediately followed by its own "Sold By" breakdown - same
+// nesting as the on-screen SupplierSection below. `sellers` is already
+// pre-labeled (see sellerLabel below) by the time it reaches here.
+function buildSupplierBlockHtml({ name, byStatus, sellers }) {
+  const sellerRows = (sellers || []).map((s) => ({ id: 'x', name: s.name, byStatus: s.byStatus, indent: false }));
+  return `
+    <div style="margin-bottom:16px;">
+      <h3 style="font-size:13px;margin:10px 0 4px;">${escapeHtml(name)}</h3>
+      ${buildSoldPivotHtml([{ id: 'x', name, byStatus, indent: false }], 'Total')}
+      ${sellerRows.length > 0 ? `
+      <div style="margin-left:16px;">
+        <div style="font-size:11px;color:#666;margin:2px 0;">Sold By</div>
+        ${buildSoldPivotHtml(sellerRows, 'Sold By')}
+      </div>` : ''}
+    </div>
+  `;
+}
+
+// Builds a standalone printable HTML document with every dealer/retailer
+// block currently on screen, same "print exactly what's on screen"
+// approach as buildVoucherPrintHtml above - blocks already reflects
+// whichever dealer filter is currently selected.
+function buildSoldProductsPrintHtml({ title, subtitle, blocks }) {
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>${escapeHtml(title)}</title>
+<style>
+  body { font-family: Arial, sans-serif; padding: 24px; color: #111; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .subtitle { font-size: 12px; color: #555; margin-bottom: 20px; }
+  h3 { font-size: 13px; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 8px; font-size: 12px; }
+  th, td { border: 1px solid #ddd; padding: 4px 6px; text-align: left; }
+  th { background: #f3f3f3; }
+  td.indent { padding-left: 18px; }
+  td.bold { font-weight: bold; }
+  .muted { color: #999; font-size: 12px; margin: 4px 0 12px; }
+  @media print { body { padding: 0; } }
+</style>
+</head>
+<body>
+  <h1>${escapeHtml(title)}</h1>
+  <div class="subtitle">${escapeHtml(subtitle)}${subtitle ? ' &middot; ' : ''}Printed ${escapeHtml(new Date().toLocaleString())}</div>
+  ${blocks.map(buildSupplierBlockHtml).join('')}
+</body>
+</html>`;
+}
+
+// Labels one "Sold By" row so a DEALER's own direct sales are told apart
+// from their retailers' sales, and - at the ADMIN/ORGANISATION level,
+// where sellers under one supplier can span several different dealers -
+// so a retailer is told apart from a same-named retailer under a
+// different dealer (parentDealerName is only ever set there, see
+// reports.js /sold-products).
+function sellerLabel(seller, context) {
+  if (seller.type === 'DEALER') {
+    return context === 'DEALER' ? `${seller.name} (Direct Sales / थेट विक्री)` : `${seller.name} (Dealer / डीलर)`;
+  }
+  return seller.parentDealerName
+    ? `${seller.name} (Retailer / किरकोळ विक्रेता · ${seller.parentDealerName})`
+    : `${seller.name} (Retailer / किरकोळ विक्रेता)`;
+}
+
+// One supplier's own summary row plus its own nested "Sold By" breakdown
+// underneath - see the reconciliation note on SoldProductsPanel above for
+// why it's nested here rather than pulled out into one combined section.
+// showSellers is false only for a RETAILER login (see SoldProductsPanel
+// below) - their one and only seller is always themselves, so the
+// breakdown would just repeat this same row a second time.
+function SupplierSection({ id, name, byStatus, sellers, context, showSellers }) {
+  const ownRow = [{ id, name, byStatus, indent: false }];
+  const sellerRows = (sellers || []).map((s) => ({
+    id: `${id}-${s.type}-${s.id}`,
+    name: sellerLabel(s, context),
+    byStatus: s.byStatus,
+    indent: false,
+  }));
+
+  return (
+    <div className="mb-4">
+      <div className="rounded shadow overflow-x-auto mb-1 bg-orange-50/40">
+        <SoldProductsTable rows={ownRow} />
+      </div>
+      {showSellers && (
+        <div className="pl-4">
+          <div className="text-xs font-medium text-gray-500 mb-1">Sold By <span className="text-gray-400 font-normal">/ कोणी विकले</span></div>
+          <div className="bg-white rounded shadow overflow-x-auto">
+            <SoldProductsTable rows={sellerRows} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SoldProductsPanel({ data }) {
+  // Own local selection state, same pattern as the other panels' dealer/
+  // status filters - resets to All whenever the tab is left and returned to.
+  const [selectedSupplier, setSelectedSupplier] = useState('ALL');
+  if (!data) return null;
+
+  const showSellers = data.context !== 'RETAILER';
+  const suppliers = data.suppliers || [];
+  // <select> values are always strings, and a "No Supplier" bucket carries
+  // a null supplierId (see reports.js), so it's keyed here as the literal
+  // string 'none' rather than 'null' to stay unambiguous either way.
+  const supplierKey = (s) => String(s.supplierId ?? 'none');
+  const filteredSuppliers = selectedSupplier === 'ALL'
+    ? suppliers
+    : suppliers.filter((s) => supplierKey(s) === selectedSupplier);
+
+  // Prints exactly what's on screen right now - every supplier block as
+  // narrowed by whichever supplier dropdown is set - in a separate window
+  // so the rest of the app UI doesn't end up on the page.
+  const handlePrint = () => {
+    const selectedSupplierName = selectedSupplier === 'ALL'
+      ? 'All'
+      : (suppliers.find((s) => supplierKey(s) === selectedSupplier)?.supplierName || selectedSupplier);
+    const subtitle = suppliers.length > 1 ? `Supplier: ${selectedSupplierName}` : '';
+
+    const blocks = filteredSuppliers.map((s) => ({
+      name: s.supplierName,
+      byStatus: s.byStatus,
+      sellers: showSellers ? (s.sellers || []).map((seller) => ({ name: sellerLabel(seller, data.context), byStatus: seller.byStatus })) : [],
+    }));
+
+    const html = buildSoldProductsPrintHtml({ title: 'Sold Products', subtitle, blocks });
+    const printWindow = window.open('', '_blank', 'width=900,height=700');
+    if (!printWindow) return; // popup blocked - nothing else to fall back to here
+    printWindow.document.write(html);
+    printWindow.document.close();
+    printWindow.focus();
+    printWindow.onload = () => printWindow.print();
+  };
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+        {suppliers.length > 1 ? (
+          <div className="flex items-center gap-2">
+            <label className="text-sm font-medium">Supplier / पुरवठादार:</label>
+            <select
+              className="border rounded px-2 py-1 text-sm bg-white"
+              value={selectedSupplier}
+              onChange={(e) => setSelectedSupplier(e.target.value)}
+            >
+              <option value="ALL">All / सर्व</option>
+              {suppliers.map((s) => (
+                <option key={supplierKey(s)} value={supplierKey(s)}>{s.supplierName}</option>
+              ))}
+            </select>
+          </div>
+        ) : <div />}
+        <button
+          onClick={handlePrint}
+          className="px-3 py-1.5 rounded text-sm bg-white border hover:bg-gray-50"
+        >
+          🖨 Print / छापा
+        </button>
+      </div>
+
+      {filteredSuppliers.length === 0 ? (
+        <div className="bg-white rounded shadow p-3 text-gray-400 text-sm">
+          No sold products yet. / अद्याप विकलेली उत्पादने नाहीत.
+        </div>
+      ) : (
+        filteredSuppliers.map((s) => (
+          <SupplierSection
+            key={supplierKey(s)}
+            id={`s-${supplierKey(s)}`}
+            name={s.supplierName}
+            byStatus={s.byStatus}
+            sellers={s.sellers}
+            context={data.context}
+            showSellers={showSellers}
+          />
+        ))
+      )}
+    </div>
+  );
+}
+
 // Sum of quantity × unit price across an order's items. Same price field
 // PurchasesPanel already keys off of: cost price (rate) for a dealer's
 // purchase from a supplier, selling price for a retailer's purchase from
@@ -538,7 +824,20 @@ function buildVoucherPrintHtml({ title, subtitle, counterpartyLabel, showDealerC
 </html>`;
 }
 
-function VoucherSection({ heading, headingMr, printTitle, counterpartyLabel, data, showDealerColumn, showCounterpartyFilter = false, showStatusFilter = false }) {
+function VoucherSection({
+  heading, headingMr, printTitle, counterpartyLabel, data, showDealerColumn,
+  showCounterpartyFilter = false, showStatusFilter = false,
+  // Only passed for the DEALER's own "Voucher/Payments from Retailer" tab
+  // (see Reports() below) - showVoucherAdjustmentColumn adds the extra
+  // Payments column, onAdjustVoucher is what the button in it calls
+  // (POST /sold-products/pay/:paymentId/adjust-vouchers). Left undefined
+  // everywhere else (Supplier Vouchers, the RETAILER's own view, the
+  // ADMIN/ORGANISATION panel) - a row's own needsVoucherAdjustment flag
+  // is also only ever set by reports.js for that same tab's data, so
+  // there's nothing to show even if it were passed.
+  showVoucherAdjustmentColumn = false,
+  onAdjustVoucher,
+}) {
   // Own local selection state, same pattern as DealerInventoryPanel's
   // selectedDealer - so switching away from and back to this tab resets
   // the filter to All rather than persisting a stale selection.
@@ -546,6 +845,11 @@ function VoucherSection({ heading, headingMr, printTitle, counterpartyLabel, dat
   // State/status filter (OPEN / PARTIALLY_PAID / PAID) - defaults to All,
   // same reset-on-remount behaviour as the counterparty filter above.
   const [selectedStatus, setSelectedStatus] = useState('ALL');
+  // Payment id currently being adjusted (disables its own button while the
+  // request is in flight) and any error from the last attempt, keyed by
+  // payment id so one row's failure doesn't clear another's.
+  const [adjustingId, setAdjustingId] = useState(null);
+  const [adjustErrors, setAdjustErrors] = useState({});
 
   if (!data) return null;
 
@@ -617,6 +921,18 @@ function VoucherSection({ heading, headingMr, printTitle, counterpartyLabel, dat
     printWindow.focus();
     printWindow.onload = () => printWindow.print();
   };
+
+  async function handleAdjustVoucher(paymentId) {
+    setAdjustingId(paymentId);
+    setAdjustErrors((prev) => ({ ...prev, [paymentId]: null }));
+    try {
+      await onAdjustVoucher(paymentId);
+    } catch (err) {
+      setAdjustErrors((prev) => ({ ...prev, [paymentId]: err.response?.data?.error || 'Failed to adjust voucher' }));
+    } finally {
+      setAdjustingId(null);
+    }
+  }
 
   return (
     <div className="mb-8">
@@ -727,11 +1043,14 @@ function VoucherSection({ heading, headingMr, printTitle, counterpartyLabel, dat
                     <th className="text-left p-2">Amount / रक्कम</th>
                     <th className="text-left p-2">Mode / पद्धत</th>
                     <th className="text-left p-2">Reference / संदर्भ</th>
+                    {showVoucherAdjustmentColumn && (
+                      <th className="text-left p-2">Voucher Adjustment / व्हाउचर समायोजन</th>
+                    )}
                   </tr>
                 </thead>
                 <tbody>
                   {g.items.map((p) => (
-                    <tr key={p.id} className="border-t">
+                    <tr key={p.id} className={`border-t ${p.needsVoucherAdjustment ? 'bg-amber-50' : ''}`}>
                       <td className="p-2">{p.id}</td>
                       <td className="p-2">{new Date(p.date).toLocaleDateString()}</td>
                       <td className="p-2">{p.counterpartyName || p.dealerName || '-'}</td>
@@ -739,6 +1058,29 @@ function VoucherSection({ heading, headingMr, printTitle, counterpartyLabel, dat
                       <td className="p-2">{formatMoney(p.amount)}</td>
                       <td className="p-2">{p.mode}</td>
                       <td className="p-2">{p.reference || '-'}</td>
+                      {showVoucherAdjustmentColumn && (
+                        <td className="p-2">
+                          {p.needsVoucherAdjustment ? (
+                            <div className="flex flex-col gap-1 items-start">
+                              <span className="text-xs font-semibold text-amber-700">
+                                ⚠ Not adjusted / समायोजित नाही
+                              </span>
+                              <button
+                                disabled={adjustingId === p.id}
+                                onClick={() => handleAdjustVoucher(p.id)}
+                                className="px-2 py-1 rounded text-xs bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50"
+                              >
+                                {adjustingId === p.id ? 'Adjusting... / समायोजित करत आहे...' : 'Adjust voucher / व्हाउचर समायोजित करा'}
+                              </button>
+                              {adjustErrors[p.id] && (
+                                <span className="text-xs text-red-600">{adjustErrors[p.id]}</span>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-gray-300">-</span>
+                          )}
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>
@@ -850,9 +1192,10 @@ function VouchersPanel({ data }) {
 }
 
 export default function Reports() {
-  const [tab, setTab] = useState('purchases');
+  const [tab, setTab] = useState('dashboard');
   const [purchases, setPurchases] = useState(null);
   const [vouchers, setVouchers] = useState(null);
+  const [soldProducts, setSoldProducts] = useState(null);
   const [inventory, setInventory] = useState([]);
   // Admin/Organisation-only split view: null until loaded (and never loaded
   // at all for DEALER/RETAILER, since the API rejects it for those roles).
@@ -867,9 +1210,31 @@ export default function Reports() {
       // DEALER/ADMIN-ORGANISATION so the report opens showing everything.
       setSelectedCounterparty(r.data.context === 'RETAILER' ? (r.data.counterparties?.[0]?.id ?? null) : 'ALL');
     });
-    api.get('/reports/vouchers').then((r) => setVouchers(r.data));
+    loadVouchers();
+    api.get('/reports/sold-products').then((r) => setSoldProducts(r.data));
     api.get('/reports/inventory').then((r) => setInventory(r.data));
   }, []);
+
+  // Pulled out of the mount effect so it can also be re-run after a
+  // retroactive voucher adjustment (see adjustPaymentVoucher below) -
+  // simplest way to pick up the payment's new needsVoucherAdjustment: false
+  // and the touched voucher's new status/description without hand-patching
+  // local state.
+  function loadVouchers() {
+    api.get('/reports/vouchers').then((r) => setVouchers(r.data));
+  }
+
+  // Applies an already-confirmed sold-products payment from a retailer
+  // against that retailer's own outstanding RECEIVABLE vouchers (see
+  // soldProducts.js POST /pay/:paymentId/adjust-vouchers) - the action
+  // behind the "Adjust voucher" button reports.js flags via
+  // needsVoucherAdjustment on the Voucher/Payments from Retailer tab.
+  // Re-throws on failure so VoucherSection's own handler can show the
+  // error next to that payment's row.
+  async function adjustPaymentVoucher(paymentId) {
+    await api.post(`/sold-products/pay/${paymentId}/adjust-vouchers`);
+    loadVouchers();
+  }
 
   // The split view is admin/organisation-only, so this second fetch only
   // fires once we know the role from /reports/purchases (rather than
@@ -893,6 +1258,7 @@ export default function Reports() {
       ['purchases', `${purchasesText.title} / ${purchasesText.titleMr}`],
       ['vouchers-supplier', 'Voucher/Payments to Supplier / पुरवठादाराला व्हाउचर/देयके'],
       ['vouchers-retailer', 'Voucher/Payments from Retailer / किरकोळ विक्रेत्याकडून व्हाउचर/देयके'],
+      ['sold-products', 'Sold Products / विकलेली उत्पादने'],
       ['inventory', 'Product Inventory / उत्पादन साठा'],
     ];
   } else if (roleContext === 'RETAILER') {
@@ -902,6 +1268,7 @@ export default function Reports() {
       ['dashboard', 'Dashboard / डॅशबोर्ड'],
       ['purchases', `${purchasesText.title} / ${purchasesText.titleMr}`],
       ['vouchers', 'Voucher/Payments to Dealer / डीलरला व्हाउचर/देयके'],
+      ['sold-products', 'Sold Products / विकलेली उत्पादने'],
       ['inventory', 'Product Inventory / उत्पादन साठा'],
     ];
   } else {
@@ -909,6 +1276,7 @@ export default function Reports() {
       ['dashboard', 'Dashboard / डॅशबोर्ड'],
       ['purchases', `${purchasesText.title} / ${purchasesText.titleMr}`],
       ['vouchers', 'Vouchers / व्हाउचर'],
+      ['sold-products', 'Sold Products / विकलेली उत्पादने'],
       ['inventory-dealer', 'Dealer Inventory / डीलर साठा'],
       ['inventory-retailer', 'Retailer Inventory / किरकोळ विक्रेता साठा'],
     ];
@@ -958,8 +1326,12 @@ export default function Reports() {
             data={vouchers?.retailer}
             showDealerColumn={false}
             showCounterpartyFilter
+            showVoucherAdjustmentColumn
+            onAdjustVoucher={adjustPaymentVoucher}
           />
         )}
+
+        {tab === 'sold-products' && <SoldProductsPanel data={soldProducts} />}
 
         {tab === 'inventory' && (
           <InventoryTable rows={inventory} />

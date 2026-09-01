@@ -215,6 +215,30 @@ router.get('/vouchers', authRequired, async (req, res) => {
       prisma.voucher.findMany({ where: { dealerId, type: 'RECEIVABLE' }, include: { retailer: true }, orderBy: { date: 'desc' } }),
       prisma.payment.findMany({ where: { dealerId, retailerId: { not: null } }, include: { retailer: true, voucher: true }, orderBy: { date: 'desc' } }),
     ]);
+
+    // Flag a retailer payment that's a confirmed sold-products settlement
+    // (soldProducts.js POST /pay + PATCH /pay/:paymentId/confirm — the
+    // only route that creates a retailer Payment with no voucherId of its
+    // own, unlike a receipts.js POST / payment which is always tied to
+    // one from the start) that's never actually been applied against any
+    // of this retailer's RECEIVABLE vouchers, so the frontend can
+    // highlight it and offer POST /sold-products/pay/:paymentId/adjust-
+    // vouchers to fix it retroactively. Only flagged when there's
+    // actually an outstanding voucher to adjust against - otherwise the
+    // action would be a dead end.
+    const unlinkedPaymentIds = retailerPayments.filter((p) => p.voucherId == null).map((p) => p.id);
+    const confirmedSoldProductPaymentIds = new Set();
+    if (unlinkedPaymentIds.length) {
+      const confirmedRows = await prisma.soldProduct.findMany({
+        where: { paymentId: { in: unlinkedPaymentIds }, owedBy: 'RETAILER', status: 'PAID' },
+        select: { paymentId: true },
+      });
+      for (const r of confirmedRows) confirmedSoldProductPaymentIds.add(r.paymentId);
+    }
+    const outstandingRetailerIds = new Set(
+      retailerVouchers.filter((v) => v.status !== 'PAID').map((v) => v.retailerId)
+    );
+
     return res.json({
       context: 'DEALER',
       supplier: {
@@ -223,7 +247,18 @@ router.get('/vouchers', authRequired, async (req, res) => {
       },
       retailer: {
         vouchers: retailerVouchers.map((v) => serializeVoucher(v)),
-        payments: retailerPayments.map((p) => serializeVoucherPayment(p)),
+        payments: retailerPayments.map((p) => {
+          const marker = `Sold Products Payment #${p.id}`;
+          const alreadyAdjusted = retailerVouchers.some(
+            (v) => v.retailerId === p.retailerId && v.description?.includes(marker)
+          );
+          const needsVoucherAdjustment =
+            p.voucherId == null &&
+            confirmedSoldProductPaymentIds.has(p.id) &&
+            !alreadyAdjusted &&
+            outstandingRetailerIds.has(p.retailerId);
+          return { ...serializeVoucherPayment(p), needsVoucherAdjustment };
+        }),
       },
     });
   }
@@ -501,16 +536,27 @@ const VOUCHER_STATUS_ORDER = ['OPEN', 'PARTIALLY_PAID', 'PAID'];
 function newBucket() {
   return { count: 0, amount: 0, byStatus: new Map() };
 }
+// A cancelled or still-pending row (CANCELLED, PENDING, or a
+// status like IN_PENDING that's a pending variant) isn't settled activity
+// yet, so it's kept out of the bucket's headline count/amount - it still
+// gets its own line in byStatus below, just not folded into the total.
+function isExcludedFromTotal(status) {
+  return status === 'CANCELLED' || status.includes('PENDING');
+}
 function addToBucket(bucket, status, amount) {
-  bucket.count += 1;
-  bucket.amount += amount;
   if (!bucket.byStatus.has(status)) bucket.byStatus.set(status, { status, count: 0, amount: 0 });
   const s = bucket.byStatus.get(status);
   s.count += 1;
   s.amount += amount;
+  if (!isExcludedFromTotal(status)) {
+    bucket.count += 1;
+    bucket.amount += amount;
+  }
 }
 // Only the statuses that actually occurred are included (in canonical
-// order), so an empty/rare state doesn't clutter every cell.
+// order), so an empty/rare state doesn't clutter every cell. This always
+// includes CANCELLED/PENDING-variant entries too (see addToBucket) - they're
+// just excluded from the count/amount totals above, not hidden here.
 function serializeBucket(bucket, order) {
   return {
     count: bucket.count,
@@ -521,11 +567,13 @@ function serializeBucket(bucket, order) {
 
 // Activity summary (purchases/sales/soldProducts/goodsReturns/payments/
 // receipts/vouchers) grouped by dealer and by retailer, each broken down by
-// status — for the ADMIN/ORGANISATION Dashboard's per-dealer and
-// per-retailer breakdown tables. Same ADMIN-sees-everything /
-// ORGANISATION-sees-its-own-org scoping as /org-summary above, for the same
-// reason (a dealer/retailer listing is dealer/retailer-management data,
-// which stays inside its own organisation everywhere else in the app).
+// status — for the Dashboard's per-dealer and per-retailer breakdown
+// tables. ADMIN sees everything, ORGANISATION sees its own org (same
+// scoping as /org-summary above, since a dealer/retailer listing is
+// dealer/retailer-management data that stays inside its own organisation
+// everywhere else in the app). DEALER is scoped to just their own dealer
+// row plus their own retailers; RETAILER is scoped to their own dealer's
+// row plus only their own single retailer row.
 //
 // Amounts are computed the same way each entity already prices things
 // elsewhere in this file/schema, not a flat "amount" column that doesn't
@@ -559,30 +607,62 @@ function serializeBucket(bucket, order) {
 //   - receipts / vouchers: Receipt.amount / Voucher.amount, bucketed by
 //     their own status directly.
 router.get('/activity-summary', authRequired, async (req, res) => {
-  if (req.user.role === 'DEALER' || req.user.role === 'RETAILER') {
-    return res.status(403).json({ error: 'Not available for this role' });
-  }
-
-  const orgWhere = req.user.role === 'ORGANISATION' ? { orgId: req.user.organisationId } : {};
-
-  const organisations = await prisma.organisation.findMany({
-    where: orgWhere,
-    select: {
-      orgId: true,
-      orgName: true,
-      dealers: {
-        select: { id: true, name: true, retailers: { select: { id: true, name: true } } },
-      },
-    },
-  });
-
   const dealerInfo = new Map(); // dealerId -> { name, organisationId, organisationName }
   const retailerInfo = new Map(); // retailerId -> { name, dealerId }
-  for (const org of organisations) {
-    for (const d of org.dealers) {
-      dealerInfo.set(d.id, { name: d.name, organisationId: org.orgId, organisationName: org.orgName });
-      for (const r of d.retailers) {
-        retailerInfo.set(r.id, { name: r.name, dealerId: d.id });
+
+  if (req.user.role === 'DEALER') {
+    // Own dashboard row plus every one of their own retailers - same
+    // dealerId/primaryDealerId scoping GET /sold-products already uses for
+    // a DEALER login.
+    const dealerId = req.user.dealerId;
+    const dealer = await prisma.dealer.findUnique({ where: { id: dealerId }, select: { name: true } });
+    if (dealer) {
+      dealerInfo.set(dealerId, { name: dealer.name, organisationId: null, organisationName: null });
+      const retailers = await prisma.retailer.findMany({
+        where: { primaryDealerId: dealerId },
+        select: { id: true, name: true },
+      });
+      for (const r of retailers) retailerInfo.set(r.id, { name: r.name, dealerId });
+    }
+  } else if (req.user.role === 'RETAILER') {
+    // Their own dealer's row plus only their own single retailer row - not
+    // the dealer's other retailers, which stay out of a RETAILER login's
+    // view everywhere else in this file too.
+    const retailerId = req.user.retailerId;
+    const retailer = await prisma.retailer.findUnique({
+      where: { id: retailerId },
+      select: { name: true, primaryDealerId: true },
+    });
+    if (retailer) {
+      retailerInfo.set(retailerId, { name: retailer.name, dealerId: retailer.primaryDealerId });
+      if (retailer.primaryDealerId) {
+        const dealer = await prisma.dealer.findUnique({
+          where: { id: retailer.primaryDealerId },
+          select: { name: true },
+        });
+        dealerInfo.set(retailer.primaryDealerId, { name: dealer?.name ?? null, organisationId: null, organisationName: null });
+      }
+    }
+  } else {
+    const orgWhere = req.user.role === 'ORGANISATION' ? { orgId: req.user.organisationId } : {};
+
+    const organisations = await prisma.organisation.findMany({
+      where: orgWhere,
+      select: {
+        orgId: true,
+        orgName: true,
+        dealers: {
+          select: { id: true, name: true, retailers: { select: { id: true, name: true } } },
+        },
+      },
+    });
+
+    for (const org of organisations) {
+      for (const d of org.dealers) {
+        dealerInfo.set(d.id, { name: d.name, organisationId: org.orgId, organisationName: org.orgName });
+        for (const r of d.retailers) {
+          retailerInfo.set(r.id, { name: r.name, dealerId: d.id });
+        }
       }
     }
   }
@@ -837,4 +917,233 @@ router.get('/activity-summary', authRequired, async (req, res) => {
   res.json({ context: req.user.role, dealers, retailers });
 });
 
+// Sold products report: quantity/value summary of SoldProduct rows (see
+// schema.prisma), grouped primarily by the origin SUPPLIER (Product.
+// supplierId) - "how much of Supplier X's stock has actually sold, and in
+// what state" is the more natural top-level question at the DEALER and
+// ADMIN/ORGANISATION level than "what does this one dealer's sales break
+// down into". Under each supplier, a `sellers` breakdown shows exactly who
+// made those sales - the dealer's own direct cash sales and/or each of
+// their retailers' own cash sales (see `sellers[].type`) - so the
+// supplier's own aggregate `byStatus` total can still be reconciled
+// against the sum of its `sellers[].byStatus` entries for any given
+// state, same reconciliation property the old dealer-then-supplier
+// nesting had, just pivoted the other way around. Within a supplier or a
+// seller, rows are further broken down by SoldProduct.status ("state") so
+// the same line can show OPEN vs TO_BE_CONFIRMED vs PAID separately
+// rather than one blended total.
+//
+// Pricing per state row (same for a supplier's own byStatus and each of
+// its sellers' byStatus, since they're built from the same rows):
+//   - quantity: sum of SaleItem.quantity across that state's SoldProduct rows.
+//   - costPrice: quantity-weighted total at SaleItem.rate for a dealer's own
+//     row (what the dealer paid their supplier) or SaleItem.sellingPrice for
+//     a retailer's own row (what the retailer paid their dealer) - same
+//     per-role field choice /activity-summary above already uses for this
+//     same settlement amount.
+//   - sellingPrice: quantity-weighted total at SaleItem.price (the actual
+//     cash-sale price charged to the end customer, sourced from
+//     Inventory.retailerSellingPrice at sale time) for BOTH a dealer's own
+//     row and a retailer's own row.
+//
+// Only the two "own sale" SoldProduct rows are counted (owedBy DEALER with
+// dealerId null, and owedBy RETAILER) - the second, dealer-scoped row
+// raised when a retailer resells dealer-sourced stock (owedBy DEALER with
+// dealerId set) is a separate upstream obligation, not this dealer's own
+// sale, so it's left out of this report entirely.
+function addSoldBucket(map, status, quantity, costPriceUnit, sellingPriceUnit) {
+  if (!map.has(status)) map.set(status, { status, quantity: 0, costPrice: 0, sellingPrice: 0 });
+  const b = map.get(status);
+  b.quantity += quantity;
+  b.costPrice += costPriceUnit * quantity;
+  b.sellingPrice += sellingPriceUnit * quantity;
+}
+function serializeSoldBucket(map) {
+  return SOLD_PRODUCT_STATUS_ORDER.map((s) => map.get(s)).filter(Boolean);
+}
+
+// The supplier-first pivot itself - buckets keyed by supplierId (or "none"
+// for a product with no Product.supplierId set, so an unattributed row
+// still counts toward reconciliation rather than being silently dropped),
+// each holding both its own aggregate state buckets AND a nested map of
+// sellers (dealer and/or retailer), each of which holds its own state
+// buckets in exactly the same shape.
+function newSupplierPivotGroup() {
+  return { buckets: new Map(), names: new Map(), sellers: new Map() };
+}
+// `seller` is { type: 'DEALER' | 'RETAILER', id, name, parentDealerName? }
+// - parentDealerName is only ever set for a RETAILER seller at the ADMIN/
+// ORGANISATION level (see below), where several dealers' retailers could
+// otherwise share a name with nothing to tell them apart by.
+function addToSupplierPivot(group, product, seller, status, quantity, costPriceUnit, sellingPriceUnit) {
+  const supplierKey = product?.supplierId ?? 'none';
+  if (!group.buckets.has(supplierKey)) group.buckets.set(supplierKey, new Map());
+  if (!group.names.has(supplierKey)) group.names.set(supplierKey, product?.supplier?.name ?? 'No Supplier');
+  addSoldBucket(group.buckets.get(supplierKey), status, quantity, costPriceUnit, sellingPriceUnit);
+
+  if (!group.sellers.has(supplierKey)) group.sellers.set(supplierKey, new Map());
+  const sellerMap = group.sellers.get(supplierKey);
+  const sellerKey = `${seller.type}-${seller.id}`;
+  if (!sellerMap.has(sellerKey)) {
+    sellerMap.set(sellerKey, {
+      type: seller.type,
+      id: seller.id,
+      name: seller.name,
+      parentDealerName: seller.parentDealerName ?? null,
+      buckets: new Map(),
+    });
+  }
+  addSoldBucket(sellerMap.get(sellerKey).buckets, status, quantity, costPriceUnit, sellingPriceUnit);
+}
+function serializeSupplierPivot(group) {
+  return [...group.buckets.keys()]
+    .map((key) => ({
+      supplierId: key === 'none' ? null : key,
+      supplierName: group.names.get(key),
+      byStatus: serializeSoldBucket(group.buckets.get(key)),
+      sellers: [...(group.sellers.get(key)?.values() ?? [])]
+        .map((s) => ({
+          type: s.type,
+          id: s.id,
+          name: s.name,
+          parentDealerName: s.parentDealerName,
+          byStatus: serializeSoldBucket(s.buckets),
+        }))
+        .sort((a, b) => (a.name || '').localeCompare(b.name || '')),
+    }))
+    .sort((a, b) => (a.supplierName || '').localeCompare(b.supplierName || ''));
+}
+
+// Product select shared by every soldProduct query below - just enough to
+// attribute a row to its origin supplier (see addToSupplierPivot above)
+// without pulling the whole Product row.
+const SOLD_PRODUCT_SUPPLIER_SELECT = { select: { supplierId: true, supplier: { select: { name: true } } } };
+
+router.get('/sold-products', authRequired, async (req, res) => {
+  if (req.user.role === 'DEALER') {
+    const dealerId = req.user.dealerId;
+    const [dealer, retailers] = await Promise.all([
+      prisma.dealer.findUnique({ where: { id: dealerId }, select: { name: true } }),
+      prisma.retailer.findMany({ where: { primaryDealerId: dealerId }, select: { id: true, name: true }, orderBy: { name: 'asc' } }),
+    ]);
+    const retailerIds = retailers.map((r) => r.id);
+    const retailerNameById = new Map(retailers.map((r) => [r.id, r.name]));
+
+    const [ownSold, retailerSold] = await Promise.all([
+      prisma.soldProduct.findMany({
+        where: { owedBy: 'DEALER', dealerId: null, sale: { ownerType: 'DEALER', dealerId } },
+        select: { status: true, product: SOLD_PRODUCT_SUPPLIER_SELECT, saleItem: { select: { quantity: true, rate: true, price: true } } },
+      }),
+      retailerIds.length
+        ? prisma.soldProduct.findMany({
+            where: { owedBy: 'RETAILER', sale: { ownerType: 'RETAILER', retailerId: { in: retailerIds } } },
+            select: { status: true, sale: { select: { retailerId: true } }, product: SOLD_PRODUCT_SUPPLIER_SELECT, saleItem: { select: { quantity: true, sellingPrice: true, price: true } } },
+          })
+        : [],
+    ]);
+
+    const pivot = newSupplierPivotGroup();
+    for (const sp of ownSold) {
+      addToSupplierPivot(
+        pivot, sp.product, { type: 'DEALER', id: dealerId, name: dealer?.name ?? null },
+        sp.status, sp.saleItem.quantity, Number(sp.saleItem.rate ?? 0), Number(sp.saleItem.price ?? 0)
+      );
+    }
+    for (const sp of retailerSold) {
+      const rId = sp.sale.retailerId;
+      addToSupplierPivot(
+        pivot, sp.product, { type: 'RETAILER', id: rId, name: retailerNameById.get(rId) ?? null },
+        sp.status, sp.saleItem.quantity, Number(sp.saleItem.sellingPrice ?? 0), Number(sp.saleItem.price ?? 0)
+      );
+    }
+
+    return res.json({ context: 'DEALER', suppliers: serializeSupplierPivot(pivot) });
+  }
+
+  if (req.user.role === 'RETAILER') {
+    // A retailer only ever has one seller - themselves - so the pivot's
+    // `sellers` array for every supplier here will always be exactly one
+    // entry, matching that supplier's own byStatus exactly. Still built
+    // through the same shared pivot helpers as the other two branches so
+    // the frontend can render all three contexts with one component.
+    const retailerId = req.user.retailerId;
+    const retailer = await prisma.retailer.findUnique({ where: { id: retailerId }, select: { name: true } });
+    const sold = await prisma.soldProduct.findMany({
+      where: { owedBy: 'RETAILER', sale: { ownerType: 'RETAILER', retailerId } },
+      select: { status: true, product: SOLD_PRODUCT_SUPPLIER_SELECT, saleItem: { select: { quantity: true, sellingPrice: true, price: true } } },
+    });
+    const pivot = newSupplierPivotGroup();
+    for (const sp of sold) {
+      addToSupplierPivot(
+        pivot, sp.product, { type: 'RETAILER', id: retailerId, name: retailer?.name ?? null },
+        sp.status, sp.saleItem.quantity, Number(sp.saleItem.sellingPrice ?? 0), Number(sp.saleItem.price ?? 0)
+      );
+    }
+    return res.json({ context: 'RETAILER', suppliers: serializeSupplierPivot(pivot) });
+  }
+
+  // ADMIN / ORGANISATION - every supplier touched by any sale across every
+  // dealer in scope (whole platform for ADMIN, just their own organisation
+  // for ORGANISATION - same scoping as /activity-summary and /org-summary
+  // above), each with its aggregate `byStatus` PLUS a `sellers` breakdown
+  // spanning every dealer AND every retailer (across potentially several
+  // different dealers) who sold that supplier's products - a RETAILER
+  // seller here always carries `parentDealerName` too, since two
+  // retailers under different dealers could otherwise share a name with
+  // nothing in the list to tell them apart.
+  const orgWhere = req.user.role === 'ORGANISATION' ? { orgId: req.user.organisationId } : {};
+  const organisations = await prisma.organisation.findMany({
+    where: orgWhere,
+    select: {
+      dealers: {
+        select: { id: true, name: true, retailers: { select: { id: true, name: true } } },
+      },
+    },
+  });
+  const dealerList = organisations.flatMap((o) => o.dealers);
+  const dealerIds = dealerList.map((d) => d.id);
+  const dealerNameById = new Map(dealerList.map((d) => [d.id, d.name]));
+  const retailerToParentDealer = new Map();
+  for (const d of dealerList) {
+    for (const r of d.retailers) retailerToParentDealer.set(r.id, { dealerName: d.name, retailerName: r.name });
+  }
+  const retailerIds = [...retailerToParentDealer.keys()];
+
+  if (dealerIds.length === 0) return res.json({ context: 'ALL', suppliers: [] });
+
+  const [dealerSold, retailerSold] = await Promise.all([
+    prisma.soldProduct.findMany({
+      where: { owedBy: 'DEALER', dealerId: null, sale: { ownerType: 'DEALER', dealerId: { in: dealerIds } } },
+      select: { status: true, sale: { select: { dealerId: true } }, product: SOLD_PRODUCT_SUPPLIER_SELECT, saleItem: { select: { quantity: true, rate: true, price: true } } },
+    }),
+    retailerIds.length
+      ? prisma.soldProduct.findMany({
+          where: { owedBy: 'RETAILER', sale: { ownerType: 'RETAILER', retailerId: { in: retailerIds } } },
+          select: { status: true, sale: { select: { retailerId: true } }, product: SOLD_PRODUCT_SUPPLIER_SELECT, saleItem: { select: { quantity: true, sellingPrice: true, price: true } } },
+        })
+      : [],
+  ]);
+
+  const pivot = newSupplierPivotGroup();
+  for (const sp of dealerSold) {
+    const dId = sp.sale.dealerId;
+    addToSupplierPivot(
+      pivot, sp.product, { type: 'DEALER', id: dId, name: dealerNameById.get(dId) ?? null },
+      sp.status, sp.saleItem.quantity, Number(sp.saleItem.rate ?? 0), Number(sp.saleItem.price ?? 0)
+    );
+  }
+  for (const sp of retailerSold) {
+    const rId = sp.sale.retailerId;
+    const parent = retailerToParentDealer.get(rId);
+    addToSupplierPivot(
+      pivot, sp.product,
+      { type: 'RETAILER', id: rId, name: parent?.retailerName ?? null, parentDealerName: parent?.dealerName ?? null },
+      sp.status, sp.saleItem.quantity, Number(sp.saleItem.sellingPrice ?? 0), Number(sp.saleItem.price ?? 0)
+    );
+  }
+
+  res.json({ context: 'ALL', suppliers: serializeSupplierPivot(pivot) });
+});
+
 export default router;
+

@@ -137,4 +137,87 @@ router.patch('/:id/confirm', authRequired, requireRole('DEALER'), async (req, re
   res.json(updatedReceipt);
 });
 
+// Applies `amount` of a dealer's confirmation of a retailer's
+// sold-products payment against that retailer's own oldest
+// OPEN/PARTIALLY_PAID RECEIVABLE vouchers with this dealer, FIFO by
+// date — the RECEIVABLE-side counterpart to vouchers.js
+// adjustVouchersFifo, called only from soldProducts.js PATCH
+// /pay/:paymentId/confirm `adjustVouchers`, i.e. only at the moment the
+// dealer confirms the retailer's payment actually arrived, never at the
+// retailer's own submission (POST / above) — same "only confirmation
+// makes it real" rule this file's own POST / vs PATCH /:id/confirm
+// already follow for an ordinary voucher-backed receipt; see
+// vouchers.js GET /outstanding for why the pop-up itself is only ever
+// checked at that same point. Must be called with a transaction client
+// (`tx`) so it runs atomically alongside that confirmation.
+//
+// Each voucher touched gets a real Payment (dealerId/retailerId/
+// voucherId, same shape as POST / above) AND a Receipt — but created
+// already PAID with confirmedAt set, not TO_BE_CONFIRMED, since the
+// dealer is confirming this money in the very same action (mirrors how a
+// sold-products settlement's own display-only Receipt is created, see
+// schema.prisma Receipt and soldProducts.js PATCH
+// /pay/:paymentId/confirm). Walks vouchers oldest-first: each voucher
+// absorbs as much of the remaining amount as it still owes (voucher.amount
+// minus its own already-CONFIRMED receipts total) — left PARTIALLY_PAID
+// if that only covers part of it, moved to PAID if it covers it in full,
+// in which case the leftover carries on to the next oldest voucher. Stops
+// once the amount runs out or there are no more open vouchers for this
+// retailer. Appends a dated note to each touched voucher's own
+// description, same as adjustVouchersFifo does on the PAYABLE side, so
+// it's clear on the voucher itself where the money came from.
+export async function adjustVouchersFifoReceivable(tx, { dealerId, retailerId, amount, mode, reference, sourceDescription }) {
+  let remaining = Number(amount);
+  if (!(remaining > 0)) return { touched: [], remainingUnapplied: remaining };
+
+  const vouchers = await tx.voucher.findMany({
+    where: { dealerId, retailerId, type: 'RECEIVABLE', status: { in: ['OPEN', 'PARTIALLY_PAID'] } },
+    include: { receipts: true },
+    orderBy: { date: 'asc' },
+  });
+
+  const touched = [];
+  for (const voucher of vouchers) {
+    if (remaining <= 0) break;
+    const confirmedSoFar = voucher.receipts
+      .filter((r) => r.status !== 'TO_BE_CONFIRMED')
+      .reduce((sum, r) => sum + Number(r.amount), 0);
+    const voucherRemaining = Number(voucher.amount) - confirmedSoFar;
+    if (voucherRemaining <= 0) continue; // stale OPEN/PARTIALLY_PAID row - shouldn't normally happen
+
+    const applied = Math.min(remaining, voucherRemaining);
+    const newStatus = applied >= voucherRemaining ? 'PAID' : 'PARTIALLY_PAID';
+    const note = `Adjusted ₹${applied.toFixed(2)} against ${sourceDescription || "a retailer's sold-products payment"} on ${new Date().toLocaleDateString()}.`;
+
+    const payment = await tx.payment.create({
+      data: { dealerId, retailerId, voucherId: voucher.id, amount: applied, mode, reference: reference || null },
+    });
+
+    await tx.receipt.create({
+      data: {
+        voucherId: voucher.id,
+        retailerId,
+        paymentId: payment.id,
+        amount: applied,
+        mode,
+        status: 'PAID',
+        confirmedAt: new Date(),
+      },
+    });
+
+    await tx.voucher.update({
+      where: { id: voucher.id },
+      data: {
+        status: newStatus,
+        description: voucher.description ? `${voucher.description}\n${note}` : note,
+      },
+    });
+
+    touched.push({ voucherId: voucher.id, applied, newStatus });
+    remaining -= applied;
+  }
+
+  return { touched, remainingUnapplied: remaining };
+}
+
 export default router;

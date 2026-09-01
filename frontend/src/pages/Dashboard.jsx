@@ -306,18 +306,26 @@ function OrgDashboard() {
   );
 }
 
-// Unchanged DEALER/RETAILER dashboard — own sales summary + own low-stock
-// alerts, exactly as before.
+// DEALER/RETAILER dashboard — own sales summary + own low-stock alerts,
+// plus the same Activity summary by dealer / by retailer tables
+// ADMIN/ORGANISATION get, scoped server-side (see reports.js GET
+// /reports/activity-summary) to just this dealer + their own retailers
+// (DEALER login), or just this dealer's row + this one retailer's row
+// (RETAILER login).
 function OperationalDashboard() {
   const [summary, setSummary] = useState(null);
   const [inventory, setInventory] = useState([]);
+  const [activity, setActivity] = useState(null);
 
   useEffect(() => {
     api.get('/reports/sales-summary').then((r) => setSummary(r.data));
     api.get('/reports/inventory').then((r) => setInventory(r.data));
+    api.get('/reports/activity-summary').then((r) => setActivity(r.data));
   }, []);
 
   const lowStock = inventory.filter((i) => i.lowStock);
+  const activityDealers = activity?.dealers || [];
+  const activityRetailers = activity?.retailers || [];
 
   return (
     <div>
@@ -336,41 +344,11 @@ function OperationalDashboard() {
         </div>
       </div>
 
-      {lowStock.length > 0 && (
-        <div>
-          <h2 className="font-semibold text-red-700 mb-2">⚠ Reorder needed / पुनर्क्रम आवश्यक</h2>
-          <div className="bg-white rounded shadow overflow-x-auto overflow-y-auto max-h-[75vh]">
-            <table className="w-full text-sm">
-              <thead className="bg-gray-100 sticky top-0 z-10">
-                <tr>
-                  <th className="text-left p-2">Product <span className="text-gray-400 font-normal">/ उत्पादन</span></th>
-                  <th className="text-left p-2">Barcode <span className="text-gray-400 font-normal">/ बारकोड</span></th>
-                  <th className="text-left p-2">Batch <span className="text-gray-400 font-normal">/ बॅच</span></th>
-                  <th className="text-left p-2">Expiry <span className="text-gray-400 font-normal">/ एक्सपायरी</span></th>
-                  <th className="text-left p-2">MRP <span className="text-gray-400 font-normal">/ एमआरपी</span></th>
-                  <th className="text-left p-2">Quantity <span className="text-gray-400 font-normal">/ प्रमाण</span></th>
-                  <th className="text-left p-2">Reorder Level <span className="text-gray-400 font-normal">/ पुनर्क्रम पातळी</span></th>
-                  <th className="text-left p-2">Status <span className="text-gray-400 font-normal">/ स्थिती</span></th>
-                </tr>
-              </thead>
-              <tbody>
-                {lowStock.map((r) => (
-                  <tr key={r.id} className="border-t bg-red-50">
-                    <td className="p-2">{r.product?.name} ({r.product?.sizeWeight})</td>
-                    <td className="p-2">{r.product?.barcode}</td>
-                    <td className="p-2">{r.batchName || '-'}</td>
-                    <td className="p-2">{r.expiryDate ? new Date(r.expiryDate).toLocaleDateString() : '-'}</td>
-                    <td className="p-2">{r.mrp != null ? `₹${Number(r.mrp).toFixed(2)}` : '-'}</td>
-                    <td className="p-2">{r.quantity}</td>
-                    <td className="p-2">{r.reorderLevel}</td>
-                    <td className="p-2"><span className="text-red-600 font-semibold">⚠ Reorder now / आता पुन्हा मागवा</span></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
+      <h3 className="text-sm font-semibold text-gray-600 mb-2 mt-4">Activity summary by dealer <span className="text-gray-400 font-normal">/ डीलरनुसार व्यवहार सारांश</span></h3>
+      <DealerActivityTable rows={activityDealers} />
+
+      <h3 className="text-sm font-semibold text-gray-600 mb-2 mt-4">Activity summary by retailer <span className="text-gray-400 font-normal">/ किरकोळ विक्रेत्यानुसार व्यवहार सारांश</span></h3>
+      <RetailerActivityTable rows={activityRetailers} />
     </div>
   );
 }

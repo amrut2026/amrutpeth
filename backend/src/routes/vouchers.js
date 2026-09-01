@@ -27,38 +27,54 @@ router.get('/', authRequired, requireRole('DEALER', 'RETAILER', 'ADMIN'), async 
   res.json(vouchers);
 });
 
-// GET /api/vouchers/outstanding?supplierId=123 — DEALER only. This
-// dealer's own OPEN/PARTIALLY_PAID PAYABLE vouchers against the given
-// supplier, oldest first (date asc) — the FIFO order used when a
-// sold-products settlement is adjusted against outstanding vouchers (see
-// soldProducts.js POST /pay `adjustVouchers`, and adjustVouchersFifo
-// below). Each voucher's own already-paid total (from its own linked
-// Payment rows) is subtracted here so the frontend can show — and later
-// confirm against — the true outstanding balance without re-deriving it
-// itself.
+// GET /api/vouchers/outstanding?supplierId=123 — this dealer's own
+//   OPEN/PARTIALLY_PAID PAYABLE vouchers against that supplier — used
+//   for the FIFO pop-up when a DEALER pays a supplier via a
+//   sold-products settlement (soldProducts.js POST /pay `adjustVouchers`,
+//   adjustVouchersFifo below).
+// GET /api/vouchers/outstanding?retailerId=456 — this dealer's own
+//   OPEN/PARTIALLY_PAID RECEIVABLE vouchers against that retailer — used
+//   for the equivalent pop-up when a DEALER *confirms* one of their
+//   retailers' sold-products payments (soldProducts.js PATCH
+//   /pay/:paymentId/confirm `adjustVouchers`, receipts.js
+//   adjustVouchersFifoReceivable). Deliberately only ever checked at
+//   confirm time, never when the retailer first submits — a RECEIVABLE
+//   voucher's balance only ever moves once the dealer confirms money
+//   actually arrived (see receipts.js POST / vs PATCH /:id/confirm), so
+//   checking any earlier would offer to adjust against money that isn't
+//   settled yet.
+// Exactly one of the two params is expected either way. Oldest first
+// (date asc) in both cases — the FIFO order the adjustment itself walks
+// in. Each voucher's own already-settled total (Payments for the
+// PAYABLE/supplier side, CONFIRMED Receipts for the RECEIVABLE/retailer
+// side — a still-pending TO_BE_CONFIRMED receipt doesn't count, same rule
+// PATCH /:id/confirm below already applies) is subtracted here so the
+// frontend can show — and the eventual adjustment can rely on — the true
+// outstanding balance without re-deriving it itself.
 router.get('/outstanding', authRequired, requireRole('DEALER'), async (req, res) => {
-  const supplierId = Number(req.query.supplierId);
-  if (!supplierId) return res.status(400).json({ error: 'supplierId is required' });
+  const supplierId = req.query.supplierId ? Number(req.query.supplierId) : null;
+  const retailerId = req.query.retailerId ? Number(req.query.retailerId) : null;
+  if (!supplierId && !retailerId) return res.status(400).json({ error: 'supplierId or retailerId is required' });
+  if (supplierId && retailerId) return res.status(400).json({ error: 'Provide only one of supplierId or retailerId' });
 
   const vouchers = await prisma.voucher.findMany({
-    where: {
-      dealerId: req.user.dealerId,
-      supplierId,
-      type: 'PAYABLE',
-      status: { in: ['OPEN', 'PARTIALLY_PAID'] },
-    },
-    include: { payments: true },
+    where: supplierId
+      ? { dealerId: req.user.dealerId, supplierId, type: 'PAYABLE', status: { in: ['OPEN', 'PARTIALLY_PAID'] } }
+      : { dealerId: req.user.dealerId, retailerId, type: 'RECEIVABLE', status: { in: ['OPEN', 'PARTIALLY_PAID'] } },
+    include: supplierId ? { payments: true } : { receipts: true },
     orderBy: { date: 'asc' },
   });
 
   const outstanding = vouchers.map((v) => {
-    const paid = v.payments.reduce((sum, p) => sum + Number(p.amount), 0);
+    const settled = supplierId
+      ? v.payments.reduce((sum, p) => sum + Number(p.amount), 0)
+      : v.receipts.filter((r) => r.status !== 'TO_BE_CONFIRMED').reduce((sum, r) => sum + Number(r.amount), 0);
     return {
       id: v.id,
       date: v.date,
       status: v.status,
       amount: Number(v.amount),
-      outstanding: Number(v.amount) - paid,
+      outstanding: Number(v.amount) - settled,
     };
   });
 

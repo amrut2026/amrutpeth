@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { prisma } from '../prisma.js';
 import { authRequired, ownerScope } from '../middleware/auth.js';
 import { adjustVouchersFifo } from './vouchers.js';
+import { adjustVouchersFifoReceivable } from './receipts.js';
 
 const router = Router();
 
@@ -341,10 +342,26 @@ router.post('/pay', authRequired, async (req, res) => {
 // PAID cycle directly on the SoldProduct rows above, the Receipt is
 // created already PAID, purely so this payment shows up alongside voucher
 // receipts in the retailer's payment history (see schema.prisma Receipt).
+//
+// Body: { adjustVouchers } (optional, defaults false) — when true, this
+// same payment amount is also applied — FIFO, oldest date first — against
+// this retailer's own OPEN/PARTIALLY_PAID RECEIVABLE vouchers with this
+// dealer (see receipts.js adjustVouchersFifoReceivable). Deliberately only
+// offered/applied at this confirm step, never at the retailer's own
+// submission (POST /pay above) — a RECEIVABLE voucher's balance only ever
+// moves once a dealer confirms money actually arrived (same rule
+// receipts.js POST / vs PATCH /:id/confirm already follows), so this
+// mirrors the PAYABLE side's `adjustVouchers` (soldProducts.js POST /pay)
+// at the equivalent "money is now real" moment for this direction. The
+// frontend only sends this after the dealer explicitly confirms it via the
+// pop-up shown when GET /vouchers/outstanding?retailerId=... finds any
+// such vouchers — this route itself doesn't check for their existence, it
+// just applies whatever's asked for.
 router.patch('/pay/:paymentId/confirm', authRequired, async (req, res) => {
   if (req.user.role !== 'DEALER') return res.status(403).json({ error: 'Only a dealer can confirm a sold-products payment' });
 
   const paymentId = Number(req.params.paymentId);
+  const adjustVouchers = !!req.body.adjustVouchers;
 
   const rows = await prisma.soldProduct.findMany({
     where: {
@@ -360,12 +377,15 @@ router.patch('/pay/:paymentId/confirm', authRequired, async (req, res) => {
 
   const payment = await prisma.payment.findUnique({ where: { id: paymentId } });
 
-  await prisma.$transaction([
-    prisma.soldProduct.updateMany({
+  let voucherAdjustment = null;
+
+  await prisma.$transaction(async (tx) => {
+    await tx.soldProduct.updateMany({
       where: { id: { in: rows.map((r) => r.id) } },
       data: { status: 'PAID' },
-    }),
-    prisma.receipt.create({
+    });
+
+    await tx.receipt.create({
       data: {
         voucherId: null,
         retailerId: payment.retailerId,
@@ -375,10 +395,84 @@ router.patch('/pay/:paymentId/confirm', authRequired, async (req, res) => {
         status: 'PAID',
         confirmedAt: new Date(),
       },
-    }),
-  ]);
+    });
 
-  res.json({ paymentId, confirmed: rows.length });
+    if (adjustVouchers && payment.retailerId != null) {
+      voucherAdjustment = await adjustVouchersFifoReceivable(tx, {
+        dealerId: req.user.dealerId,
+        retailerId: payment.retailerId,
+        amount: payment.amount,
+        mode: payment.mode,
+        reference: payment.reference,
+        sourceDescription: `Sold Products Payment #${payment.id}`,
+      });
+    }
+  });
+
+  res.json({ paymentId, confirmed: rows.length, voucherAdjustment });
+});
+
+// POST /api/sold-products/pay/:paymentId/adjust-vouchers — DEALER only.
+// Retroactively applies an already-confirmed sold-products payment from a
+// retailer (PATCH /pay/:paymentId/confirm above) against that retailer's
+// own outstanding RECEIVABLE vouchers with this dealer — the same FIFO
+// adjustment `adjustVouchers` already offers AT confirm time, for a
+// payment that was confirmed WITHOUT that option and so never touched any
+// voucher (see reports.js GET /reports/vouchers `needsVoucherAdjustment`,
+// which is what flags these on the Voucher/Payments from Retailer report
+// in the first place).
+//
+// Only valid for a genuine, already-confirmed sold-products settlement:
+// the payment must belong to this dealer, have no voucherId of its own
+// (a receipts.js POST / payment is always tied to one voucher already and
+// has no business here), and have at least one owedBy: RETAILER
+// SoldProduct row that's reached PAID under it (i.e. actually confirmed,
+// not just submitted). To avoid double-applying the same payment twice,
+// this also refuses if any of this retailer's own vouchers already carries
+// this payment's own adjustment note (see adjustVouchersFifoReceivable's
+// sourceDescription below, and its matching check in reports.js).
+router.post('/pay/:paymentId/adjust-vouchers', authRequired, async (req, res) => {
+  if (req.user.role !== 'DEALER') return res.status(403).json({ error: 'Only a dealer can adjust a retailer payment against a voucher' });
+
+  const paymentId = Number(req.params.paymentId);
+  const payment = await prisma.payment.findUnique({ where: { id: paymentId } });
+  if (!payment) return res.status(404).json({ error: 'Payment not found' });
+  if (payment.dealerId !== req.user.dealerId) return res.status(403).json({ error: 'Forbidden' });
+  if (payment.retailerId == null) return res.status(400).json({ error: 'This payment has no retailer to adjust against' });
+  if (payment.voucherId != null) return res.status(400).json({ error: 'This payment is already tied to a voucher' });
+
+  const confirmedRows = await prisma.soldProduct.count({
+    where: { paymentId, owedBy: 'RETAILER', status: 'PAID' },
+  });
+  if (!confirmedRows) {
+    return res.status(400).json({ error: 'This payment has not been confirmed yet' });
+  }
+
+  const sourceDescription = `Sold Products Payment #${payment.id}`;
+  const alreadyAdjusted = await prisma.voucher.findFirst({
+    where: {
+      dealerId: payment.dealerId,
+      retailerId: payment.retailerId,
+      type: 'RECEIVABLE',
+      description: { contains: sourceDescription },
+    },
+  });
+  if (alreadyAdjusted) {
+    return res.status(400).json({ error: 'This payment has already been adjusted against a voucher' });
+  }
+
+  const voucherAdjustment = await prisma.$transaction((tx) =>
+    adjustVouchersFifoReceivable(tx, {
+      dealerId: payment.dealerId,
+      retailerId: payment.retailerId,
+      amount: payment.amount,
+      mode: payment.mode,
+      reference: payment.reference,
+      sourceDescription,
+    })
+  );
+
+  res.json({ paymentId, voucherAdjustment });
 });
 
 export default router;

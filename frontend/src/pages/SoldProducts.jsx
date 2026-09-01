@@ -163,6 +163,14 @@ export default function SoldProducts() {
   // before the user confirms.
   const [voucherPrompt, setVoucherPrompt] = useState(null);
   const [checkingVouchers, setCheckingVouchers] = useState(false);
+  // Same idea as voucherPrompt/checkingVouchers/voucherNote above, but for
+  // the DEALER *confirming* a retailer's sold-products payment (see
+  // initiateConfirm/confirmPayment below) rather than the dealer's own
+  // payment to a supplier — the RECEIVABLE-side pop-up, checked only at
+  // confirm time (see vouchers.js GET /outstanding for why).
+  const [confirmVoucherPrompt, setConfirmVoucherPrompt] = useState(null);
+  const [checkingConfirmVouchers, setCheckingConfirmVouchers] = useState(null);
+  const [confirmVoucherNote, setConfirmVoucherNote] = useState('');
 
   async function load() {
     const [open, pending, paid] = await Promise.all([
@@ -182,11 +190,47 @@ export default function SoldProducts() {
   }
   useEffect(() => { load(); }, []);
 
-  async function confirmPayment(paymentId) {
+  async function initiateConfirm(group) {
+    if (!group.paymentId || confirmingId != null) return;
+    setError('');
+    setConfirmVoucherNote('');
+
+    if (group.retailerId != null) {
+      setCheckingConfirmVouchers(group.paymentId);
+      try {
+        const res = await api.get('/vouchers/outstanding', { params: { retailerId: group.retailerId } });
+        if (res.data.vouchers.length > 0) {
+          setConfirmVoucherPrompt({
+            paymentId: group.paymentId,
+            retailerId: group.retailerId,
+            retailerName: group.retailerName,
+            groupTotal: group.items.reduce((sum, i) => sum + Number(i.amount), 0),
+            ...res.data,
+          });
+          setCheckingConfirmVouchers(null);
+          return; // wait for the dealer's Adjust & Confirm / Just Confirm choice below
+        }
+      } catch (err) {
+        // Outstanding-voucher check failing shouldn't block the
+        // confirmation itself — just proceed without offering the adjustment.
+      }
+      setCheckingConfirmVouchers(null);
+    }
+
+    await confirmPayment(group.paymentId, false);
+  }
+
+  async function confirmPayment(paymentId, adjustVouchers) {
     setConfirmingId(paymentId);
     setError('');
     try {
-      await api.patch(`/sold-products/pay/${paymentId}/confirm`);
+      const res = await api.patch(`/sold-products/pay/${paymentId}/confirm`, { adjustVouchers: !!adjustVouchers });
+      const touched = res.data?.voucherAdjustment?.touched;
+      if (touched?.length) {
+        const summary = touched.map((t) => `#${t.voucherId} (${t.newStatus === 'PAID' ? 'now Paid' : 'now Partially Paid'})`).join(', ');
+        setConfirmVoucherNote(`Adjusted against voucher ${summary}.`);
+      }
+      setConfirmVoucherPrompt(null);
       await load();
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to confirm payment / भरणा पुष्टी करण्यात अयशस्वी');
@@ -240,7 +284,15 @@ export default function SoldProducts() {
       if (!map.has(key)) map.set(key, { key, paymentId: i.paymentId, retailerName: i.retailerName, items: [] });
       map.get(key).items.push(i);
     }
-    return [...map.values()].map((g) => ({ ...g, label: g.retailerName || `Retailer #${g.key}` }));
+    return [...map.values()].map((g) => ({
+      ...g,
+      // Every item under one group shares the same retailer (a payment is
+      // always one retailer's own), so any item's retailerId works here —
+      // used to check GET /vouchers/outstanding for that retailer before
+      // confirming (see initiateConfirm below).
+      retailerId: g.items[0]?.retailerId ?? null,
+      label: g.retailerName || `Retailer #${g.key}`,
+    }));
   }
 
   // Options for the "Filter by Retailer" dropdowns on the Open tab's
@@ -479,10 +531,14 @@ export default function SoldProducts() {
                     {groupQty} qty <span className="text-gray-400">/ प्रमाण</span> · {formatMoney(groupTotal)}
                   </span>
                   {showConfirm && g.paymentId != null && (
-                    <button type="button" disabled={confirmingId === g.paymentId}
-                      onClick={() => confirmPayment(g.paymentId)}
+                    <button type="button" disabled={confirmingId === g.paymentId || checkingConfirmVouchers === g.paymentId}
+                      onClick={() => initiateConfirm(g)}
                       className="text-emerald-700 text-xs font-medium hover:underline disabled:opacity-50">
-                      {confirmingId === g.paymentId ? 'Confirming... / पुष्टी करत आहे...' : 'Confirm Received / मिळाले म्हणून पुष्टी करा'}
+                      {confirmingId === g.paymentId
+                        ? 'Confirming... / पुष्टी करत आहे...'
+                        : checkingConfirmVouchers === g.paymentId
+                          ? 'Checking vouchers... / व्हाउचर तपासत आहे...'
+                          : 'Confirm Received / मिळाले म्हणून पुष्टी करा'}
                     </button>
                   )}
                 </div>
@@ -727,6 +783,7 @@ export default function SoldProducts() {
         {tab === 'pending' && (
           <>
             <TabTotals items={pendingItems} />
+            {confirmVoucherNote && <p className="text-emerald-700 text-xs mb-2">{confirmVoucherNote}</p>}
             {user.role === 'DEALER' ? (
               <>
                 <div className="flex items-start justify-between flex-wrap gap-2 mb-2">
@@ -911,6 +968,47 @@ export default function SoldProducts() {
                 onClick={() => pay(true)}
                 className="px-3 py-2 text-sm rounded bg-emerald-700 text-white hover:bg-emerald-800 disabled:opacity-40">
                 {paying ? 'Recording... / नोंदवत आहे...' : 'Adjust & Pay / समायोजित करा आणि भरा'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmVoucherPrompt && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded shadow-lg max-w-md w-full p-5">
+            <h3 className="font-semibold text-base mb-1">
+              Adjust against outstanding vouchers?
+              <span className="block text-xs font-normal text-gray-400">थकीत व्हाउचर्सविरुद्ध समायोजित करायचे का?</span>
+            </h3>
+            <p className="text-sm text-gray-600 mb-3">
+              {confirmVoucherPrompt.retailerName || 'This retailer'} has {formatMoney(confirmVoucherPrompt.totalOutstanding)} outstanding
+              across {confirmVoucherPrompt.vouchers.length} voucher{confirmVoucherPrompt.vouchers.length === 1 ? '' : 's'}. This
+              payment of {formatMoney(confirmVoucherPrompt.groupTotal)} can be applied FIFO — oldest voucher first — against it
+              as part of confirming it.
+            </p>
+            <ul className="text-xs text-gray-600 mb-4 max-h-36 overflow-y-auto border rounded divide-y">
+              {confirmVoucherPrompt.vouchers.map((v) => (
+                <li key={v.id} className="px-2 py-1.5 flex justify-between gap-2">
+                  <span>#{v.id} · {new Date(v.date).toLocaleDateString()} · {v.status === 'OPEN' ? 'Open' : 'Partially Paid'}</span>
+                  <span className="font-medium whitespace-nowrap">{formatMoney(v.outstanding)}</span>
+                </li>
+              ))}
+            </ul>
+            <div className="flex gap-2 justify-end">
+              <button
+                type="button"
+                disabled={confirmingId === confirmVoucherPrompt.paymentId}
+                onClick={() => confirmPayment(confirmVoucherPrompt.paymentId, false)}
+                className="px-3 py-2 text-sm rounded border hover:bg-gray-50 disabled:opacity-40">
+                Just Confirm / फक्त पुष्टी करा
+              </button>
+              <button
+                type="button"
+                disabled={confirmingId === confirmVoucherPrompt.paymentId}
+                onClick={() => confirmPayment(confirmVoucherPrompt.paymentId, true)}
+                className="px-3 py-2 text-sm rounded bg-emerald-700 text-white hover:bg-emerald-800 disabled:opacity-40">
+                {confirmingId === confirmVoucherPrompt.paymentId ? 'Confirming... / पुष्टी करत आहे...' : 'Adjust & Confirm / समायोजित करा आणि पुष्टी करा'}
               </button>
             </div>
           </div>
