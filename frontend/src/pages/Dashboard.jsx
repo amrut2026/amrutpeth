@@ -311,8 +311,13 @@ function OrgDashboard() {
 // ADMIN/ORGANISATION get, scoped server-side (see reports.js GET
 // /reports/activity-summary) to just this dealer + their own retailers
 // (DEALER login), or just this dealer's row + this one retailer's row
-// (RETAILER login).
+// (RETAILER login). That dealer row included for a RETAILER login is their
+// parent dealer's own activity, not the retailer's - so it's intentionally
+// left off this dashboard; a RETAILER only ever sees their own row, in the
+// retailer table below.
 function OperationalDashboard() {
+  const { user } = useAuth();
+  const isDealer = user.role === 'DEALER';
   const [summary, setSummary] = useState(null);
   const [inventory, setInventory] = useState([]);
   const [activity, setActivity] = useState(null);
@@ -344,8 +349,12 @@ function OperationalDashboard() {
         </div>
       </div>
 
-      <h3 className="text-sm font-semibold text-gray-600 mb-2 mt-4">Activity summary by dealer <span className="text-gray-400 font-normal">/ डीलरनुसार व्यवहार सारांश</span></h3>
-      <DealerActivityTable rows={activityDealers} />
+      {isDealer && (
+        <>
+          <h3 className="text-sm font-semibold text-gray-600 mb-2 mt-4">Activity summary by dealer <span className="text-gray-400 font-normal">/ डीलरनुसार व्यवहार सारांश</span></h3>
+          <DealerActivityTable rows={activityDealers} />
+        </>
+      )}
 
       <h3 className="text-sm font-semibold text-gray-600 mb-2 mt-4">Activity summary by retailer <span className="text-gray-400 font-normal">/ किरकोळ विक्रेत्यानुसार व्यवहार सारांश</span></h3>
       <RetailerActivityTable rows={activityRetailers} />

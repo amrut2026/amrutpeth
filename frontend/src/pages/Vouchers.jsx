@@ -82,14 +82,15 @@ function VoucherTable({ vouchers }) {
 // per counterparty. Renders nothing at all if there are no vouchers of this
 // type, rather than an empty section header: a RETAILER, for instance, can
 // never have a PAYABLE voucher of their own, so that whole section simply
-// doesn't appear for that role instead of showing up empty every time.
+// doesn't appear (as a tab) for that role instead of showing up empty every
+// time.
 function VoucherSection({ title, titleMr, vouchers, isPayable, isDealer }) {
   if (!vouchers.length) return null;
   const groups = groupByCounterparty(vouchers, isPayable);
   const total = vouchers.reduce((sum, v) => sum + Number(v.amount), 0);
   const totalRemaining = vouchers.reduce((sum, v) => sum + balanceRemaining(v), 0);
   return (
-    <div className="mb-8">
+    <div>
       <div className="flex items-baseline justify-between flex-wrap gap-2 mb-3">
         <h2 className="text-lg font-semibold">
           {title} <span className="text-sm font-normal text-gray-500">({titleMr})</span>
@@ -124,6 +125,7 @@ export default function Vouchers() {
   const [vouchers, setVouchers] = useState([]);
   const [retailers, setRetailers] = useState([]);
   const [form, setForm] = useState({ retailerId: '', amount: '', description: '' });
+  const [activeTab, setActiveTab] = useState('PAYABLE');
 
   async function load() {
     const v = await api.get('/vouchers');
@@ -144,6 +146,18 @@ export default function Vouchers() {
 
   const payableVouchers = vouchers.filter((v) => v.type === 'PAYABLE');
   const receivableVouchers = vouchers.filter((v) => v.type !== 'PAYABLE');
+
+  // Tabs are built from whichever voucher types actually have data, same
+  // rule VoucherSection used to apply on its own (a RETAILER never has a
+  // PAYABLE voucher of their own, so that tab just doesn't exist for them).
+  // If the tab currently selected disappears (e.g. after data reloads),
+  // fall back to whichever tab remains.
+  const tabs = [
+    { key: 'PAYABLE', label: 'Payable Vouchers (to Supplier)', labelMr: 'पुरवठादाराला देय व्हाउचर', vouchers: payableVouchers, isPayable: true },
+    { key: 'RECEIVABLE', label: 'Receivable Vouchers (from Retailer)', labelMr: 'किरकोळ विक्रेत्याकडून प्राप्य व्हाउचर', vouchers: receivableVouchers, isPayable: false },
+  ].filter((t) => t.vouchers.length);
+
+  const currentTab = tabs.find((t) => t.key === activeTab) || tabs[0];
 
   return (
     <div>
@@ -168,14 +182,35 @@ export default function Vouchers() {
         </form>
       )}
 
-      <VoucherSection
-        title="Payable Vouchers (to Supplier)" titleMr="पुरवठादाराला देय व्हाउचर"
-        vouchers={payableVouchers} isPayable isDealer={user.role === 'DEALER'}
-      />
-      <VoucherSection
-        title="Receivable Vouchers (from Retailer)" titleMr="किरकोळ विक्रेत्याकडून प्राप्य व्हाउचर"
-        vouchers={receivableVouchers} isPayable={false} isDealer={user.role === 'DEALER'}
-      />
+      {tabs.length > 0 && (
+        <>
+          <div className="flex gap-2 border-b mb-6">
+            {tabs.map((t) => (
+              <button
+                key={t.key}
+                type="button"
+                onClick={() => setActiveTab(t.key)}
+                className={
+                  'px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ' +
+                  (currentTab?.key === t.key
+                    ? 'border-emerald-700 text-emerald-700'
+                    : 'border-transparent text-gray-500 hover:text-gray-700')
+                }
+              >
+                {t.label} <span className="font-normal text-gray-400">({t.labelMr})</span>
+              </button>
+            ))}
+          </div>
+
+          {currentTab && (
+            <VoucherSection
+              title={currentTab.label} titleMr={currentTab.labelMr}
+              vouchers={currentTab.vouchers} isPayable={currentTab.isPayable}
+              isDealer={user.role === 'DEALER'}
+            />
+          )}
+        </>
+      )}
 
       {vouchers.length === 0 && (
         <div className="bg-white rounded shadow p-3 text-gray-400 text-sm">

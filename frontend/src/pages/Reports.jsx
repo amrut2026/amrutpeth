@@ -330,6 +330,92 @@ function findStateEntry(byStatus, status) {
   return (byStatus || []).find((s) => s.status === status) || null;
 }
 
+// DEALER context only: under each state, the two settlement legs -
+// what this dealer in turn owes THEIR OWN supplier for that stock ("Dealer",
+// backed by paymentToSupplier) and what a retailer owes THIS dealer for it
+// ("Retailer", backed by paymentToDealer, see reports.js GET /sold-products
+// DEALER branch) - are rendered as real Qty/Cost/Selling column triplets
+// (6 columns per state) rather than stacked lines in one cell, because the
+// two legs can each sit in a different state for the same physical
+// quantity. A dealer's own direct-sale row only ever has a "Dealer" leg
+// (there's no retailer involved), so its "Retailer" columns show "--".
+function DealerObligationCells({ dealerLeg, retailerLeg }) {
+  const legCells = (entry) => (
+    <>
+      <td className="p-2 border-l font-normal">{entry ? entry.quantity : 0}</td>
+      <td className="p-2 font-normal">{entry ? formatMoney(entry.costPrice) : '--'}</td>
+      <td className="p-2 font-normal">{entry ? formatMoney(entry.sellingPrice) : '--'}</td>
+    </>
+  );
+  return (
+    <>
+      {legCells(dealerLeg)}
+      {legCells(retailerLeg)}
+    </>
+  );
+}
+
+// DEALER-context sold-products table: one row per dealer/retailer, one
+// column GROUP per state, each group split into Dealer/Retailer legs and
+// each leg split into Qty/Cost/Selling (6 columns per state) via
+// DealerObligationCells above, instead of the plain Qty/Cost/Selling
+// column triplet SoldProductsTable uses for RETAILER/ADMIN/ORGANISATION.
+function DealerSoldProductsTable({ rows }) {
+  return (
+    <table className="w-full text-sm">
+      <thead className="bg-gray-100 sticky top-0 z-10">
+        <tr>
+          <th rowSpan={3} className="text-left p-2 align-bottom">Dealer / Retailer <span className="text-gray-400 font-normal">/ डीलर / किरकोळ विक्रेता</span></th>
+          {SOLD_PRODUCT_STATES.map((s) => (
+            <th key={s} colSpan={6} className="text-center p-2 border-l">{STATUS_LABELS[s] || s}</th>
+          ))}
+        </tr>
+        <tr>
+          {SOLD_PRODUCT_STATES.map((s) => (
+            <Fragment key={s}>
+              <th colSpan={3} className="text-center p-2 border-l text-xs font-normal text-gray-500">Dealer <span className="text-gray-400">/ डीलर</span></th>
+              <th colSpan={3} className="text-center p-2 border-l text-xs font-normal text-gray-500">Retailer <span className="text-gray-400">/ किरकोळ विक्रेता</span></th>
+            </Fragment>
+          ))}
+        </tr>
+        <tr>
+          {SOLD_PRODUCT_STATES.map((s) => (
+            <Fragment key={s}>
+              <th className="text-left p-2 border-l text-xs font-normal text-gray-500">Qty <span className="text-gray-400">/ प्रमाण</span></th>
+              <th className="text-left p-2 text-xs font-normal text-gray-500">Cost <span className="text-gray-400">/ खरेदी</span></th>
+              <th className="text-left p-2 text-xs font-normal text-gray-500">Selling <span className="text-gray-400">/ विक्री</span></th>
+              <th className="text-left p-2 border-l text-xs font-normal text-gray-500">Qty <span className="text-gray-400">/ प्रमाण</span></th>
+              <th className="text-left p-2 text-xs font-normal text-gray-500">Cost <span className="text-gray-400">/ खरेदी</span></th>
+              <th className="text-left p-2 text-xs font-normal text-gray-500">Selling <span className="text-gray-400">/ विक्री</span></th>
+            </Fragment>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((row) => (
+          <tr key={row.id} className={`border-t ${row.indent ? '' : 'bg-orange-50/40 font-semibold'}`}>
+            <td className={`p-2 align-top ${row.indent ? 'pl-6 font-normal text-gray-700' : ''}`}>{row.name}</td>
+            {SOLD_PRODUCT_STATES.map((s) => (
+              <DealerObligationCells
+                key={s}
+                dealerLeg={findStateEntry(row.paymentToSupplier, s)}
+                retailerLeg={findStateEntry(row.paymentToDealer, s)}
+              />
+            ))}
+          </tr>
+        ))}
+        {rows.length === 0 && (
+          <tr>
+            <td className="p-3 text-gray-400" colSpan={1 + SOLD_PRODUCT_STATES.length * 6}>
+              No sold products yet. / अद्याप विकलेली उत्पादने नाहीत.
+            </td>
+          </tr>
+        )}
+      </tbody>
+    </table>
+  );
+}
+
 // One dealer's or retailer's sold-products summary, one row, with every
 // state (Open/To Be Confirmed/Paid) shown side by side as its own group of
 // Sold Quantity / Cost Price / Selling Price columns - rather than one row
@@ -438,11 +524,59 @@ function buildSupplierBlockHtml({ name, byStatus, sellers }) {
   `;
 }
 
+// DEALER-context variant of buildSoldPivotHtml: each state column group
+// mirrors the on-screen DealerSoldProductsTable's 3-row header - state,
+// then Dealer/Retailer leg, then Qty/Cost/Selling under each leg - since
+// the two settlements can sit in different states for the same quantity
+// (see reports.js GET /sold-products DEALER branch).
+function buildDealerSoldPivotHtml(rows, firstColumnLabel) {
+  if (rows.length === 0) return '<p class="muted">None yet.</p>';
+  const stateHeaderCells = SOLD_PRODUCT_STATES.map((s) => `<th colspan="6">${escapeHtml(STATUS_LABELS[s] || s)}</th>`).join('');
+  const legHeaderCells = SOLD_PRODUCT_STATES.map(() => '<th colspan="3">Dealer</th><th colspan="3">Retailer</th>').join('');
+  const subHeaderCells = SOLD_PRODUCT_STATES.map(() => '<th>Qty</th><th>Cost</th><th>Selling</th><th>Qty</th><th>Cost</th><th>Selling</th>').join('');
+  const renderLegCells = (entry) => `<td>${entry ? entry.quantity : 0}</td><td>${escapeHtml(entry ? formatMoney(entry.costPrice) : '--')}</td><td>${escapeHtml(entry ? formatMoney(entry.sellingPrice) : '--')}</td>`;
+  const bodyRows = rows.map((row) => {
+    const cells = SOLD_PRODUCT_STATES.map((s) => {
+      const dealerLeg = findStateEntry(row.paymentToSupplier, s);
+      const retailerLeg = findStateEntry(row.paymentToDealer, s);
+      return `${renderLegCells(dealerLeg)}${renderLegCells(retailerLeg)}`;
+    }).join('');
+    return `<tr><td class="${row.indent ? 'indent' : 'bold'}">${escapeHtml(row.name)}</td>${cells}</tr>`;
+  }).join('');
+  return `<table>
+    <thead>
+      <tr><th rowspan="3">${escapeHtml(firstColumnLabel)}</th>${stateHeaderCells}</tr>
+      <tr>${legHeaderCells}</tr>
+      <tr>${subHeaderCells}</tr>
+    </thead>
+    <tbody>${bodyRows}</tbody>
+  </table>`;
+}
+
+// DEALER-context variant of buildSupplierBlockHtml, using
+// buildDealerSoldPivotHtml above for the split payment legs.
+function buildDealerSupplierBlockHtml({ name, paymentToDealer, paymentToSupplier, sellers }) {
+  const sellerRows = (sellers || []).map((s) => ({ id: 'x', name: s.name, paymentToDealer: s.paymentToDealer, paymentToSupplier: s.paymentToSupplier, indent: false }));
+  return `
+    <div style="margin-bottom:16px;">
+      <h3 style="font-size:13px;margin:10px 0 4px;">${escapeHtml(name)}</h3>
+      ${buildDealerSoldPivotHtml([{ id: 'x', name, paymentToDealer, paymentToSupplier, indent: false }], 'Total')}
+      ${sellerRows.length > 0 ? `
+      <div style="margin-left:16px;">
+        <div style="font-size:11px;color:#666;margin:2px 0;">Sold By</div>
+        ${buildDealerSoldPivotHtml(sellerRows, 'Sold By')}
+      </div>` : ''}
+    </div>
+  `;
+}
+
 // Builds a standalone printable HTML document with every dealer/retailer
 // block currently on screen, same "print exactly what's on screen"
 // approach as buildVoucherPrintHtml above - blocks already reflects
-// whichever dealer filter is currently selected.
-function buildSoldProductsPrintHtml({ title, subtitle, blocks }) {
+// whichever dealer filter is currently selected. `blockBuilder` picks
+// between the plain byStatus blocks (RETAILER/ADMIN/ORGANISATION) and the
+// split-leg DEALER blocks above.
+function buildSoldProductsPrintHtml({ title, subtitle, blocks, blockBuilder = buildSupplierBlockHtml }) {
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -465,7 +599,7 @@ function buildSoldProductsPrintHtml({ title, subtitle, blocks }) {
 <body>
   <h1>${escapeHtml(title)}</h1>
   <div class="subtitle">${escapeHtml(subtitle)}${subtitle ? ' &middot; ' : ''}Printed ${escapeHtml(new Date().toLocaleString())}</div>
-  ${blocks.map(buildSupplierBlockHtml).join('')}
+  ${blocks.map(blockBuilder).join('')}
 </body>
 </html>`;
 }
@@ -483,6 +617,37 @@ function sellerLabel(seller, context) {
   return seller.parentDealerName
     ? `${seller.name} (Retailer / किरकोळ विक्रेता · ${seller.parentDealerName})`
     : `${seller.name} (Retailer / किरकोळ विक्रेता)`;
+}
+
+// DEALER-context variant of SupplierSection above, using
+// DealerSoldProductsTable so each state cell shows the split "To Dealer" /
+// "To Supplier" legs instead of one blended Cost Price. Always shows the
+// "Sold By" breakdown - a DEALER login always has at least their own
+// direct-sale row to show there, unlike the RETAILER case SupplierSection
+// hides it for.
+function DealerSupplierSection({ id, name, paymentToDealer, paymentToSupplier, sellers }) {
+  const ownRow = [{ id, name, paymentToDealer, paymentToSupplier, indent: false }];
+  const sellerRows = (sellers || []).map((s) => ({
+    id: `${id}-${s.type}-${s.id}`,
+    name: sellerLabel(s, 'DEALER'),
+    paymentToDealer: s.paymentToDealer,
+    paymentToSupplier: s.paymentToSupplier,
+    indent: false,
+  }));
+
+  return (
+    <div className="mb-4">
+      <div className="rounded shadow overflow-x-auto mb-1 bg-orange-50/40">
+        <DealerSoldProductsTable rows={ownRow} />
+      </div>
+      <div className="pl-4">
+        <div className="text-xs font-medium text-gray-500 mb-1">Sold By <span className="text-gray-400 font-normal">/ कोणी विकले</span></div>
+        <div className="bg-white rounded shadow overflow-x-auto">
+          <DealerSoldProductsTable rows={sellerRows} />
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // One supplier's own summary row plus its own nested "Sold By" breakdown
@@ -517,13 +682,138 @@ function SupplierSection({ id, name, byStatus, sellers, context, showSellers }) 
   );
 }
 
+// RETAILER's own sold-products view: settled with their one primary dealer
+// only, never a supplier directly (see reports.js GET /sold-products -
+// supplier is never even fetched for a RETAILER login), so this is a
+// single locked block - no dropdown, since there's nothing to pick between
+// - labeled with the dealer's name instead of a supplier's, and with no
+// "Sold By" breakdown (that's only meaningful when a supplier's sales can
+// span more than one seller).
+function RetailerSoldProductsPanel({ data }) {
+  const handlePrint = () => {
+    const html = buildSoldProductsPrintHtml({
+      title: 'Sold Products',
+      subtitle: '',
+      blocks: [{ name: data.dealerName || 'Dealer', byStatus: data.byStatus, sellers: [] }],
+    });
+    const printWindow = window.open('', '_blank', 'width=900,height=700');
+    if (!printWindow) return;
+    printWindow.document.write(html);
+    printWindow.document.close();
+    printWindow.focus();
+    printWindow.onload = () => printWindow.print();
+  };
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+        <div className="text-sm font-medium text-gray-600">
+          Dealer / डीलर: <span className="font-semibold text-gray-800">{data.dealerName || '-'}</span>
+        </div>
+        <button
+          onClick={handlePrint}
+          className="px-3 py-1.5 rounded text-sm bg-white border hover:bg-gray-50"
+        >
+          🖨 Print / छापा
+        </button>
+      </div>
+      <div className="rounded shadow overflow-x-auto bg-orange-50/40">
+        <SoldProductsTable rows={[{ id: 'own', name: data.dealerName || 'Dealer', byStatus: data.byStatus, indent: false }]} />
+      </div>
+    </div>
+  );
+}
+
+// DEALER-context sold-products panel: same supplier-pivot/dropdown
+// scaffolding as the shared panel below, but using DealerSupplierSection
+// (split "To Dealer" / "To Supplier" legs) instead of the plain
+// byStatus-based SupplierSection.
+function DealerSoldProductsPanel({ data }) {
+  const [selectedSupplier, setSelectedSupplier] = useState('ALL');
+  const suppliers = data.suppliers || [];
+  const supplierKey = (s) => String(s.supplierId ?? 'none');
+  const filteredSuppliers = selectedSupplier === 'ALL'
+    ? suppliers
+    : suppliers.filter((s) => supplierKey(s) === selectedSupplier);
+
+  const handlePrint = () => {
+    const selectedSupplierName = selectedSupplier === 'ALL'
+      ? 'All'
+      : (suppliers.find((s) => supplierKey(s) === selectedSupplier)?.supplierName || selectedSupplier);
+    const subtitle = suppliers.length > 1 ? `Supplier: ${selectedSupplierName}` : '';
+
+    const blocks = filteredSuppliers.map((s) => ({
+      name: s.supplierName,
+      paymentToDealer: s.paymentToDealer,
+      paymentToSupplier: s.paymentToSupplier,
+      sellers: (s.sellers || []).map((seller) => ({ name: sellerLabel(seller, 'DEALER'), paymentToDealer: seller.paymentToDealer, paymentToSupplier: seller.paymentToSupplier })),
+    }));
+
+    const html = buildSoldProductsPrintHtml({ title: 'Sold Products', subtitle, blocks, blockBuilder: buildDealerSupplierBlockHtml });
+    const printWindow = window.open('', '_blank', 'width=900,height=700');
+    if (!printWindow) return;
+    printWindow.document.write(html);
+    printWindow.document.close();
+    printWindow.focus();
+    printWindow.onload = () => printWindow.print();
+  };
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+        {suppliers.length > 1 ? (
+          <div className="flex items-center gap-2">
+            <label className="text-sm font-medium">Supplier / पुरवठादार:</label>
+            <select
+              className="border rounded px-2 py-1 text-sm bg-white"
+              value={selectedSupplier}
+              onChange={(e) => setSelectedSupplier(e.target.value)}
+            >
+              <option value="ALL">All / सर्व</option>
+              {suppliers.map((s) => (
+                <option key={supplierKey(s)} value={supplierKey(s)}>{s.supplierName}</option>
+              ))}
+            </select>
+          </div>
+        ) : <div />}
+        <button
+          onClick={handlePrint}
+          className="px-3 py-1.5 rounded text-sm bg-white border hover:bg-gray-50"
+        >
+          🖨 Print / छापा
+        </button>
+      </div>
+
+      {filteredSuppliers.length === 0 ? (
+        <div className="bg-white rounded shadow p-3 text-gray-400 text-sm">
+          No sold products yet. / अद्याप विकलेली उत्पादने नाहीत.
+        </div>
+      ) : (
+        filteredSuppliers.map((s) => (
+          <DealerSupplierSection
+            key={supplierKey(s)}
+            id={`s-${supplierKey(s)}`}
+            name={s.supplierName}
+            paymentToDealer={s.paymentToDealer}
+            paymentToSupplier={s.paymentToSupplier}
+            sellers={s.sellers}
+          />
+        ))
+      )}
+    </div>
+  );
+}
+
 function SoldProductsPanel({ data }) {
   // Own local selection state, same pattern as the other panels' dealer/
   // status filters - resets to All whenever the tab is left and returned to.
   const [selectedSupplier, setSelectedSupplier] = useState('ALL');
   if (!data) return null;
 
-  const showSellers = data.context !== 'RETAILER';
+  if (data.context === 'RETAILER') return <RetailerSoldProductsPanel data={data} />;
+  if (data.context === 'DEALER') return <DealerSoldProductsPanel data={data} />;
+
+  const showSellers = true;
   const suppliers = data.suppliers || [];
   // <select> values are always strings, and a "No Supplier" bucket carries
   // a null supplierId (see reports.js), so it's keyed here as the literal
