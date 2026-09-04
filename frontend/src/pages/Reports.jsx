@@ -107,6 +107,24 @@ function ProductCell({ product }) {
   );
 }
 
+// Extra price columns for the admin/organisation Dealer Inventory tab -
+// dealer's cost price (rate), the dealer -> retailer selling price
+// (labelled "retailer cost price" since that's what it becomes on the
+// retailer's side), and the end-customer retailer selling price.
+const DEALER_INVENTORY_PRICE_COLUMNS = [
+  { key: 'costPrice', label: 'Cost Price', labelMr: 'खरेदी किंमत', render: (r) => formatMoney(r.rate) },
+  { key: 'sellingPrice', label: 'Selling Price (Retailer Cost Price)', labelMr: 'विक्री किंमत (किरकोळ विक्रेता खरेदी किंमत)', render: (r) => formatMoney(r.sellingPrice) },
+  { key: 'retailerSellingPrice', label: 'Retailer Selling Price', labelMr: 'किरकोळ विक्रेता विक्री किंमत', render: (r) => formatMoney(r.retailerSellingPrice) },
+];
+
+// Extra price columns for the admin/organisation Retailer Inventory tab -
+// the retailer's own cost price (Inventory.sellingPrice, i.e. what they
+// paid their dealer) and their end-customer selling price.
+const RETAILER_INVENTORY_PRICE_COLUMNS = [
+  { key: 'retailerCostPrice', label: 'Retailer Cost Price', labelMr: 'किरकोळ विक्रेता खरेदी किंमत', render: (r) => formatMoney(r.sellingPrice) },
+  { key: 'retailerSellingPrice', label: 'Retailer Selling Price', labelMr: 'किरकोळ विक्रेता विक्री किंमत', render: (r) => formatMoney(r.retailerSellingPrice) },
+];
+
 function InventoryTable({ rows, extraColumns = [] }) {
   return (
     <div className="bg-white rounded shadow overflow-x-auto">
@@ -195,7 +213,7 @@ function summarizeRows(rows, priceKey) {
 
 // One group's summary strip (product count / total quantity / total value)
 // followed by its full item-level inventory table.
-function GroupedInventorySection({ name, rows, priceKey, priceLabel, priceLabelMr }) {
+function GroupedInventorySection({ name, rows, priceKey, priceLabel, priceLabelMr, extraColumns = [] }) {
   const summary = summarizeRows(rows, priceKey);
   return (
     <div className="mb-6">
@@ -207,7 +225,7 @@ function GroupedInventorySection({ name, rows, priceKey, priceLabel, priceLabelM
           <span>{priceLabel} / {priceLabelMr}: <b>{formatMoney(summary.value)}</b></span>
         </div>
       </div>
-      <InventoryTable rows={rows} />
+      <InventoryTable rows={rows} extraColumns={extraColumns} />
     </div>
   );
 }
@@ -252,6 +270,7 @@ function DealerInventoryPanel({ rows }) {
             priceKey="rate"
             priceLabel="Total Cost Price"
             priceLabelMr="एकूण खरेदी किंमत"
+            extraColumns={DEALER_INVENTORY_PRICE_COLUMNS}
           />
         ))
       )}
@@ -302,8 +321,9 @@ function RetailerInventoryPanel({ dealers, rows }) {
                   name={rg.name}
                   rows={rg.rows}
                   priceKey="sellingPrice"
-                  priceLabel="Total Selling Price"
-                  priceLabelMr="एकूण विक्री किंमत"
+                  priceLabel="Total Retailer Cost Price"
+                  priceLabelMr="एकूण किरकोळ विक्रेता खरेदी किंमत"
+                  extraColumns={RETAILER_INVENTORY_PRICE_COLUMNS}
                 />
               ))}
             </div>

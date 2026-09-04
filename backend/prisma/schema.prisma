@@ -564,15 +564,25 @@ model PurchaseItem {
   product              Product   @relation(fields: [productId], references: [id])
   quantity             Int
   // Snapshot of `quantity` taken when this line was (re)declared — set at
-  // POST / and PUT /:id (a full resubmission of the purchase form), and
-  // left untouched by PATCH /:id/quantities (the surgical quantity-only
-  // correction). That split is the whole point: comparing quantity against
-  // originalQuantity is how the UI flags a line that's since drifted from
-  // what was first asked for — see Purchases.jsx and Sales.jsx. Defaults to
-  // 0 purely so the column can be added to an existing table without a
-  // manual backfill migration; every row created through the app (POST /
-  // and PUT /:id) always sets it explicitly to match quantity, so a real
-  // 0 should never actually appear outside of old pre-migration rows.
+  // POST / and PUT /:id (a full resubmission of the purchase form). Also
+  // kept in sync by PATCH /:id/quantities, but only for a RETAILER's own
+  // purchase, and only while it's still PENDING/IN_REVIEW (i.e. before the
+  // order is placed with the dealer) — see purchases.js. For a DEALER,
+  // PATCH /:id/quantities leaves it untouched.
+  //
+  // The point of the split: for a RETAILER, comparing `quantity` against
+  // originalQuantity is how the UI flags a line the DEALER fulfilled for a
+  // different amount than what was actually ordered (see Purchases.jsx and
+  // Sales.jsx). Re-baselining it on every pre-submission edit means only
+  // drift introduced by the DEALER after the order is placed gets flagged —
+  // not the retailer's own edits to their own not-yet-submitted order. Once
+  // the purchase moves to ORDERED, quantity edits are no longer accepted
+  // here, so originalQuantity is locked in at that point as the frozen
+  // baseline. Defaults to 0 purely so the column can be added to an
+  // existing table without a manual backfill migration; every row created
+  // through the app (POST / and PUT /:id) always sets it explicitly to
+  // match quantity, so a real 0 should never actually appear outside of old
+  // pre-migration rows.
   originalQuantity     Int       @default(0)
   rate                 Decimal?  @db.Decimal(10, 2) // cost price paid per unit for this batch
   dealerCommission     Decimal?  @db.Decimal(5, 2) // dealer commission %, used to derive sellingPrice

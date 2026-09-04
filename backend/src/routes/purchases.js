@@ -230,10 +230,21 @@ router.put('/:id', authRequired, requireRole('DEALER', 'RETAILER'), async (req, 
 // touching anything else. Allowed while the purchase is PENDING or
 // IN_REVIEW — the two stages before inventory gets credited (see the
 // /:id/status route) — so a quick quantity correction doesn't require
-// resubmitting the whole item form via PUT. Deliberately leaves
-// originalQuantity untouched — that's the baseline the UI compares
-// `quantity` against to flag a line that's drifted from what was first
-// asked for (see Purchases.jsx / Sales.jsx).
+// resubmitting the whole item form via PUT.
+//
+// For a DEALER, originalQuantity is deliberately left untouched here — it's
+// not compared against anything for a dealer's own purchases.
+//
+// For a RETAILER, originalQuantity IS the baseline their UI compares
+// `quantity` against to flag a line the DEALER later fulfilled/dispatched
+// for a different amount than what was ordered (see Purchases.jsx's
+// qtyChanged / "Original Qty" column). That comparison is only meaningful
+// once the order has actually been placed (status ORDERED) — before then
+// the retailer is still shaping their own order, so every quantity edit
+// here re-baselines originalQuantity to match `quantity`. Since this route
+// already refuses edits once status moves past PENDING/IN_REVIEW (i.e. once
+// ORDERED), originalQuantity naturally stops moving — and stays locked at
+// whatever it was — the moment the order is submitted.
 router.patch('/:id/quantities', authRequired, requireRole('DEALER', 'RETAILER'), async (req, res) => {
   const scope = ownerScope(req);
   const id = Number(req.params.id);
@@ -259,8 +270,16 @@ router.patch('/:id/quantities', authRequired, requireRole('DEALER', 'RETAILER'),
     if (!i.quantity || Number(i.quantity) <= 0) return res.status(400).json({ error: 'Quantity must be greater than zero' });
   }
 
+  // RETAILER: quantity edits before the order is placed also move the
+  // originalQuantity baseline (see comment above). DEALER: unchanged,
+  // quantity only.
   await prisma.$transaction(
-    items.map((i) => prisma.purchaseItem.update({ where: { id: Number(i.id) }, data: { quantity: Number(i.quantity) } }))
+    items.map((i) => prisma.purchaseItem.update({
+      where: { id: Number(i.id) },
+      data: scope.ownerType === 'RETAILER'
+        ? { quantity: Number(i.quantity), originalQuantity: Number(i.quantity) }
+        : { quantity: Number(i.quantity) },
+    }))
   );
 
   const purchase = await prisma.purchase.findUnique({
