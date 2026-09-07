@@ -590,12 +590,19 @@ function buildDealerSoldPivotHtml(rows, firstColumnLabel) {
 
 // DEALER-context variant of buildSupplierBlockHtml, using
 // buildDealerSoldPivotHtml above for the split payment legs.
+// DEALER-context variant of buildSupplierBlockHtml. The top "Total" row
+// uses the plain single-leg buildSoldPivotHtml fed with just
+// paymentToSupplier - same reasoning as the on-screen DealerSupplierSection
+// above: a retailer never pays a supplier directly, so that row has no
+// business showing a Retailer leg. Sellers still use the dual-leg
+// buildDealerSoldPivotHtml, where showing both legs per seller is
+// meaningful.
 function buildDealerSupplierBlockHtml({ name, paymentToDealer, paymentToSupplier, sellers }) {
   const sellerRows = (sellers || []).map((s) => ({ id: 'x', name: s.name, paymentToDealer: s.paymentToDealer, paymentToSupplier: s.paymentToSupplier, indent: false }));
   return `
     <div style="margin-bottom:16px;">
       <h3 style="font-size:13px;margin:10px 0 4px;">${escapeHtml(name)}</h3>
-      ${buildDealerSoldPivotHtml([{ id: 'x', name, paymentToDealer, paymentToSupplier, indent: false }], 'Total')}
+      ${buildSoldPivotHtml([{ id: 'x', name, byStatus: paymentToSupplier, indent: false }], 'Total')}
       ${sellerRows.length > 0 ? `
       <div style="margin-left:16px;">
         <div style="font-size:11px;color:#666;margin:2px 0;">Sold By</div>
@@ -659,8 +666,18 @@ function sellerLabel(seller, context) {
 // "Sold By" breakdown - a DEALER login always has at least their own
 // direct-sale row to show there, unlike the RETAILER case SupplierSection
 // hides it for.
+// headerLabel: 'Supplier' for the ownRow above, DealerSupplierSection's own
+// "supplier's own row" - see the note above.
 function DealerSupplierSection({ id, name, paymentToDealer, paymentToSupplier, sellers }) {
-  const ownRow = [{ id, name, paymentToDealer, paymentToSupplier, indent: false }];
+  // The top row is deliberately rendered through the single-leg
+  // SoldProductsTable (same component the ADMIN/ORGANISATION view uses for
+  // its own supplier row) fed with just paymentToSupplier - a retailer
+  // never pays a supplier directly, so this row - now labeled "Supplier" -
+  // has no business showing a "Retailer" leg/column at all, not even a
+  // blank one. That per-retailer paymentToDealer total still shows up
+  // where it belongs: on each individual seller's own row in the "Sold By"
+  // breakdown below, via the dual-leg DealerSoldProductsTable.
+  const ownRow = [{ id, name, byStatus: paymentToSupplier, indent: false }];
   const sellerRows = (sellers || []).map((s) => ({
     id: `${id}-${s.type}-${s.id}`,
     name: sellerLabel(s, 'DEALER'),
@@ -672,7 +689,7 @@ function DealerSupplierSection({ id, name, paymentToDealer, paymentToSupplier, s
   return (
     <div className="mb-4">
       <div className="rounded shadow overflow-x-auto mb-1 bg-orange-50/40">
-        <DealerSoldProductsTable
+        <SoldProductsTable
           rows={ownRow}
           headerLabel={<>Supplier <span className="text-gray-400 font-normal">/ पुरवठादार</span></>}
         />
