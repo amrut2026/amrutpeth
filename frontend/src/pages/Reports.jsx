@@ -647,12 +647,14 @@ function buildSoldProductsPrintHtml({ title, subtitle, blocks, blockBuilder = bu
 }
 
 // Labels one "Sold By" row so a DEALER's own direct sales are told apart
-// from their retailers' sales. A RETAILER seller only ever appears here
-// under the DEALER context (that dealer's own retailer breakdown) - the
-// ADMIN/ORGANISATION supplier pivot no longer includes retailer sellers at
-// all (see reports.js /sold-products): a retailer never pays a supplier
-// directly, so what a retailer's resale contributes there is folded into
-// their originating dealer's own row instead.
+// from their retailers' sales. A RETAILER seller appears here both under
+// the DEALER context (that dealer's own retailer breakdown) and under the
+// ADMIN/ORGANISATION supplier pivot (see reports.js /sold-products) when
+// one of a dealer's retailers resold that dealer's supplier-sourced stock
+// - shown there purely for visibility of which retailer it was, still
+// valued at the dealer's own cost/selling basis rather than the retailer's
+// own sellingPrice-to-dealer numbers, since a retailer never pays a
+// supplier directly.
 function sellerLabel(seller, context) {
   if (seller.type === 'DEALER') {
     return context === 'DEALER' ? `${seller.name} (Direct Sales / थेट विक्री)` : `${seller.name} (Dealer / डीलर)`;
