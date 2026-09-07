@@ -380,7 +380,8 @@ function DealerObligationCells({ dealerLeg, retailerLeg }) {
 // column GROUP per state, each group split into Dealer/Retailer legs and
 // each leg split into Qty/Cost/Selling (6 columns per state) via
 // DealerObligationCells above, instead of the plain Qty/Cost/Selling
-// column triplet SoldProductsTable uses for RETAILER/ADMIN/ORGANISATION.
+// column triplet SoldProductsTable uses for RETAILER's single-leg report
+// (the only context left with just one obligation to show).
 //
 // headerLabel drives the first column's heading. Defaults to "Dealer /
 // Retailer" for the nested "Sold By" breakdown (DealerSupplierSection),
@@ -454,9 +455,8 @@ function DealerSoldProductsTable({ rows, headerLabel = <>Dealer / Retailer <span
 // headerLabel drives the first column's heading - see the same note on
 // DealerSoldProductsTable above. Defaults to "Dealer / Retailer": correct
 // as-is for RetailerSoldProductsPanel's single row (that row IS the
-// retailer's dealer) and for SupplierSection's nested "Sold By" breakdown;
-// SupplierSection overrides it to "Supplier" for the supplier's own
-// aggregated row one level up.
+// retailer's dealer); DealerSupplierSection overrides it to "Supplier" for
+// the supplier's own aggregated row one level up.
 function SoldProductsTable({ rows, headerLabel = <>Dealer / Retailer <span className="text-gray-400 font-normal">/ डीलर / किरकोळ विक्रेता</span></> }) {
   return (
     <table className="w-full text-sm">
@@ -540,10 +540,14 @@ function buildSoldPivotHtml(rows, firstColumnLabel) {
   </table>`;
 }
 
-// One supplier "block" for print: its own summary row (as a one-row pivot
-// table) immediately followed by its own "Sold By" breakdown - same
-// nesting as the on-screen SupplierSection below. `sellers` is already
-// pre-labeled (see sellerLabel below) by the time it reaches here.
+// One single-leg "block" for print: its own summary row (as a one-row
+// pivot table) immediately followed by its own "Sold By" breakdown, if
+// any. This is the default blockBuilder for buildSoldProductsPrintHtml -
+// only RetailerSoldProductsPanel's print still uses it now (a single
+// locked block with no sellers), since the ADMIN/ORGANISATION and DEALER
+// reports both print through the dual-leg buildDealerSupplierBlockHtml
+// below instead. `sellers` is already pre-labeled (see sellerLabel below)
+// by the time it reaches here.
 function buildSupplierBlockHtml({ name, byStatus, sellers }) {
   const sellerRows = (sellers || []).map((s) => ({ id: 'x', name: s.name, byStatus: s.byStatus, indent: false }));
   return `
@@ -647,14 +651,16 @@ function buildSoldProductsPrintHtml({ title, subtitle, blocks, blockBuilder = bu
 }
 
 // Labels one "Sold By" row so a DEALER's own direct sales are told apart
-// from their retailers' sales. A RETAILER seller appears here both under
-// the DEALER context (that dealer's own retailer breakdown) and under the
-// ADMIN/ORGANISATION supplier pivot (see reports.js /sold-products) when
-// one of a dealer's retailers resold that dealer's supplier-sourced stock
-// - shown there purely for visibility of which retailer it was, still
-// valued at the dealer's own cost/selling basis rather than the retailer's
-// own sellingPrice-to-dealer numbers, since a retailer never pays a
-// supplier directly.
+// from their retailers' sales. Used by both a single dealer's own report
+// AND the ADMIN/ORGANISATION supplier pivot (reused via
+// DealerSoldProductsPanel/DealerSupplierSection - see reports.js
+// /sold-products), always called with context 'DEALER' since both render
+// through the same dual-leg components. A RETAILER seller's own
+// paymentToDealer leg is still that retailer's real status/price
+// (visibility only); its paymentToSupplier leg is what a dealer owes their
+// supplier for that same resold unit, valued at the dealer's own cost/
+// selling basis, never the retailer's own sellingPrice-to-dealer numbers -
+// a retailer never pays a supplier directly.
 function sellerLabel(seller, context) {
   if (seller.type === 'DEALER') {
     return context === 'DEALER' ? `${seller.name} (Direct Sales / थेट विक्री)` : `${seller.name} (Dealer / डीलर)`;
@@ -662,22 +668,27 @@ function sellerLabel(seller, context) {
   return `${seller.name} (Retailer / किरकोळ विक्रेता)`;
 }
 
-// DEALER-context variant of SupplierSection above, using
-// DealerSoldProductsTable so each state cell shows the split "To Dealer" /
-// "To Supplier" legs instead of one blended Cost Price. Always shows the
-// "Sold By" breakdown - a DEALER login always has at least their own
-// direct-sale row to show there, unlike the RETAILER case SupplierSection
-// hides it for.
+// One supplier/dealer's own summary row plus its own nested "Sold By"
+// breakdown underneath, using the dual-leg DealerSoldProductsTable so each
+// state cell shows the split "To Dealer" / "To Supplier" legs instead of
+// one blended Cost Price - a retailer's own settlement to their dealer and
+// that dealer's settlement to their supplier are two independent
+// SoldProduct rows that can each sit in a different state (see the
+// SoldProduct model comment in schema.prisma). Used both by a single
+// dealer's own report (where the top row is that dealer) and by the
+// ADMIN/ORGANISATION supplier pivot (where the top row is a supplier) -
+// see DealerSoldProductsPanel below. Always shows the "Sold By" breakdown -
+// there's always at least one direct-sale or resold-by-retailer row to
+// show there.
 // headerLabel: 'Supplier' for the ownRow above, DealerSupplierSection's own
 // "supplier's own row" - see the note above.
 function DealerSupplierSection({ id, name, paymentToDealer, paymentToSupplier, sellers }) {
   // The top row is deliberately rendered through the single-leg
-  // SoldProductsTable (same component the ADMIN/ORGANISATION view uses for
-  // its own supplier row) fed with just paymentToSupplier - a retailer
-  // never pays a supplier directly, so this row - now labeled "Supplier" -
-  // has no business showing a "Retailer" leg/column at all, not even a
-  // blank one. That per-retailer paymentToDealer total still shows up
-  // where it belongs: on each individual seller's own row in the "Sold By"
+  // SoldProductsTable fed with just paymentToSupplier - a retailer never
+  // pays a supplier directly, so this row - labeled "Supplier" - has no
+  // business showing a "Retailer" leg/column at all, not even a blank one.
+  // That per-retailer paymentToDealer total still shows up where it
+  // belongs: on each individual seller's own row in the "Sold By"
   // breakdown below, via the dual-leg DealerSoldProductsTable.
   const ownRow = [{ id, name, byStatus: paymentToSupplier, indent: false }];
   const sellerRows = (sellers || []).map((s) => ({
@@ -702,41 +713,6 @@ function DealerSupplierSection({ id, name, paymentToDealer, paymentToSupplier, s
           <DealerSoldProductsTable rows={sellerRows} />
         </div>
       </div>
-    </div>
-  );
-}
-
-// One supplier's own summary row plus its own nested "Sold By" breakdown
-// underneath - see the reconciliation note on SoldProductsPanel above for
-// why it's nested here rather than pulled out into one combined section.
-// showSellers is false only for a RETAILER login (see SoldProductsPanel
-// below) - their one and only seller is always themselves, so the
-// breakdown would just repeat this same row a second time.
-function SupplierSection({ id, name, byStatus, sellers, context, showSellers }) {
-  const ownRow = [{ id, name, byStatus, indent: false }];
-  const sellerRows = (sellers || []).map((s) => ({
-    id: `${id}-${s.type}-${s.id}`,
-    name: sellerLabel(s, context),
-    byStatus: s.byStatus,
-    indent: false,
-  }));
-
-  return (
-    <div className="mb-4">
-      <div className="rounded shadow overflow-x-auto mb-1 bg-orange-50/40">
-        <SoldProductsTable
-          rows={ownRow}
-          headerLabel={<>Supplier <span className="text-gray-400 font-normal">/ पुरवठादार</span></>}
-        />
-      </div>
-      {showSellers && (
-        <div className="pl-4">
-          <div className="text-xs font-medium text-gray-500 mb-1">Sold By <span className="text-gray-400 font-normal">/ कोणी विकले</span></div>
-          <div className="bg-white rounded shadow overflow-x-auto">
-            <SoldProductsTable rows={sellerRows} />
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -783,10 +759,11 @@ function RetailerSoldProductsPanel({ data }) {
   );
 }
 
-// DEALER-context sold-products panel: same supplier-pivot/dropdown
-// scaffolding as the shared panel below, but using DealerSupplierSection
-// (split "To Dealer" / "To Supplier" legs) instead of the plain
-// byStatus-based SupplierSection.
+// Supplier-pivot/dropdown sold-products panel, using DealerSupplierSection
+// (split "To Dealer" / "To Supplier" legs). Used for a single DEALER's own
+// report AND reused as-is for the ADMIN/ORGANISATION report (see
+// SoldProductsPanel below) - reports.js returns the identical dual-leg
+// shape for both.
 function DealerSoldProductsPanel({ data }) {
   const [selectedSupplier, setSelectedSupplier] = useState('ALL');
   const suppliers = data.suppliers || [];
@@ -864,93 +841,18 @@ function DealerSoldProductsPanel({ data }) {
 }
 
 function SoldProductsPanel({ data }) {
-  // Own local selection state, same pattern as the other panels' dealer/
-  // status filters - resets to All whenever the tab is left and returned to.
-  const [selectedSupplier, setSelectedSupplier] = useState('ALL');
   if (!data) return null;
 
   if (data.context === 'RETAILER') return <RetailerSoldProductsPanel data={data} />;
-  if (data.context === 'DEALER') return <DealerSoldProductsPanel data={data} />;
-
-  const showSellers = true;
-  const suppliers = data.suppliers || [];
-  // <select> values are always strings, and a "No Supplier" bucket carries
-  // a null supplierId (see reports.js), so it's keyed here as the literal
-  // string 'none' rather than 'null' to stay unambiguous either way.
-  const supplierKey = (s) => String(s.supplierId ?? 'none');
-  const filteredSuppliers = selectedSupplier === 'ALL'
-    ? suppliers
-    : suppliers.filter((s) => supplierKey(s) === selectedSupplier);
-
-  // Prints exactly what's on screen right now - every supplier block as
-  // narrowed by whichever supplier dropdown is set - in a separate window
-  // so the rest of the app UI doesn't end up on the page.
-  const handlePrint = () => {
-    const selectedSupplierName = selectedSupplier === 'ALL'
-      ? 'All'
-      : (suppliers.find((s) => supplierKey(s) === selectedSupplier)?.supplierName || selectedSupplier);
-    const subtitle = suppliers.length > 1 ? `Supplier: ${selectedSupplierName}` : '';
-
-    const blocks = filteredSuppliers.map((s) => ({
-      name: s.supplierName,
-      byStatus: s.byStatus,
-      sellers: showSellers ? (s.sellers || []).map((seller) => ({ name: sellerLabel(seller, data.context), byStatus: seller.byStatus })) : [],
-    }));
-
-    const html = buildSoldProductsPrintHtml({ title: 'Sold Products', subtitle, blocks });
-    const printWindow = window.open('', '_blank', 'width=900,height=700');
-    if (!printWindow) return; // popup blocked - nothing else to fall back to here
-    printWindow.document.write(html);
-    printWindow.document.close();
-    printWindow.focus();
-    printWindow.onload = () => printWindow.print();
-  };
-
-  return (
-    <div>
-      <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
-        {suppliers.length > 1 ? (
-          <div className="flex items-center gap-2">
-            <label className="text-sm font-medium">Supplier / पुरवठादार:</label>
-            <select
-              className="border rounded px-2 py-1 text-sm bg-white"
-              value={selectedSupplier}
-              onChange={(e) => setSelectedSupplier(e.target.value)}
-            >
-              <option value="ALL">All / सर्व</option>
-              {suppliers.map((s) => (
-                <option key={supplierKey(s)} value={supplierKey(s)}>{s.supplierName}</option>
-              ))}
-            </select>
-          </div>
-        ) : <div />}
-        <button
-          onClick={handlePrint}
-          className="px-3 py-1.5 rounded text-sm bg-white border hover:bg-gray-50"
-        >
-          🖨 Print / छापा
-        </button>
-      </div>
-
-      {filteredSuppliers.length === 0 ? (
-        <div className="bg-white rounded shadow p-3 text-gray-400 text-sm">
-          No sold products yet. / अद्याप विकलेली उत्पादने नाहीत.
-        </div>
-      ) : (
-        filteredSuppliers.map((s) => (
-          <SupplierSection
-            key={supplierKey(s)}
-            id={`s-${supplierKey(s)}`}
-            name={s.supplierName}
-            byStatus={s.byStatus}
-            sellers={s.sellers}
-            context={data.context}
-            showSellers={showSellers}
-          />
-        ))
-      )}
-    </div>
-  );
+  // ADMIN/ORGANISATION now gets the exact same dual-leg
+  // (paymentToDealer/paymentToSupplier) shape from reports.js as a single
+  // dealer's own report does - a retailer's own settlement to their dealer
+  // and that dealer's settlement to their supplier are two independent
+  // SoldProduct rows that can each sit in a different state (see the
+  // SoldProduct model comment in schema.prisma), so this reuses
+  // DealerSoldProductsPanel wholesale rather than a flat single-leg
+  // renderer that could only show one of the two at a time.
+  return <DealerSoldProductsPanel data={data} />;
 }
 
 // Sum of quantity × unit price across an order's items. Same price field

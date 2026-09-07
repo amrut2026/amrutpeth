@@ -962,59 +962,7 @@ function serializeSoldBucket(map) {
   return SOLD_PRODUCT_STATUS_ORDER.map((s) => map.get(s)).filter(Boolean);
 }
 
-// The supplier-first pivot itself - buckets keyed by supplierId (or "none"
-// for a product with no Product.supplierId set, so an unattributed row
-// still counts toward reconciliation rather than being silently dropped),
-// each holding both its own aggregate state buckets AND a nested map of
-// sellers, each of which holds its own state buckets in exactly the same
-// shape.
-function newSupplierPivotGroup() {
-  return { buckets: new Map(), names: new Map(), sellers: new Map() };
-}
-// `seller` is { type, id, name } - type 'DEALER' for a dealer's own direct
-// cash sale, or type 'RETAILER' when the units being counted here were
-// actually sold by one of that dealer's retailers (the retailer never pays
-// the supplier directly, but is still shown as its own seller row for
-// visibility - see the ADMIN/ORGANISATION branch of GET /sold-products
-// below). Either way, every row landing in this pivot is money owed to
-// (or already paid to) THE SUPPLIER, valued at the dealer's own cost/
-// selling basis - never the retailer's own sellingPrice-to-dealer numbers.
-function addToSupplierPivot(group, product, seller, status, quantity, costPriceUnit, sellingPriceUnit) {
-  const supplierKey = product?.supplierId ?? 'none';
-  if (!group.buckets.has(supplierKey)) group.buckets.set(supplierKey, new Map());
-  if (!group.names.has(supplierKey)) group.names.set(supplierKey, product?.supplier?.name ?? 'No Supplier');
-  addSoldBucket(group.buckets.get(supplierKey), status, quantity, costPriceUnit, sellingPriceUnit);
 
-  if (!group.sellers.has(supplierKey)) group.sellers.set(supplierKey, new Map());
-  const sellerMap = group.sellers.get(supplierKey);
-  const sellerKey = `${seller.type}-${seller.id}`;
-  if (!sellerMap.has(sellerKey)) {
-    sellerMap.set(sellerKey, {
-      type: seller.type,
-      id: seller.id,
-      name: seller.name,
-      buckets: new Map(),
-    });
-  }
-  addSoldBucket(sellerMap.get(sellerKey).buckets, status, quantity, costPriceUnit, sellingPriceUnit);
-}
-function serializeSupplierPivot(group) {
-  return [...group.buckets.keys()]
-    .map((key) => ({
-      supplierId: key === 'none' ? null : key,
-      supplierName: group.names.get(key),
-      byStatus: serializeSoldBucket(group.buckets.get(key)),
-      sellers: [...(group.sellers.get(key)?.values() ?? [])]
-        .map((s) => ({
-          type: s.type,
-          id: s.id,
-          name: s.name,
-          byStatus: serializeSoldBucket(s.buckets),
-        }))
-        .sort((a, b) => (a.name || '').localeCompare(b.name || '')),
-    }))
-    .sort((a, b) => (a.supplierName || '').localeCompare(b.supplierName || ''));
-}
 
 // DEALER-context variant of the pivot above: a retailer's own sold product
 // carries TWO independent settlement obligations that can each sit in a
@@ -1075,7 +1023,7 @@ function serializeDealerSupplierPivot(group) {
 }
 
 // Product select shared by every soldProduct query below - just enough to
-// attribute a row to its origin supplier (see addToSupplierPivot above)
+// attribute a row to its origin supplier (see addToDealerSupplierPivot above)
 // without pulling the whole Product row.
 const SOLD_PRODUCT_SUPPLIER_SELECT = { select: { supplierId: true, supplier: { select: { name: true } } } };
 
@@ -1179,27 +1127,32 @@ router.get('/sold-products', authRequired, async (req, res) => {
   // ADMIN / ORGANISATION - every supplier touched by any sale across every
   // dealer in scope (whole platform for ADMIN, just their own organisation
   // for ORGANISATION - same scoping as /activity-summary and /org-summary
-  // above), each with its aggregate `byStatus` PLUS a `sellers` breakdown
-  // spanning every dealer in scope.
+  // above). Reuses the same dual-leg pivot the DEALER branch above uses
+  // (newDealerSupplierPivotGroup/addToDealerSupplierPivot/
+  // serializeDealerSupplierPivot are generic, not dealer-specific despite
+  // the name) rather than a flat single-leg one, because a retailer's own
+  // settlement to their dealer and that dealer's settlement to their
+  // supplier are two independent SoldProduct rows that can each sit in a
+  // different state (see the SoldProduct model comment in schema.prisma) -
+  // collapsing them into one status/price would silently show the wrong
+  // one of the two (e.g. a retailer's already-PAID row appearing as OPEN
+  // at the dealer's own originDealerRate, just because the dealer hasn't
+  // settled with their supplier yet).
   //
-  // A retailer's OWN sold-product row (owedBy RETAILER, tracking what they
-  // owe THEIR dealer, settled at SaleItem.sellingPrice) never contributes
-  // to this pivot's totals - a retailer never pays a supplier directly (see
-  // the SoldProduct model comment in schema.prisma), so that row's own
-  // price/status is irrelevant to what's owed upstream. What DOES belong
-  // here, when a retailer resells a dealer's supplier-sourced stock, is the
-  // second row the DEALER themselves owes their OWN supplier for that same
-  // unit (owedBy DEALER, dealerId set to the originating dealer, settled at
-  // SaleItem.originDealerRate, always OPEN/PAID - never TO_BE_CONFIRMED,
-  // per the same model comment). That row still counts toward the
-  // originating dealer's/supplier's totals, but is shown as its own
-  // RETAILER seller entry - keyed by which retailer generated it - so the
-  // "Sold By" breakdown keeps that visibility instead of silently merging
-  // it into the dealer's own direct-sales row. Values shown on that
-  // retailer row are still the dealer-side originDealerRate/price figures,
-  // never the retailer's own sellingPrice-to-dealer numbers - the retailer
-  // row exists for visibility only, so once the retailer has paid the
-  // dealer, that money is the dealer's to pay the supplier with.
+  // Per supplier: `paymentToSupplier` is the real amount owed upstream -
+  // fed only by a dealer's own direct cash sales (dealerSold, settled at
+  // SaleItem.rate) and the dealer-scoped obligation raised alongside a
+  // retailer's resale (dealerOriginSold, settled at SaleItem.
+  // originDealerRate) - both attributed to the DEALER (dealerOriginSold to
+  // whichever dealer originated the stock, since that's who the supplier
+  // is actually owed by). `paymentToDealer` is a separate, visibility-only
+  // leg carrying each retailer's own status/price (retailerSold, settled
+  // at SaleItem.sellingPrice) - it never feeds paymentToSupplier or the
+  // supplier's own total, since a retailer never pays a supplier directly;
+  // it exists purely so the "Sold By" breakdown shows what a retailer
+  // seller has actually collected and its real PAID/OPEN/TO_BE_CONFIRMED
+  // status, without pretending that status applies to what the dealer
+  // still owes upstream.
   const orgWhere = req.user.role === 'ORGANISATION' ? { orgId: req.user.organisationId } : {};
   const organisations = await prisma.organisation.findMany({
     where: orgWhere,
@@ -1218,18 +1171,27 @@ router.get('/sold-products', authRequired, async (req, res) => {
 
   if (dealerIds.length === 0) return res.json({ context: 'ALL', suppliers: [] });
 
-  const [dealerSold, dealerOriginSold] = await Promise.all([
+  const [dealerSold, retailerSold, dealerOriginSold] = await Promise.all([
     // A dealer's own direct cash sales - shown as that dealer's own
-    // "Direct Sales" seller row (see sellerLabel).
+    // "Direct Sales" seller row (see sellerLabel), toSupplier leg only.
     prisma.soldProduct.findMany({
       where: { owedBy: 'DEALER', dealerId: null, sale: { ownerType: 'DEALER', dealerId: { in: dealerIds } } },
       select: { status: true, sale: { select: { dealerId: true } }, product: SOLD_PRODUCT_SUPPLIER_SELECT, saleItem: { select: { quantity: true, rate: true, price: true } } },
     }),
+    // A retailer's own sale - what that retailer owes THEIR dealer,
+    // settled at SaleItem.sellingPrice - visibility-only toDealer leg,
+    // never counted toward what's owed to the supplier.
+    retailerIds.length
+      ? prisma.soldProduct.findMany({
+          where: { owedBy: 'RETAILER', sale: { ownerType: 'RETAILER', retailerId: { in: retailerIds } } },
+          select: { status: true, sale: { select: { retailerId: true } }, product: SOLD_PRODUCT_SUPPLIER_SELECT, saleItem: { select: { quantity: true, sellingPrice: true, price: true } } },
+        })
+      : [],
     // The dealer-owed-to-supplier row raised alongside a retailer's own
-    // sale of that dealer's stock - settled at originDealerRate (the
-    // dealer's own cost basis), not the retailer's sellingPrice/status.
-    // Attributed to the RETAILER below (for visibility) while still
-    // counting toward the originating dealer's/supplier's totals.
+    // sale of that dealer's stock - settled independently at
+    // originDealerRate (the dealer's own cost basis), toSupplier leg,
+    // attributed to the originating retailer for "Sold By" visibility but
+    // still counted toward the supplier's real total.
     retailerIds.length
       ? prisma.soldProduct.findMany({
           where: { owedBy: 'DEALER', dealerId: { in: dealerIds }, sale: { ownerType: 'RETAILER', retailerId: { in: retailerIds } } },
@@ -1238,23 +1200,30 @@ router.get('/sold-products', authRequired, async (req, res) => {
       : [],
   ]);
 
-  const pivot = newSupplierPivotGroup();
+  const pivot = newDealerSupplierPivotGroup();
   for (const sp of dealerSold) {
     const dId = sp.sale.dealerId;
-    addToSupplierPivot(
-      pivot, sp.product, { type: 'DEALER', id: dId, name: dealerNameById.get(dId) ?? null },
+    addToDealerSupplierPivot(
+      pivot, 'toSupplier', sp.product, { type: 'DEALER', id: dId, name: dealerNameById.get(dId) ?? null },
       sp.status, sp.saleItem.quantity, Number(sp.saleItem.rate ?? 0), Number(sp.saleItem.price ?? 0)
+    );
+  }
+  for (const sp of retailerSold) {
+    const rId = sp.sale.retailerId;
+    addToDealerSupplierPivot(
+      pivot, 'toDealer', sp.product, { type: 'RETAILER', id: rId, name: retailerNameById.get(rId) ?? null },
+      sp.status, sp.saleItem.quantity, Number(sp.saleItem.sellingPrice ?? 0), Number(sp.saleItem.price ?? 0)
     );
   }
   for (const sp of dealerOriginSold) {
     const rId = sp.sale.retailerId;
-    addToSupplierPivot(
-      pivot, sp.product, { type: 'RETAILER', id: rId, name: retailerNameById.get(rId) ?? null },
+    addToDealerSupplierPivot(
+      pivot, 'toSupplier', sp.product, { type: 'RETAILER', id: rId, name: retailerNameById.get(rId) ?? null },
       sp.status, sp.saleItem.quantity, Number(sp.saleItem.originDealerRate ?? 0), Number(sp.saleItem.price ?? 0)
     );
   }
 
-  res.json({ context: 'ALL', suppliers: serializeSupplierPivot(pivot) });
+  res.json({ context: 'ALL', suppliers: serializeDealerSupplierPivot(pivot) });
 });
 
 // ---------------------------------------------------------------------
