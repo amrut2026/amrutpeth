@@ -9,6 +9,7 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 enum Role {
@@ -16,6 +17,7 @@ enum Role {
   ORGANISATION // login tied to an Organisation (Mahamandal/Federation/Association) itself
   DEALER
   RETAILER
+  READONLY // view-only oversight login: same screen set as ADMIN, but every write action must be gated off in each page/route — see notes at each Role usage site
 }
 
 enum OwnerType {

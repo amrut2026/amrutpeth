@@ -25,6 +25,29 @@ const NAV = {
     ['/retailers', 'Retailers', 'किरकोळ विक्रेते'],
     ['/reports', 'Reports', 'अहवाल'],
   ],
+  // READONLY is an oversight login with the same screen set as ADMIN
+  // (organisation, divisions, suppliers, categories, products, dealers,
+  // retailers, reports) but every one of those screens must render in
+  // view-only mode for this role — see the canWrite/canCreate/editable/
+  // activatable props on CrudTable. This array only controls which links
+  // show up in the sidebar; it does NOT by itself stop writes. Each page
+  // component (Organisation.jsx, Divisions.jsx, Categories.jsx,
+  // Products.jsx, Suppliers.jsx, Dealers.jsx, Retailers.jsx) still needs
+  // its own canWrite/canCreate/editable/activatable computation to treat
+  // READONLY the same as "no write access", and the backend routes for
+  // each of these resources need the equivalent check so the API isn't
+  // reachable directly. Reports needs no changes since it's already
+  // read-only for every role.
+  READONLY: [
+    ['/organisation', 'Organisation', 'संस्था'],
+    ['/divisions', 'Divisions', 'विभाग'],
+    ['/suppliers', 'Suppliers / Manufacturers', 'पुरवठादार / उत्पादक'],
+    ['/categories', 'Categories', 'श्रेण्या'],
+    ['/products', 'Products', 'उत्पादने'],
+    ['/dealers', 'Dealers', 'डीलर्स'],
+    ['/retailers', 'Retailers', 'किरकोळ विक्रेते'],
+    ['/reports', 'Reports', 'अहवाल'],
+  ],
   // ORGANISATION manages dealers and the division master list (see
   // dealers.js / divisions.js). Suppliers/Manufacturers is read-only here —
   // creation and edits now live with DEALER (see suppliers.js), since a
@@ -76,6 +99,7 @@ const ROLE_MR = {
   ORGANISATION: 'संस्था',
   DEALER: 'डीलर',
   RETAILER: 'किरकोळ विक्रेता',
+  READONLY: 'फक्त पहा',
 };
 
 export default function Layout({ children }) {
