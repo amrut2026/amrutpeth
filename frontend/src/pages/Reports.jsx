@@ -381,12 +381,19 @@ function DealerObligationCells({ dealerLeg, retailerLeg }) {
 // each leg split into Qty/Cost/Selling (6 columns per state) via
 // DealerObligationCells above, instead of the plain Qty/Cost/Selling
 // column triplet SoldProductsTable uses for RETAILER/ADMIN/ORGANISATION.
-function DealerSoldProductsTable({ rows }) {
+//
+// headerLabel drives the first column's heading. Defaults to "Dealer /
+// Retailer" for the nested "Sold By" breakdown (DealerSupplierSection),
+// where each row genuinely is a dealer or retailer - but the same table is
+// also reused one level up for the supplier's own aggregated row, which
+// DealerSupplierSection overrides to "Supplier" instead, since that row
+// isn't a dealer or retailer at all.
+function DealerSoldProductsTable({ rows, headerLabel = <>Dealer / Retailer <span className="text-gray-400 font-normal">/ डीलर / किरकोळ विक्रेता</span></> }) {
   return (
     <table className="w-full text-sm">
       <thead className="bg-gray-100 sticky top-0 z-10">
         <tr>
-          <th rowSpan={3} className="text-left p-2 align-bottom">Dealer / Retailer <span className="text-gray-400 font-normal">/ डीलर / किरकोळ विक्रेता</span></th>
+          <th rowSpan={3} className="text-left p-2 align-bottom">{headerLabel}</th>
           {SOLD_PRODUCT_STATES.map((s) => (
             <th key={s} colSpan={6} className="text-center p-2 border-l">{STATUS_LABELS[s] || s}</th>
           ))}
@@ -443,12 +450,19 @@ function DealerSoldProductsTable({ rows }) {
 // per state. A state with no sold products at all for this dealer/retailer
 // shows 0 for quantity and "--" for the two price columns instead of being
 // left out, so every row lines up under the same fixed set of columns.
-function SoldProductsTable({ rows }) {
+//
+// headerLabel drives the first column's heading - see the same note on
+// DealerSoldProductsTable above. Defaults to "Dealer / Retailer": correct
+// as-is for RetailerSoldProductsPanel's single row (that row IS the
+// retailer's dealer) and for SupplierSection's nested "Sold By" breakdown;
+// SupplierSection overrides it to "Supplier" for the supplier's own
+// aggregated row one level up.
+function SoldProductsTable({ rows, headerLabel = <>Dealer / Retailer <span className="text-gray-400 font-normal">/ डीलर / किरकोळ विक्रेता</span></> }) {
   return (
     <table className="w-full text-sm">
       <thead className="bg-gray-100 sticky top-0 z-10">
         <tr>
-          <th rowSpan={2} className="text-left p-2 align-bottom">Dealer / Retailer <span className="text-gray-400 font-normal">/ डीलर / किरकोळ विक्रेता</span></th>
+          <th rowSpan={2} className="text-left p-2 align-bottom">{headerLabel}</th>
           {SOLD_PRODUCT_STATES.map((s) => (
             <th key={s} colSpan={3} className="text-center p-2 border-l">{STATUS_LABELS[s] || s}</th>
           ))}
@@ -659,7 +673,10 @@ function DealerSupplierSection({ id, name, paymentToDealer, paymentToSupplier, s
   return (
     <div className="mb-4">
       <div className="rounded shadow overflow-x-auto mb-1 bg-orange-50/40">
-        <DealerSoldProductsTable rows={ownRow} />
+        <DealerSoldProductsTable
+          rows={ownRow}
+          headerLabel={<>Supplier <span className="text-gray-400 font-normal">/ पुरवठादार</span></>}
+        />
       </div>
       <div className="pl-4">
         <div className="text-xs font-medium text-gray-500 mb-1">Sold By <span className="text-gray-400 font-normal">/ कोणी विकले</span></div>
@@ -689,7 +706,10 @@ function SupplierSection({ id, name, byStatus, sellers, context, showSellers }) 
   return (
     <div className="mb-4">
       <div className="rounded shadow overflow-x-auto mb-1 bg-orange-50/40">
-        <SoldProductsTable rows={ownRow} />
+        <SoldProductsTable
+          rows={ownRow}
+          headerLabel={<>Supplier <span className="text-gray-400 font-normal">/ पुरवठादार</span></>}
+        />
       </div>
       {showSellers && (
         <div className="pl-4">
