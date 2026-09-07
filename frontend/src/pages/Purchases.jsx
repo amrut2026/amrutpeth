@@ -166,6 +166,15 @@ export default function Purchases() {
   }
   useEffect(() => { load(); }, []);
 
+  // Cheaper than load(): re-fetches only /purchases, for actions that only
+  // ever touch purchase records themselves (quantities, prices) — products
+  // and suppliers/my-dealer never change as a side effect of these, so
+  // there's no need to re-download them too.
+  async function reloadPurchases() {
+    const { data } = await api.get('/purchases');
+    setPurchases(data);
+  }
+
   const selectedPurchase = purchases.find((p) => String(p.id) === selectedPurchaseId);
   const isSelectedEditable = !!selectedPurchase &&
     (!selectedPurchase.status || selectedPurchase.status === 'PENDING' || selectedPurchase.status === 'IN_REVIEW');
@@ -230,7 +239,10 @@ export default function Purchases() {
     setSavingPrices(true);
     try {
       const { data } = await api.patch(`/purchases/${selectedPurchase.id}/prices`, { items: payloadItems });
-      await load();
+      // A price correction can cascade into other purchases' downstream
+      // sales, but never into products or suppliers/my-dealer — so, same as
+      // saveQuantities, only /purchases needs to be re-fetched.
+      await reloadPurchases();
       setEditingPrices(false);
       setPriceEdits({});
       setPriceSuccessMessage(
@@ -324,7 +336,9 @@ export default function Purchases() {
     setSavingQuantities(true);
     try {
       await api.patch(`/purchases/${selectedPurchase.id}/quantities`, { items: payloadItems });
-      await load();
+      // Quantities-only edit never touches products or suppliers/my-dealer,
+      // so only /purchases needs to come back down.
+      await reloadPurchases();
     } catch (err) {
       setQuantityError(err.response?.data?.error || 'Failed to update quantity / प्रमाण अद्ययावत करण्यात अयशस्वी');
     } finally {
@@ -427,9 +441,15 @@ export default function Purchases() {
 
   // Purchase status workflow: PENDING -> (Mark for Review) -> IN_REVIEW ->
   // (Confirm Purchase for a dealer / Received for a retailer) -> CONFIRMED or RECEIVED.
+  //
+  // All three actions below merge the PATCH response straight into local
+  // state instead of reloading the whole purchases (+ products + suppliers)
+  // list — the status endpoint already hands back the full updated purchase
+  // (see completePurchase's use of `data` below for the print prompt), so
+  // there's nothing left to fetch.
   async function markForReview(purchaseId) {
-    await api.patch(`/purchases/${purchaseId}/status`, { status: 'IN_REVIEW' });
-    load();
+    const { data } = await api.patch(`/purchases/${purchaseId}/status`, { status: 'IN_REVIEW' });
+    setPurchases((prev) => prev.map((p) => (p.id === data.id ? data : p)));
   }
 
   // For a DEALER, IN_REVIEW always moves to CONFIRMED. For a RETAILER,
@@ -442,7 +462,7 @@ export default function Purchases() {
       ? 'CONFIRMED'
       : (currentStatus === 'IN_TRANSIT' ? 'RECEIVED' : 'ORDERED');
     const { data } = await api.patch(`/purchases/${purchaseId}/status`, { status: nextStatus });
-    load();
+    setPurchases((prev) => prev.map((p) => (p.id === data.id ? data : p)));
     // Only a dealer's own CONFIRMED purchase is a stock-inwards event worth
     // labeling — a retailer receiving stock doesn't print product barcodes.
     if (user.role === 'DEALER' && nextStatus === 'CONFIRMED') {
@@ -459,8 +479,8 @@ export default function Purchases() {
       return;
     }
     try {
-      await api.patch(`/purchases/${purchaseId}/status`, { status: 'CANCELLED' });
-      load();
+      const { data } = await api.patch(`/purchases/${purchaseId}/status`, { status: 'CANCELLED' });
+      setPurchases((prev) => prev.map((p) => (p.id === data.id ? data : p)));
     } catch (err) {
       alert(err.response?.data?.error || 'Failed to cancel purchase / खरेदी रद्द करण्यात अयशस्वी');
     }
@@ -615,7 +635,12 @@ export default function Purchases() {
     const payload = user.role === 'DEALER' ? { supplierId, items: payloadItems } : { items: payloadItems };
     try {
       if (editingPurchaseId) {
-        await api.put(`/purchases/${editingPurchaseId}`, payload);
+        const { data } = await api.put(`/purchases/${editingPurchaseId}`, payload);
+        // Editing an existing draft only ever changes that one purchase —
+        // merge it in place rather than reloading purchases/products/
+        // suppliers. Order-safe since this replaces the row where it
+        // already sits instead of re-sorting anything.
+        setPurchases((prev) => prev.map((p) => (p.id === data.id ? data : p)));
       } else {
         const { data } = await api.post('/purchases', payload);
         // Same moment Sales.jsx auto-prints the bill right after checkout —
@@ -624,11 +649,16 @@ export default function Purchases() {
         // both a DEALER's purchase (header: dealer + supplier) and a
         // RETAILER's (header: retailer + dealer) — see purchases.js.
         await printPurchaseOrder(data.id);
+        // A brand-new purchase's position in the list depends on the
+        // backend's own ordering, so re-fetch /purchases itself rather than
+        // guess where to splice it in — but products and suppliers/my-dealer
+        // never change as a side effect of recording a purchase, so those
+        // stay untouched.
+        await reloadPurchases();
       }
       setSupplierId('');
       setItems([{ ...emptyItem }]);
       setEditingPurchaseId(null);
-      load();
     } catch (err) {
       setError(err.response?.data?.error || (editingPurchaseId
         ? 'Failed to update purchase / खरेदी अद्ययावत करण्यात अयशस्वी'

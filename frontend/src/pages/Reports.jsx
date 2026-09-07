@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useState } from 'react';
 import api from '../api.js';
 import Dashboard from './Dashboard.jsx';
+import { useAuth } from '../context/AuthContext.jsx';
 
 const STATUS_LABELS = {
   PENDING: 'Pending / प्रलंबित',
@@ -1621,7 +1622,11 @@ function DownloadsPanel({ context }) {
     const params = new URLSearchParams({ type: subTab });
     if (fromDate) params.set('from', fromDate);
     if (toDate) params.set('to', toDate);
-    api.get(`/reports/downloads?${params.toString()}`).then((r) => setRows(r.data.rows));
+    let ignore = false;
+    api.get(`/reports/downloads?${params.toString()}`).then((r) => {
+      if (!ignore) setRows(r.data.rows);
+    });
+    return () => { ignore = true; };
   }, [subTab, fromDate, toDate]);
 
   function handlePrint() {
@@ -1723,34 +1728,58 @@ function DownloadsPanel({ context }) {
 }
 
 export default function Reports() {
+  const { user } = useAuth();
   const [tab, setTab] = useState('dashboard');
   const [purchases, setPurchases] = useState(null);
   const [vouchers, setVouchers] = useState(null);
   const [soldProducts, setSoldProducts] = useState(null);
-  const [inventory, setInventory] = useState([]);
+  // null = not yet fetched; [] = fetched and empty. Distinguishes "haven't
+  // loaded this tab yet" from "loaded, nothing there" so the lazy-load
+  // effect below only fires once per tab.
+  const [inventory, setInventory] = useState(null);
   // Admin/Organisation-only split view: null until loaded (and never loaded
   // at all for DEALER/RETAILER, since the API rejects it for those roles).
   const [inventoryByOwner, setInventoryByOwner] = useState(null);
   const [selectedCounterparty, setSelectedCounterparty] = useState(null);
 
-  useEffect(() => {
-    api.get('/reports/purchases').then((r) => {
-      setPurchases(r.data);
-      // Auto-select: the retailer's single primary dealer (no "All" option
-      // there - see PurchasesPanel), or "All" suppliers/dealers for
-      // DEALER/ADMIN-ORGANISATION so the report opens showing everything.
-      setSelectedCounterparty(r.data.context === 'RETAILER' ? (r.data.counterparties?.[0]?.id ?? null) : 'ALL');
-    });
-    loadVouchers();
-    api.get('/reports/sold-products').then((r) => setSoldProducts(r.data));
-    api.get('/reports/inventory').then((r) => setInventory(r.data));
-  }, []);
+  // The role (and therefore which report "context" we're in) is already
+  // known client-side via the logged-in user — no need to wait on any
+  // /reports/* response just to decide which tab set or labels to show.
+  // ADMIN and ORGANISATION both map to the combined "ALL" context, matching
+  // what every /reports/* endpoint returns for those two roles.
+  const roleContext = user.role === 'DEALER' ? 'DEALER' : user.role === 'RETAILER' ? 'RETAILER' : 'ALL';
 
-  // Pulled out of the mount effect so it can also be re-run after a
-  // retroactive voucher adjustment (see adjustPaymentVoucher below) -
-  // simplest way to pick up the payment's new needsVoucherAdjustment: false
-  // and the touched voucher's new status/description without hand-patching
-  // local state.
+  // Each report tab's data is fetched once, the first time that tab is
+  // actually opened — not all five endpoints up front on every visit to
+  // /reports regardless of which tab (if any) the user looks at. Re-running
+  // this effect on every `tab` change is cheap: each branch is a no-op once
+  // its state is populated.
+  useEffect(() => {
+    if (tab === 'purchases' && purchases === null) {
+      api.get('/reports/purchases').then((r) => {
+        setPurchases(r.data);
+        // Auto-select: the retailer's single primary dealer (no "All"
+        // option there - see PurchasesPanel), or "All" suppliers/dealers
+        // for DEALER/ADMIN-ORGANISATION so the report opens showing
+        // everything.
+        setSelectedCounterparty(r.data.context === 'RETAILER' ? (r.data.counterparties?.[0]?.id ?? null) : 'ALL');
+      });
+    } else if ((tab === 'vouchers' || tab === 'vouchers-supplier' || tab === 'vouchers-retailer') && vouchers === null) {
+      loadVouchers();
+    } else if (tab === 'sold-products' && soldProducts === null) {
+      api.get('/reports/sold-products').then((r) => setSoldProducts(r.data));
+    } else if (tab === 'inventory' && inventory === null) {
+      api.get('/reports/inventory').then((r) => setInventory(r.data));
+    } else if ((tab === 'inventory-dealer' || tab === 'inventory-retailer') && inventoryByOwner === null) {
+      api.get('/reports/inventory-by-owner').then((r) => setInventoryByOwner(r.data));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
+  // Pulled out on its own so it can also be re-run after a retroactive
+  // voucher adjustment (see adjustPaymentVoucher below) - simplest way to
+  // pick up the payment's new needsVoucherAdjustment: false and the touched
+  // voucher's new status/description without hand-patching local state.
   function loadVouchers() {
     api.get('/reports/vouchers').then((r) => setVouchers(r.data));
   }
@@ -1767,20 +1796,7 @@ export default function Reports() {
     loadVouchers();
   }
 
-  // The split view is admin/organisation-only, so this second fetch only
-  // fires once we know the role from /reports/purchases (rather than
-  // firing for every role and having DEALER/RETAILER hit the 403 above).
-  useEffect(() => {
-    if (purchases?.context !== 'ALL') return;
-    api.get('/reports/inventory-by-owner').then((r) => setInventoryByOwner(r.data));
-  }, [purchases?.context]);
-
-  // Role context should agree across every /reports/* response (it's
-  // derived from req.user.role), so any loaded endpoint can tell us which
-  // one we're in.
-  const roleContext = purchases?.context || vouchers?.context;
-
-  const purchasesText = PURCHASES_TEXT[purchases?.context] || { title: 'Products Received', titleMr: 'मिळालेली उत्पादने' };
+  const purchasesText = PURCHASES_TEXT[roleContext];
 
   let tabs;
   if (roleContext === 'DEALER') {
@@ -1834,52 +1850,80 @@ export default function Reports() {
         {tab === 'dashboard' && <Dashboard showWelcome={false} />}
 
         {tab === 'purchases' && (
-          <PurchasesPanel
-            data={purchases}
-            selectedCounterparty={selectedCounterparty}
-            onSelectCounterparty={setSelectedCounterparty}
-          />
+          purchases === null
+            ? <p className="text-gray-400 text-sm">Loading... / लोड होत आहे...</p>
+            : (
+              <PurchasesPanel
+                data={purchases}
+                selectedCounterparty={selectedCounterparty}
+                onSelectCounterparty={setSelectedCounterparty}
+              />
+            )
         )}
 
-        {tab === 'vouchers' && <VouchersPanel data={vouchers} />}
+        {tab === 'vouchers' && (
+          vouchers === null
+            ? <p className="text-gray-400 text-sm">Loading... / लोड होत आहे...</p>
+            : <VouchersPanel data={vouchers} />
+        )}
 
         {tab === 'vouchers-supplier' && (
-          <VoucherSection
-            printTitle="Supplier Vouchers"
-            counterpartyLabel="Supplier / पुरवठादार"
-            data={vouchers?.supplier}
-            showDealerColumn={false}
-            showCounterpartyFilter
-          />
+          vouchers === null
+            ? <p className="text-gray-400 text-sm">Loading... / लोड होत आहे...</p>
+            : (
+              <VoucherSection
+                printTitle="Supplier Vouchers"
+                counterpartyLabel="Supplier / पुरवठादार"
+                data={vouchers?.supplier}
+                showDealerColumn={false}
+                showCounterpartyFilter
+              />
+            )
         )}
 
         {tab === 'vouchers-retailer' && (
-          <VoucherSection
-            printTitle="Retailer Vouchers"
-            counterpartyLabel="Retailer / किरकोळ विक्रेता"
-            data={vouchers?.retailer}
-            showDealerColumn={false}
-            showCounterpartyFilter
-            showVoucherAdjustmentColumn
-            onAdjustVoucher={adjustPaymentVoucher}
-          />
+          vouchers === null
+            ? <p className="text-gray-400 text-sm">Loading... / लोड होत आहे...</p>
+            : (
+              <VoucherSection
+                printTitle="Retailer Vouchers"
+                counterpartyLabel="Retailer / किरकोळ विक्रेता"
+                data={vouchers?.retailer}
+                showDealerColumn={false}
+                showCounterpartyFilter
+                showVoucherAdjustmentColumn
+                onAdjustVoucher={adjustPaymentVoucher}
+              />
+            )
         )}
 
-        {tab === 'sold-products' && <SoldProductsPanel data={soldProducts} />}
+        {tab === 'sold-products' && (
+          soldProducts === null
+            ? <p className="text-gray-400 text-sm">Loading... / लोड होत आहे...</p>
+            : <SoldProductsPanel data={soldProducts} />
+        )}
 
         {tab === 'inventory' && (
-          <InventoryTable rows={inventory} />
+          inventory === null
+            ? <p className="text-gray-400 text-sm">Loading... / लोड होत आहे...</p>
+            : <InventoryTable rows={inventory} />
         )}
 
         {tab === 'inventory-dealer' && (
-          <DealerInventoryPanel rows={inventoryByOwner?.dealerInventory || []} />
+          inventoryByOwner === null
+            ? <p className="text-gray-400 text-sm">Loading... / लोड होत आहे...</p>
+            : <DealerInventoryPanel rows={inventoryByOwner?.dealerInventory || []} />
         )}
 
         {tab === 'inventory-retailer' && (
-          <RetailerInventoryPanel
-            dealers={inventoryByOwner?.dealers || []}
-            rows={inventoryByOwner?.retailerInventory || []}
-          />
+          inventoryByOwner === null
+            ? <p className="text-gray-400 text-sm">Loading... / लोड होत आहे...</p>
+            : (
+              <RetailerInventoryPanel
+                dealers={inventoryByOwner?.dealers || []}
+                rows={inventoryByOwner?.retailerInventory || []}
+              />
+            )
         )}
 
         {tab === 'downloads' && <DownloadsPanel context={roleContext} />}

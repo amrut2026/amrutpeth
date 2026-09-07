@@ -1,0 +1,8 @@
+{
+  "appId": "com.amrutpeth.app",
+  "appName": "Amrut Peth",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "http"
+  }
+}

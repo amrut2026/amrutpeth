@@ -55,6 +55,15 @@ export default function Sales() {
   }
   useEffect(() => { load(); scanRef.current?.focus(); }, []);
 
+  // Cheaper than load(): re-fetches only the in-stock batches, for after a
+  // sale/dispatch actually consumes inventory. Sales and retailers are
+  // updated separately (merged locally from the mutation's own response),
+  // so there's no need to re-download either of those here.
+  async function refreshAvailableItems() {
+    const { data } = await api.get('/sales/available-items');
+    setAvailableItems(data);
+  }
+
   const activeSaleLocked = activeSale && (activeSale.status || 'COMPLETED') !== 'IN_PENDING';
   const activeSaleEditable = activeSale && !activeSaleLocked && user.role === 'DEALER';
 
@@ -414,12 +423,22 @@ export default function Sales() {
       await api.patch(`/sales/${activeSale.id}/items`, {
         items: cart.map((c) => ({ id: c.saleItemId, quantity: c.quantity })),
       });
-      await api.patch(`/sales/${activeSale.id}/dispatch`, {
+      const { data } = await api.patch(`/sales/${activeSale.id}/dispatch`, {
         paymentMode,
         items: cart.map((c) => ({ saleItemId: c.saleItemId, inventoryId: c.inventoryId })),
       });
       exitActiveSale();
-      await load();
+      // Dispatch only ever changes this one sale plus the specific
+      // inventory batches just chosen — merge the updated sale in place and
+      // refresh available stock, instead of re-fetching sales/available-
+      // items/retailers wholesale. Falls back to a full reload if the
+      // endpoint doesn't hand back the updated sale (no id on the response).
+      if (data && data.id != null) {
+        setSales((prev) => prev.map((s) => (s.id === data.id ? data : s)));
+        await refreshAvailableItems();
+      } else {
+        await load();
+      }
     } catch (err) {
       setDispatchError(err.response?.data?.error || 'Failed to dispatch order / ऑर्डर पाठवण्यात अयशस्वी');
     } finally {
@@ -439,7 +458,16 @@ export default function Sales() {
         items,
       });
       setCart([]);
-      await load();
+      // A new sale only ever adds one row to Recent Sales and consumes
+      // stock from the batches just sold — no need to re-fetch the whole
+      // sales list or the (unaffected) retailers list too. Falls back to a
+      // full reload if the response doesn't look like a sale.
+      if (sale && sale.id != null) {
+        setSales((prev) => [sale, ...prev]);
+        await refreshAvailableItems();
+      } else {
+        await load();
+      }
       scanRef.current?.focus();
       await printBill(sale.id);
     } catch (err) {

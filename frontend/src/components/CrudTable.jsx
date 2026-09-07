@@ -45,7 +45,11 @@ export default function CrudTable({
     setRows(data);
   }
 
-  useEffect(() => { load(); }, [endpoint, refreshSignal]);
+  useEffect(() => {
+    let ignore = false;
+    api.get(endpoint).then(({ data }) => { if (!ignore) setRows(data); });
+    return () => { ignore = true; };
+  }, [endpoint, refreshSignal]);
 
   const emptyBankRow = { accountNumber: '', ifsc: '', bankName: '' };
 
@@ -92,8 +96,14 @@ export default function CrudTable({
   async function toggleActive(row) {
     setTogglingId(row.id);
     try {
-      await api.patch(`${baseEndpoint}/${row.id}/active`, { isActive: !row.isActive });
-      await load();
+      const { data } = await api.patch(`${baseEndpoint}/${row.id}/active`, { isActive: !row.isActive });
+      // Merge the toggled row in place instead of reloading the whole list.
+      // Prefer whatever the server hands back; fall back to flipping the
+      // flag locally if the endpoint doesn't return the updated row.
+      setRows((prev) => prev.map((r) => {
+        if (r.id !== row.id) return r;
+        return data && data.id != null ? data : { ...r, isActive: !row.isActive };
+      }));
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to update status');
     } finally {
@@ -116,13 +126,26 @@ export default function CrudTable({
       });
       const payload = transformSubmit ? transformSubmit(cleaned) : cleaned;
       if (editingId) {
-        await api.put(`${endpoint}/${editingId}`, payload);
+        const { data } = await api.put(`${endpoint}/${editingId}`, payload);
+        // Merge the updated row in place instead of refetching the whole
+        // list. Falls back to a full reload only if the endpoint doesn't
+        // hand back the updated row (no id on the response), so this stays
+        // correct even against an endpoint that returns something else.
+        if (data && data.id != null) {
+          setRows((prev) => prev.map((r) => (r.id === data.id ? data : r)));
+        } else {
+          await load();
+        }
       } else {
-        await api.post(endpoint, payload);
+        const { data } = await api.post(endpoint, payload);
+        if (data && data.id != null) {
+          setRows((prev) => [...prev, data]);
+        } else {
+          await load();
+        }
       }
       setForm({});
       setEditingId(null);
-      await load();
     } catch (err) {
       setError(err.response?.data?.error || 'Something went wrong');
     } finally {

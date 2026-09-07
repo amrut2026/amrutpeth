@@ -104,9 +104,29 @@ export default function Layout({ children }) {
   // DEALER, RETAILER), since it lives in Layout rather than a per-role page.
   const [showChangePassword, setShowChangePassword] = useState(false);
 
+  // Sidebar is a permanent 256px column on desktop, but on a phone-width
+  // screen that leaves almost no room for actual content — so below the
+  // md breakpoint it becomes an off-canvas drawer instead, toggled by the
+  // hamburger button in the top bar and closed by tapping the backdrop or
+  // any nav link.
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
   return (
     <div className="flex min-h-screen bg-gray-50">
-      <aside className="w-64 bg-orange-900 text-white flex flex-col">
+      {/* Backdrop — only rendered (and only clickable) while the drawer is
+          open on mobile; md:hidden keeps it from ever appearing on desktop
+          where the sidebar isn't an overlay. */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/40 z-20 md:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+      <aside
+        className={`w-64 bg-orange-900 text-white flex flex-col fixed inset-y-0 left-0 z-30 transition-transform duration-200 ease-in-out
+          ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
+          md:translate-x-0 md:static md:z-auto`}
+      >
         <div className="p-4 border-b border-orange-700">
           <div className="text-4xl font-bold italic">Amrut Peth</div>
           <div className="text-4xl font-bold italic text-orange-200">अमृत पेठ</div>
@@ -121,6 +141,7 @@ export default function Layout({ children }) {
         <nav className="flex-1 px-2 space-y-1 overflow-y-auto">
           {links.map(([to, label, labelMr]) => (
             <NavLink key={to} to={to}
+              onClick={() => setSidebarOpen(false)}
               className={({ isActive }) =>
                 `block px-3 py-2 rounded text-sm leading-tight ${isActive ? 'bg-orange-700' : 'hover:bg-orange-800'}`}>
               <span className="block">{label}</span>
@@ -129,8 +150,19 @@ export default function Layout({ children }) {
           ))}
         </nav>
       </aside>
-      <main className="flex-1 flex flex-col overflow-y-auto">
-        <div className="flex justify-end items-center gap-2 px-6 py-3 bg-white border-b">
+      <main className="flex-1 flex flex-col overflow-y-auto md:ml-0">
+        <div className="flex justify-between md:justify-end items-center gap-2 px-4 md:px-6 py-3 bg-white border-b">
+          {/* Hamburger — hidden at md and up, where the sidebar is always
+              visible and there's nothing to toggle. */}
+          <button
+            onClick={() => setSidebarOpen(true)}
+            className="md:hidden p-2 rounded border border-gray-300 text-gray-700 hover:bg-gray-100"
+            aria-label="Open menu">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+          </button>
+          <div className="flex items-center gap-2">
           {/* Lives in the top bar (not the role-specific nav) so every role —
               ADMIN, ORGANISATION, DEALER, RETAILER — can reach it. Opens in a
               new tab so it never interrupts whatever the user is doing. The
@@ -142,20 +174,24 @@ export default function Layout({ children }) {
             target="_blank"
             rel="noopener noreferrer"
             className="px-3 py-1.5 rounded border border-gray-300 text-gray-700 text-sm hover:bg-gray-100">
-            User Manual <span className="text-gray-400">· वापरकर्ता पुस्तिका</span>
+            <span className="hidden sm:inline">User Manual <span className="text-gray-400">· वापरकर्ता पुस्तिका</span></span>
+            <span className="sm:hidden">Manual</span>
           </a>
           <button
             onClick={() => setShowChangePassword(true)}
             className="px-3 py-1.5 rounded border border-gray-300 text-gray-700 text-sm hover:bg-gray-100">
-            Change Password <span className="text-gray-400">· पासवर्ड बदला</span>
+            <span className="hidden sm:inline">Change Password <span className="text-gray-400">· पासवर्ड बदला</span></span>
+            <span className="sm:hidden">Password</span>
           </button>
           <button
             onClick={() => { logout(); navigate('/login'); }}
             className="px-3 py-1.5 bg-orange-800 text-white rounded hover:bg-orange-700 text-sm">
-            Log out <span className="text-orange-200">· बाहेर पडा</span>
+            <span className="hidden sm:inline">Log out <span className="text-orange-200">· बाहेर पडा</span></span>
+            <span className="sm:hidden">Out</span>
           </button>
+          </div>
         </div>
-        <div className="flex-1 p-6">{children}</div>
+        <div className="flex-1 p-4 md:p-6">{children}</div>
       </main>
       {showChangePassword && (
         <ChangePasswordModal

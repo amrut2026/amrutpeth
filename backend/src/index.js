@@ -31,9 +31,18 @@ const app = express();
 // against, so passing the raw env var directly never matches any real
 // origin and silently drops the Access-Control-Allow-Origin header. Split
 // it into an array and check membership instead.
-const allowedOrigins = (process.env.CORS_ORIGIN || '*')
-  .split(',')
-  .map((o) => o.trim());
+//
+// The Capacitor-wrapped mobile app (see App.jsx/main.jsx) sends one of these
+// fixed origins instead of a real web origin — capacitor://localhost on iOS,
+// and http://localhost or https://localhost on Android depending on scheme
+// config. None of these are reachable from an arbitrary website; they only
+// ever come from the compiled native app itself, so they're safe to always
+// allow rather than needing to be added to CORS_ORIGIN per environment.
+const CAPACITOR_ORIGINS = ['capacitor://localhost', 'http://localhost', 'https://localhost'];
+const allowedOrigins = [
+  ...(process.env.CORS_ORIGIN || '*').split(',').map((o) => o.trim()),
+  ...CAPACITOR_ORIGINS,
+];
 
 app.use(cors({
   origin(origin, callback) {
