@@ -2,13 +2,13 @@ import { useEffect, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 import api from '../api.js';
+import logo from '../assets/amrutpeth-logo.jpeg';
 
 // Each entry: [path, English label, Marathi label]
 const NAV = {
   // Ordered per the hierarchy: organisation, division, supplier, dealer,
   // retailer, product, purchase, report — anything outside that hierarchy
-  // (role-activity-mapping, categories) follows after, in no particular
-  // order.
+  // (categories) follows after, in no particular order.
   //
   // Sales, Inventory, Vouchers, Receipts, and Payments are deliberately
   // NOT in ADMIN's nav (nor its route protection in App.jsx) — these are
@@ -24,7 +24,6 @@ const NAV = {
     ['/dealers', 'Dealers', 'डीलर्स'],
     ['/retailers', 'Retailers', 'किरकोळ विक्रेते'],
     ['/reports', 'Reports', 'अहवाल'],
-    ['/role-activity-mapping', 'Role-Activity Mapping', 'भूमिका-कार्य मॅपिंग'],
   ],
   // ORGANISATION manages dealers and the division master list (see
   // dealers.js / divisions.js). Suppliers/Manufacturers is read-only here —
@@ -127,9 +126,12 @@ export default function Layout({ children }) {
           ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
           md:translate-x-0 md:static md:z-auto`}
       >
-        <div className="p-4 border-b border-orange-700">
-          <div className="text-4xl font-bold italic">Amrut Peth</div>
-          <div className="text-4xl font-bold italic text-orange-200">अमृत पेठ</div>
+        <div className="p-4 border-b border-orange-700 flex items-center gap-3">
+          <img src={logo} alt="Amrut Peth logo" className="h-14 w-14 object-contain bg-white rounded-full p-1 shrink-0" />
+          <div>
+            <div className="text-2xl font-bold italic leading-tight">Amrut Peth</div>
+            <div className="text-2xl font-bold italic text-orange-200 leading-tight">अमृत पेठ</div>
+          </div>
         </div>
         <div className="p-4 text-sm text-orange-200">
           {entityName && <div className="text-base font-semibold text-white leading-tight">{entityName}</div>}

@@ -18,7 +18,6 @@ import Receipts from './pages/Receipts.jsx';
 import Payments from './pages/Payments.jsx';
 import Reports from './pages/Reports.jsx';
 import Organisation from './pages/Organisation.jsx';
-import RoleActivityMapping from './pages/RoleActivityMapping.jsx';
 import Suppliers from './pages/Suppliers.jsx';
 import Divisions from './pages/Divisions.jsx';
 
@@ -44,7 +43,6 @@ export default function App() {
       <Route path="/login" element={<Login />} />
       <Route path="/" element={<Protected><Dashboard /></Protected>} />
       <Route path="/organisation" element={<Protected><Organisation /></Protected>} />
-      <Route path="/role-activity-mapping" element={<Protected><RoleActivityMapping /></Protected>} />
       <Route path="/suppliers" element={<Protected><Suppliers /></Protected>} />
       <Route path="/divisions" element={<Protected><Divisions /></Protected>} />
       <Route path="/dealers" element={<Protected><Dealers /></Protected>} />

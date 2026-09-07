@@ -17,9 +17,6 @@ import receiptRoutes from './routes/receipts.js';
 import paymentRoutes from './routes/payments.js';
 import reportRoutes from './routes/reports.js';
 import organisationRoutes from './routes/organisations.js';
-import userRoleRoutes from './routes/userRoles.js';
-import activityRoutes from './routes/activities.js';
-import roleActivityMappingRoutes from './routes/roleActivityMapping.js';
 import supplierRoutes from './routes/suppliers.js';
 import divisionRoutes from './routes/divisions.js';
 
@@ -74,9 +71,6 @@ app.use('/api/receipts', receiptRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/organisations', organisationRoutes);
-app.use('/api/user-roles', userRoleRoutes);
-app.use('/api/activities', activityRoutes);
-app.use('/api/role-activity-mapping', roleActivityMappingRoutes);
 app.use('/api/suppliers', supplierRoutes);
 app.use('/api/divisions', divisionRoutes);
 

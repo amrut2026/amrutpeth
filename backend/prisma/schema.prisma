@@ -967,9 +967,8 @@ model Payment {
 }
 
 // ============================================================
-// Generic RBAC layer (roles / activities / mapping) + Organisation
-// Mirrors: mahamandal.json, user_roles.json, activities.json,
-// role_activity_mapping.json
+// Organisation
+// Mirrors: mahamandal.json
 // ============================================================
 
 // Apex / franchising body that owns the whole deployment (Mahamandal).
@@ -985,35 +984,4 @@ model Organisation {
 
   dealers Dealer[]
   users   User[]
-}
-
-// Roles from user_roles.json: Super User, Administrator, Owner, User
-model UserRole {
-  roleId    Int      @id @default(autoincrement())
-  roleName  String   @unique
-  createdAt DateTime @default(now())
-
-  mappings RoleActivityMapping[]
-}
-
-// Activities (app modules/permissions) from activities.json
-model Activity {
-  activityId   Int      @id @default(autoincrement())
-  activityName String   @unique
-  createdAt    DateTime @default(now())
-
-  mappings RoleActivityMapping[]
-}
-
-// Which roles are allowed to perform which activities
-model RoleActivityMapping {
-  mappingId  Int      @id @default(autoincrement())
-  roleId     Int
-  activityId Int
-  role       UserRole @relation(fields: [roleId], references: [roleId])
-  activity   Activity @relation(fields: [activityId], references: [activityId])
-  iactive    Boolean  @default(true)
-  createdAt  DateTime @default(now())
-
-  @@unique([roleId, activityId])
 }

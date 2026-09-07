@@ -3,6 +3,6 @@
   "appName": "Amrut Peth",
   "webDir": "dist",
   "server": {
-    "androidScheme": "http"
+    "androidScheme": "https"
   }
 }
