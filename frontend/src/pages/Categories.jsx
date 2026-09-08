@@ -36,7 +36,7 @@ export default function Categories() {
         { key: 'description', label: 'Description / वर्णन' },
         { key: 'cgst', label: 'CGST % / सीजीएसटी %' },
         { key: 'sgst', label: 'SGST % / एसजीएसटी %' },
-        { key: 'dealer', label: 'Dealer / डीलर', render: (r) => r.dealer?.name || '—' },
+        { key: 'dealer', label: 'Dealer / वितरक', render: (r) => r.dealer?.name || '—' },
       ]}
     />
   );

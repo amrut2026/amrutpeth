@@ -233,7 +233,7 @@ export default function Purchases() {
       discount: priceEdits[it.id]?.discount,
     }));
     if (payloadItems.some((it) => it.rate === '' || it.dealerCommission === '' || it.mrp === '' || it.discount === '')) {
-      setPriceError('Cost Price, Dealer Commission, MRP, and Discount % are required for every item / प्रत्येक वस्तूसाठी क्रय किंमत, डीलर कमिशन, एमआरपी आणि सवलत % आवश्यक आहे');
+      setPriceError('Cost Price, Dealer Commission, MRP, and Discount % are required for every item / प्रत्येक वस्तूसाठी क्रय किंमत, वितरक कमिशन, एमआरपी आणि सवलत % आवश्यक आहे');
       return;
     }
     setSavingPrices(true);
@@ -563,7 +563,7 @@ export default function Purchases() {
     if (status === 'ORDERED') {
       return (
         <span className="text-xs bg-amber-50 text-amber-800 font-medium px-3 py-1.5 rounded border border-amber-200">
-          Order Placed — awaiting dealer<span className="block">ऑर्डर दिली — डीलरची प्रतीक्षा</span>
+          Order Placed — awaiting dealer<span className="block">ऑर्डर दिली — वितरकाची प्रतीक्षा</span>
         </span>
       );
     }
@@ -624,7 +624,7 @@ export default function Purchases() {
         retailerSellingPrice: computeRetailerPrice(it),
       }));
       if (computedItems.some((it) => !it.sellingPrice || !it.retailerSellingPrice)) {
-        setError('Enter Cost Price, Dealer Commission, MRP and Product Discount for every item so Sell Price and Retailer Selling Price can be calculated / प्रत्येक वस्तूसाठी क्रय किंमत, डीलर कमिशन, एमआरपी आणि उत्पादन सवलत भरा जेणेकरून विक्री किंमत आणि किरकोळ विक्री किंमत आपोआप मोजली जाईल');
+        setError('Enter Cost Price, Dealer Commission, MRP and Product Discount for every item so Sell Price and Retailer Selling Price can be calculated / प्रत्येक वस्तूसाठी क्रय किंमत, वितरक कमिशन, एमआरपी आणि उत्पादन सवलत भरा जेणेकरून विक्री किंमत आणि किरकोळ विक्री किंमत आपोआप मोजली जाईल');
         return;
       }
       payloadItems = computedItems;
@@ -846,7 +846,7 @@ export default function Purchases() {
                           <span className="font-medium">₹{totalAmount.toFixed(2)}</span>
                         ) : (
                           <span className="font-medium text-amber-700">
-                            Pending dealer fulfillment <span className="text-amber-600">/ डीलरच्या पूर्ततेची प्रतीक्षा</span>
+                            Pending dealer fulfillment <span className="text-amber-600">/ वितरकाच्या पूर्ततेची प्रतीक्षा</span>
                           </span>
                         )}
                       </div>
@@ -1041,14 +1041,14 @@ export default function Purchases() {
 
           {user.role === 'RETAILER' && (
             <>
-              <FieldLabel en="Your Dealer" mr="तुमचा डीलर" />
+              <FieldLabel en="Your Dealer" mr="तुमचा वितरक" />
               <select className="border rounded px-2 py-1 w-full md:w-1/2 bg-gray-100 text-gray-700" disabled
                 value={myDealer?.id || ''}>
-                <option value={myDealer?.id || ''}>{myDealer ? myDealer.name : 'Loading your dealer... / तुमचा डीलर लोड होत आहे...'}</option>
+                <option value={myDealer?.id || ''}>{myDealer ? myDealer.name : 'Loading your dealer... / तुमचा वितरक लोड होत आहे...'}</option>
               </select>
               <p className="text-xs text-gray-400">
                 Retailers can only purchase from their own dealer.
-                <span className="block">किरकोळ विक्रेते फक्त त्यांच्या स्वतःच्या डीलरकडूनच खरेदी करू शकतात.</span>
+                <span className="block">किरकोळ विक्रेते फक्त त्यांच्या स्वतःच्या वितरकाकडूनच खरेदी करू शकतात.</span>
               </p>
             </>
           )}
@@ -1142,7 +1142,7 @@ export default function Purchases() {
                         value={it.rate} onChange={(e) => updateItem(i, 'rate', e.target.value)} />
                     </div>
                     <div className="flex flex-col gap-1">
-                      <FieldLabel en="Commission (%)" mr="डीलर कमिशन (%)" />
+                      <FieldLabel en="Commission (%)" mr="वितरक कमिशन (%)" />
                       <input type="number" step="0.01" placeholder="Commission (%)" className="border rounded px-2 py-1 w-full" required
                         value={it.dealerCommission} onChange={(e) => updateItem(i, 'dealerCommission', e.target.value)} />
                     </div>

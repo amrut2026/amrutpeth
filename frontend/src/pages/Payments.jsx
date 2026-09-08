@@ -261,7 +261,7 @@ export default function Payments() {
             <thead className="bg-gray-100 sticky top-0 z-10">
               <tr>
                 <th className="text-left p-2">#</th>
-                <th className="text-left p-2">Dealer / डीलर</th>
+                <th className="text-left p-2">Dealer / वितरक</th>
                 {showDirection && <th className="text-left p-2">Direction / दिशा</th>}
                 {showParty && <th className="text-left p-2">{showDirection ? 'Party / पक्ष' : 'Supplier / पुरवठादार'}</th>}
                 <th className="text-left p-2">Voucher / व्हाउचर</th>

@@ -239,7 +239,7 @@ export default function SoldProducts() {
     }
   }
 
-  const payToLabel = user.role === 'DEALER' ? 'Supplier / पुरवठादार' : 'Dealer / डीलर';
+  const payToLabel = user.role === 'DEALER' ? 'Supplier / पुरवठादार' : 'Dealer / वितरक';
 
   // Groups a DEALER's list by the product's own supplier — a payment can
   // only ever go to one supplier at a time (see below), so this is also
@@ -685,7 +685,7 @@ export default function SoldProducts() {
         <p className="text-sm text-gray-500 mb-4">
           Cash-customer sales, owed to your {user.role === 'DEALER' ? 'supplier' : 'dealer'} until settled.
           <span className="block text-xs">
-            रोख ग्राहकांना केलेली विक्री, सेटल होईपर्यंत तुमच्या {user.role === 'DEALER' ? 'पुरवठादाराला' : 'डीलरला'} देय.
+            रोख ग्राहकांना केलेली विक्री, सेटल होईपर्यंत तुमच्या {user.role === 'DEALER' ? 'पुरवठादाराला' : 'वितरकाला'} देय.
           </span>
         </p>
 
@@ -787,7 +787,7 @@ export default function SoldProducts() {
             {user.role === 'DEALER' ? (
               <>
                 <div className="flex items-start justify-between flex-wrap gap-2 mb-2">
-                  <h3 className="text-sm font-semibold text-gray-600">Retailer → Dealer — to be confirmed <span className="text-gray-400 font-normal">/ किरकोळ विक्रेता → डीलर — पुष्टीकरण प्रलंबित</span></h3>
+                  <h3 className="text-sm font-semibold text-gray-600">Retailer → Dealer — to be confirmed <span className="text-gray-400 font-normal">/ किरकोळ विक्रेता → वितरक — पुष्टीकरण प्रलंबित</span></h3>
                   <label className="text-xs text-gray-500 flex flex-col leading-tight">
                     <span>Filter by Retailer</span>
                     <span className="text-gray-400">किरकोळ विक्रेत्यानुसार फिल्टर करा</span>
@@ -884,7 +884,7 @@ export default function SoldProducts() {
       <div className="bg-white p-4 rounded shadow sticky top-4">
         <h2 className="font-semibold mb-3">Pay {user.role === 'DEALER' ? 'Supplier' : 'Dealer'}
           <span className="text-gray-400 font-normal block text-xs">
-            {user.role === 'DEALER' ? 'पुरवठादाराला भरा' : 'डीलरला भरा'}
+            {user.role === 'DEALER' ? 'पुरवठादाराला भरा' : 'वितरकाला भरा'}
           </span>
         </h2>
 
@@ -929,7 +929,7 @@ export default function SoldProducts() {
 
         {user.role === 'RETAILER' && (
           <p className="text-xs text-gray-400 mt-3">
-            Your payment will show as "To be confirmed" until your dealer confirms it was received. / डीलरने पुष्टी करेपर्यंत तुमचे देयक "पुष्टीकरण प्रलंबित" असे दिसेल.
+            Your payment will show as "To be confirmed" until your dealer confirms it was received. / वितरकाने पुष्टी करेपर्यंत तुमचे देयक "पुष्टीकरण प्रलंबित" असे दिसेल.
           </p>
         )}
       </div>

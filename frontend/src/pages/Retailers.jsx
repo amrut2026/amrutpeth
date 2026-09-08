@@ -67,7 +67,7 @@ export default function Retailers() {
           { key: 'address', label: 'Address / पत्ता' },
           { key: 'contactNumber', label: 'Contact / संपर्क' },
           { key: 'gstNumber', label: 'GST' },
-          { key: 'dealerName', label: 'Dealer / डीलर', render: (r) => r.dealer?.name || '—' },
+          { key: 'dealerName', label: 'Dealer / वितरक', render: (r) => r.dealer?.name || '—' },
           {
             key: 'bankAccounts',
             label: 'Bank Accounts / बँक खाती',

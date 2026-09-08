@@ -46,7 +46,7 @@ export default function Dealers() {
       setBankAccounts([{ accountNumber: '', ifsc: '', bankName: '' }]);
       setRefreshSignal((n) => n + 1);
     } catch (err) {
-      setError(err.response?.data?.error || 'Failed to create dealer / डीलर तयार करण्यात अयशस्वी');
+      setError(err.response?.data?.error || 'Failed to create dealer / वितरक तयार करण्यात अयशस्वी');
     }
   }
 
@@ -77,7 +77,7 @@ export default function Dealers() {
         <form onSubmit={submit} className="bg-white p-4 rounded shadow mb-6 space-y-4">
           <div className="text-sm font-medium">
             Create Dealer
-            <span className="block text-xs font-normal text-orange-700">डीलर तयार करा</span>
+            <span className="block text-xs font-normal text-orange-700">वितरक तयार करा</span>
           </div>
           {error && <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">{error}</div>}
 
@@ -103,7 +103,7 @@ export default function Dealers() {
           <div>
             <div className="text-sm font-medium mb-2">
               Login (optional — lets this dealer sign in and see their own data)
-              <span className="block text-xs font-normal text-orange-700">लॉगिन (ऐच्छिक — यामुळे डीलर स्वतः साइन इन करून स्वतःचा डेटा पाहू शकतो)</span>
+              <span className="block text-xs font-normal text-orange-700">लॉगिन (ऐच्छिक — यामुळे वितरक स्वतः साइन इन करून स्वतःचा डेटा पाहू शकतो)</span>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <input placeholder="Username / वापरकर्तानाव" className="border rounded px-2 py-1" autoComplete="off"
@@ -132,7 +132,7 @@ export default function Dealers() {
           </div>
 
           <button className="bg-emerald-700 text-white px-4 py-2 rounded hover:bg-emerald-800">
-            Create Dealer / डीलर तयार करा
+            Create Dealer / वितरक तयार करा
           </button>
         </form>
       )}
@@ -141,7 +141,7 @@ export default function Dealers() {
         title={
           <span>
             Dealers
-            <span className="block text-xs font-normal text-orange-700">डीलर्स</span>
+            <span className="block text-xs font-normal text-orange-700">वितरक</span>
           </span>
         }
         endpoint="/dealers"
@@ -206,7 +206,7 @@ export default function Dealers() {
         <form onSubmit={submitCredentials} className="mt-4 bg-white border rounded shadow p-4 max-w-md space-y-3">
           <div className="text-sm font-medium">
             Dealer login
-            <span className="block text-xs font-normal text-orange-700">डीलर लॉगिन</span>
+            <span className="block text-xs font-normal text-orange-700">वितरक लॉगिन</span>
           </div>
           {credError && <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">{credError}</div>}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">

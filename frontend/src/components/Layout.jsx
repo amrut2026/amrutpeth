@@ -17,11 +17,12 @@ const NAV = {
   // Reports, not by reopening these routes to ADMIN.
   ADMIN: [
     ['/organisation', 'Organisation', 'संस्था'],
+    ['/users', 'Read-Only Users', 'वापरकर्ते - फक्त पहा'],
     ['/divisions', 'Divisions', 'विभाग'],
     ['/suppliers', 'Suppliers / Manufacturers', 'पुरवठादार / उत्पादक'],
     ['/categories', 'Categories', 'श्रेण्या'],
     ['/products', 'Products', 'उत्पादने'],
-    ['/dealers', 'Dealers', 'डीलर्स'],
+    ['/dealers', 'Dealers', 'वितरक'],
     ['/retailers', 'Retailers', 'किरकोळ विक्रेते'],
     ['/reports', 'Reports', 'अहवाल'],
   ],
@@ -44,7 +45,7 @@ const NAV = {
     ['/suppliers', 'Suppliers / Manufacturers', 'पुरवठादार / उत्पादक'],
     ['/categories', 'Categories', 'श्रेण्या'],
     ['/products', 'Products', 'उत्पादने'],
-    ['/dealers', 'Dealers', 'डीलर्स'],
+    ['/dealers', 'Dealers', 'वितरक'],
     ['/retailers', 'Retailers', 'किरकोळ विक्रेते'],
     ['/reports', 'Reports', 'अहवाल'],
   ],
@@ -56,7 +57,7 @@ const NAV = {
   // comes last, same as every other role's nav.
   ORGANISATION: [
     ['/divisions', 'Divisions', 'विभाग'],
-    ['/dealers', 'Dealers', 'डीलर्स'],
+    ['/dealers', 'Dealers', 'वितरक'],
     ['/suppliers', 'Suppliers / Manufacturers', 'पुरवठादार / उत्पादक'],
     ['/reports', 'Reports', 'अहवाल'],
   ],
@@ -86,9 +87,9 @@ const NAV = {
     ['/purchases', 'Purchases (Inwards)', 'खरेदी (आवक)'],
     ['/goods-returns', 'Goods Returned', 'मालाची परत'],
     ['/sales', 'Sales (POS)', 'विक्री (पीओएस)'],
-    ['/sold-products', 'Sold Products (Pay Dealer)', 'विकलेली उत्पादने (डीलरला भरा)'],
+    ['/sold-products', 'Sold Products (Pay Dealer)', 'विकलेली उत्पादने (वितरकाला भरा)'],
     ['/vouchers', 'Vouchers Received', 'मिळालेले व्हाउचर'],
-    ['/receipts', 'Payments (Pay Dealer)', 'देयके (डीलरला पैसे द्या)'],
+    ['/receipts', 'Payments (Pay Dealer)', 'देयके (वितरकाला पैसे द्या)'],
     ['/reports', 'Reports', 'अहवाल'],
   ],
 };
@@ -97,7 +98,7 @@ const NAV = {
 const ROLE_MR = {
   ADMIN: 'प्रशासक',
   ORGANISATION: 'संस्था',
-  DEALER: 'डीलर',
+  DEALER: 'वितरक',
   RETAILER: 'किरकोळ विक्रेता',
   READONLY: 'फक्त पहा',
 };

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
+import logo from '../assets/amrutpeth-logo.jpeg';
 
 export default function Login() {
   const { login } = useAuth();
@@ -23,10 +24,10 @@ export default function Login() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-orange-600">
       <form onSubmit={submit} className="bg-white rounded shadow p-8 w-full max-w-sm">
-        <h1 className="text-2xl font-bold mb-1 text-orange-700">
+        <img src={logo} alt="Amrut Peth" className="h-20 w-20 mx-auto mb-3 object-contain" />
+        <h1 className="text-2xl font-bold mb-1 text-orange-700 text-center">
           Amrut Peth <span className="text-base font-normal text-gray-500">(अमृत पेठ)</span>
         </h1>
-        <p className="text-sm text-gray-500 mb-6">Dealer / Retailer / Admin login (डीलर / किरकोळ विक्रेता / प्रशासक लॉगिन)</p>
         <div className="mb-3">
           <label className="text-xs text-gray-500">Username / वापरकर्तानाव</label>
           <input className="w-full border rounded px-3 py-2" value={username} onChange={(e) => setUsername(e.target.value)} />

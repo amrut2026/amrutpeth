@@ -391,7 +391,7 @@ export default function Products() {
           {!isDealer && (
             <p className="text-sm text-gray-500 mb-3">
               Browsing the product catalog. Only a dealer can add or edit products. /
-              उत्पादन सूची पाहत आहात. फक्त डीलर उत्पादने जोडू किंवा संपादित करू शकतो.
+              उत्पादन सूची पाहत आहात. फक्त वितरक उत्पादने जोडू किंवा संपादित करू शकतो.
             </p>
           )}
           <div className="flex flex-col md:flex-row gap-3 mb-3">
@@ -425,7 +425,7 @@ export default function Products() {
                   </div>
                   <div className="text-sm text-gray-500">{p.category?.name}</div>
                   <div className="text-xs text-gray-400">
-                    Supplier / पुरवठादार: {p.supplier?.name || '—'} · Dealer / डीलर: {p.dealer?.name || '—'} · Barcode / बारकोड: {p.barcode}
+                    Supplier / पुरवठादार: {p.supplier?.name || '—'} · Dealer / वितरक: {p.dealer?.name || '—'} · Barcode / बारकोड: {p.barcode}
                   </div>
                 </div>
                 <div className="flex items-center gap-2">

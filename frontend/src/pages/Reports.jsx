@@ -23,7 +23,7 @@ const STATUS_LABELS = {
 };
 
 const PURCHASES_TEXT = {
-  RETAILER: { title: 'Products Received from Dealer', titleMr: 'डीलरकडून मिळालेली उत्पादने', counterparty: 'Dealer / डीलर' },
+  RETAILER: { title: 'Products Received from Dealer', titleMr: 'वितरकाकडून मिळालेली उत्पादने', counterparty: 'Dealer / वितरक' },
   DEALER: { title: 'Products Received from Supplier', titleMr: 'पुरवठादाराकडून मिळालेली उत्पादने', counterparty: 'Supplier / पुरवठादार' },
   ALL: { title: 'Products Purchased', titleMr: 'खरेदी केलेली उत्पादने', counterparty: 'From / कडून' },
 };
@@ -245,7 +245,7 @@ function DealerInventoryPanel({ rows }) {
   return (
     <div>
       <div className="flex items-center gap-2 mb-4">
-        <label className="text-sm font-medium">Dealer / डीलर:</label>
+        <label className="text-sm font-medium">Dealer / वितरक:</label>
         <select
           className="border rounded px-2 py-1 text-sm bg-white"
           value={selectedDealer}
@@ -260,7 +260,7 @@ function DealerInventoryPanel({ rows }) {
 
       {groups.length === 0 ? (
         <div className="bg-white rounded shadow p-3 text-gray-400 text-sm">
-          No dealer inventory yet. / अद्याप डीलर साठा नाही.
+          No dealer inventory yet. / अद्याप वितरक साठा नाही.
         </div>
       ) : (
         groups.map((g) => (
@@ -294,7 +294,7 @@ function RetailerInventoryPanel({ dealers, rows }) {
   return (
     <div>
       <div className="flex items-center gap-2 mb-4">
-        <label className="text-sm font-medium">Dealer / डीलर:</label>
+        <label className="text-sm font-medium">Dealer / वितरक:</label>
         <select
           className="border rounded px-2 py-1 text-sm bg-white"
           value={selectedDealer}
@@ -389,7 +389,7 @@ function DealerObligationCells({ dealerLeg, retailerLeg }) {
 // also reused one level up for the supplier's own aggregated row, which
 // DealerSupplierSection overrides to "Supplier" instead, since that row
 // isn't a dealer or retailer at all.
-function DealerSoldProductsTable({ rows, headerLabel = <>Dealer / Retailer <span className="text-gray-400 font-normal">/ डीलर / किरकोळ विक्रेता</span></> }) {
+function DealerSoldProductsTable({ rows, headerLabel = <>Dealer / Retailer <span className="text-gray-400 font-normal">/ वितरक / किरकोळ विक्रेता</span></> }) {
   return (
     <table className="w-full text-sm">
       <thead className="bg-gray-100 sticky top-0 z-10">
@@ -402,7 +402,7 @@ function DealerSoldProductsTable({ rows, headerLabel = <>Dealer / Retailer <span
         <tr>
           {SOLD_PRODUCT_STATES.map((s) => (
             <Fragment key={s}>
-              <th colSpan={3} className="text-center p-2 border-l text-xs font-normal text-gray-500">Dealer <span className="text-gray-400">/ डीलर</span></th>
+              <th colSpan={3} className="text-center p-2 border-l text-xs font-normal text-gray-500">Dealer <span className="text-gray-400">/ वितरक</span></th>
               <th colSpan={3} className="text-center p-2 border-l text-xs font-normal text-gray-500">Retailer <span className="text-gray-400">/ किरकोळ विक्रेता</span></th>
             </Fragment>
           ))}
@@ -457,7 +457,7 @@ function DealerSoldProductsTable({ rows, headerLabel = <>Dealer / Retailer <span
 // as-is for RetailerSoldProductsPanel's single row (that row IS the
 // retailer's dealer); DealerSupplierSection overrides it to "Supplier" for
 // the supplier's own aggregated row one level up.
-function SoldProductsTable({ rows, headerLabel = <>Dealer / Retailer <span className="text-gray-400 font-normal">/ डीलर / किरकोळ विक्रेता</span></> }) {
+function SoldProductsTable({ rows, headerLabel = <>Dealer / Retailer <span className="text-gray-400 font-normal">/ वितरक / किरकोळ विक्रेता</span></> }) {
   return (
     <table className="w-full text-sm">
       <thead className="bg-gray-100 sticky top-0 z-10">
@@ -663,7 +663,7 @@ function buildSoldProductsPrintHtml({ title, subtitle, blocks, blockBuilder = bu
 // a retailer never pays a supplier directly.
 function sellerLabel(seller, context) {
   if (seller.type === 'DEALER') {
-    return context === 'DEALER' ? `${seller.name} (Direct Sales / थेट विक्री)` : `${seller.name} (Dealer / डीलर)`;
+    return context === 'DEALER' ? `${seller.name} (Direct Sales / थेट विक्री)` : `${seller.name} (Dealer / वितरक)`;
   }
   return `${seller.name} (Retailer / किरकोळ विक्रेता)`;
 }
@@ -743,7 +743,7 @@ function RetailerSoldProductsPanel({ data }) {
     <div>
       <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
         <div className="text-sm font-medium text-gray-600">
-          Dealer / डीलर: <span className="font-semibold text-gray-800">{data.dealerName || '-'}</span>
+          Dealer / वितरक: <span className="font-semibold text-gray-800">{data.dealerName || '-'}</span>
         </div>
         <button
           onClick={handlePrint}
@@ -872,7 +872,7 @@ function PurchasesPanel({ data, selectedCounterparty, onSelectCounterparty }) {
 
   if (!data) return null;
   const context = data.context;
-  const dropdownLabel = context === 'DEALER' ? 'Supplier / पुरवठादार' : 'Dealer / डीलर';
+  const dropdownLabel = context === 'DEALER' ? 'Supplier / पुरवठादार' : 'Dealer / वितरक';
   const priceLabel = context === 'DEALER' ? 'Cost Price / खरेदी किंमत' : 'Selling Price / विक्री किंमत';
   const counterparties = data.counterparties || [];
   const statusOptions = purchaseStatusOrder(context);
@@ -928,7 +928,7 @@ function PurchasesPanel({ data, selectedCounterparty, onSelectCounterparty }) {
         <div className="bg-white rounded shadow p-3 text-gray-400 text-sm">
           {context === 'DEALER'
             ? 'No suppliers purchased from yet. / अद्याप कोणत्याही पुरवठादाराकडून खरेदी नाही.'
-            : 'No purchases from your dealer yet. / डीलरकडून अद्याप कोणतीही खरेदी नाही.'}
+            : 'No purchases from your dealer yet. / वितरकाकडून अद्याप कोणतीही खरेदी नाही.'}
         </div>
       )}
 
@@ -1253,7 +1253,7 @@ function VoucherSection({
                     <th className="text-left p-2">Voucher # / व्हाउचर क्र.</th>
                     <th className="text-left p-2">Date / दिनांक</th>
                     <th className="text-left p-2">{counterpartyLabel}</th>
-                    {showDealerColumn && <th className="text-left p-2">Dealer / डीलर</th>}
+                    {showDealerColumn && <th className="text-left p-2">Dealer / वितरक</th>}
                     <th className="text-left p-2">Amount / रक्कम</th>
                     <th className="text-left p-2">Description / वर्णन</th>
                   </tr>
@@ -1290,7 +1290,7 @@ function VoucherSection({
                     <th className="text-left p-2">Payment # / देयक क्र.</th>
                     <th className="text-left p-2">Date / दिनांक</th>
                     <th className="text-left p-2">{counterpartyLabel}</th>
-                    {showDealerColumn && <th className="text-left p-2">Dealer / डीलर</th>}
+                    {showDealerColumn && <th className="text-left p-2">Dealer / वितरक</th>}
                     <th className="text-left p-2">Amount / रक्कम</th>
                     <th className="text-left p-2">Mode / पद्धत</th>
                     <th className="text-left p-2">Reference / संदर्भ</th>
@@ -1400,12 +1400,12 @@ function VouchersPanel({ data }) {
   if (!data) return null;
 
   if (data.context === 'RETAILER') {
-    // Tab title already reads "Voucher/Payments to Dealer / डीलरला व्हाउचर/देयके",
+    // Tab title already reads "Voucher/Payments to Dealer / वितरकाला व्हाउचर/देयके",
     // so no separate section heading is needed here.
     return (
       <VoucherSection
         printTitle="Dealer Vouchers"
-        counterpartyLabel="Dealer / डीलर"
+        counterpartyLabel="Dealer / वितरक"
         data={data.dealer}
         showDealerColumn={false}
       />
@@ -1755,7 +1755,7 @@ export default function Reports() {
     tabs = [
       ['dashboard', 'Dashboard / डॅशबोर्ड'],
       ['purchases', `${purchasesText.title} / ${purchasesText.titleMr}`],
-      ['vouchers', 'Voucher/Payments to Dealer / डीलरला व्हाउचर/देयके'],
+      ['vouchers', 'Voucher/Payments to Dealer / वितरकाला व्हाउचर/देयके'],
       ['sold-products', 'Sold Products / विकलेली उत्पादने'],
       ['inventory', 'Product Inventory / उत्पादन साठा'],
       ['downloads', 'Downloads / डाउनलोड्स'],
@@ -1766,7 +1766,7 @@ export default function Reports() {
       ['purchases', `${purchasesText.title} / ${purchasesText.titleMr}`],
       ['vouchers', 'Vouchers / व्हाउचर'],
       ['sold-products', 'Sold Products / विकलेली उत्पादने'],
-      ['inventory-dealer', 'Dealer Inventory / डीलर साठा'],
+      ['inventory-dealer', 'Dealer Inventory / वितरक साठा'],
       ['inventory-retailer', 'Retailer Inventory / किरकोळ विक्रेता साठा'],
       ['downloads', 'Downloads / डाउनलोड्स'],
     ];

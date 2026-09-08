@@ -20,6 +20,7 @@ import Reports from './pages/Reports.jsx';
 import Organisation from './pages/Organisation.jsx';
 import Suppliers from './pages/Suppliers.jsx';
 import Divisions from './pages/Divisions.jsx';
+import Users from './pages/Users.jsx';
 
 function Protected({ children }) {
   const { user } = useAuth();
@@ -45,6 +46,11 @@ export default function App() {
       <Route path="/organisation" element={<Protected><Organisation /></Protected>} />
       <Route path="/suppliers" element={<Protected><Suppliers /></Protected>} />
       <Route path="/divisions" element={<Protected><Divisions /></Protected>} />
+      {/* Provisions READONLY logins only — see Users.jsx / users.js. Kept
+          ADMIN-only via RoleProtected rather than the plain Protected used
+          by the other management screens, since this one manages
+          credentials rather than business data. */}
+      <Route path="/users" element={<RoleProtected roles={['ADMIN']}><Users /></RoleProtected>} />
       <Route path="/dealers" element={<Protected><Dealers /></Protected>} />
       <Route path="/retailers" element={<Protected><Retailers /></Protected>} />
       <Route path="/categories" element={<Protected><Categories /></Protected>} />

@@ -118,7 +118,7 @@ export default function Receipts() {
     <div>
       <h1 className="text-2xl font-semibold mb-4">
         {canPay ? (
-          <>Payments (Pay Dealer) <span className="text-base font-normal text-gray-500">(देयके (डीलरला पैसे द्या))</span></>
+          <>Payments (Pay Dealer) <span className="text-base font-normal text-gray-500">(देयके (वितरकाला पैसे द्या))</span></>
         ) : (
           <>Receipts <span className="text-base font-normal text-gray-500">(पावत्या)</span></>
         )}
@@ -146,7 +146,7 @@ export default function Receipts() {
           </button>
           {error && <p className="md:col-span-4 text-red-600 text-sm">{error}</p>}
           <p className="md:col-span-4 text-xs text-gray-400">
-            Your payment will show as "To be confirmed" until your dealer confirms it was received. / डीलरने पुष्टी करेपर्यंत तुमचे देयक "पुष्टीकरण प्रलंबित" असे दिसेल.
+            Your payment will show as "To be confirmed" until your dealer confirms it was received. / वितरकाने पुष्टी करेपर्यंत तुमचे देयक "पुष्टीकरण प्रलंबित" असे दिसेल.
           </p>
         </form>
       )}

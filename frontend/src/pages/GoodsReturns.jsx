@@ -712,7 +712,7 @@ export default function GoodsReturns() {
   // the View Return dropdown, for a DEALER.
   function renderReturnsTable() {
     const counterpartyLabel = !isDealer ? 'Dealer' : (returnsTab === 'toSupplier' ? 'Supplier' : 'Retailer');
-    const counterpartyLabelMr = !isDealer ? 'डीलर' : (returnsTab === 'toSupplier' ? 'पुरवठादार' : 'किरकोळ विक्रेता');
+    const counterpartyLabelMr = !isDealer ? 'वितरक' : (returnsTab === 'toSupplier' ? 'पुरवठादार' : 'किरकोळ विक्रेता');
     return (
       <div className="bg-white rounded shadow overflow-x-auto lg:max-h-[calc(100vh-20rem)] lg:overflow-y-auto">
         <table className="w-full text-sm">
@@ -826,7 +826,7 @@ export default function GoodsReturns() {
               <h2 className="text-lg font-semibold">
                 {isDealer ? 'Return to Supplier' : 'Return to Dealer'}
                 <span className="text-sm font-normal text-gray-500 ml-2">
-                  ({isDealer ? 'पुरवठादाराला परत करा' : 'डीलरला परत करा'})
+                  ({isDealer ? 'पुरवठादाराला परत करा' : 'वितरकाला परत करा'})
                 </span>
               </h2>
 
@@ -945,7 +945,7 @@ export default function GoodsReturns() {
                   {myDealer && (
                     <div className="text-sm text-gray-600">
                       Returning to: <span className="font-medium">{myDealer.name}</span>
-                      <span className="text-gray-400"> (तुमचा डीलर)</span>
+                      <span className="text-gray-400"> (तुमचा वितरक)</span>
                     </div>
                   )}
 
