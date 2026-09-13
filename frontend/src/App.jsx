@@ -21,6 +21,7 @@ import Organisation from './pages/Organisation.jsx';
 import Suppliers from './pages/Suppliers.jsx';
 import Divisions from './pages/Divisions.jsx';
 import Users from './pages/Users.jsx';
+import Aggregators from './pages/Aggregators.jsx';
 
 function Protected({ children }) {
   const { user } = useAuth();
@@ -51,6 +52,11 @@ export default function App() {
           by the other management screens, since this one manages
           credentials rather than business data. */}
       <Route path="/users" element={<RoleProtected roles={['ADMIN']}><Users /></RoleProtected>} />
+      {/* Provisions AGGREGATOR logins only — see Aggregators.jsx /
+          aggregators.js. ADMIN-only, same reasoning as /users: this
+          manages credentials (tied to a dealer) rather than business
+          data. */}
+      <Route path="/aggregators" element={<RoleProtected roles={['ADMIN']}><Aggregators /></RoleProtected>} />
       <Route path="/dealers" element={<Protected><Dealers /></Protected>} />
       <Route path="/retailers" element={<Protected><Retailers /></Protected>} />
       <Route path="/categories" element={<Protected><Categories /></Protected>} />

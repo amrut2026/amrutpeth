@@ -18,6 +18,7 @@ const NAV = {
   ADMIN: [
     ['/organisation', 'Organisation', 'संस्था'],
     ['/users', 'Read-Only Users', 'वापरकर्ते - फक्त पहा'],
+    ['/aggregators', 'Aggregators', 'एग्रीगेटर्स'],
     ['/divisions', 'Divisions', 'विभाग'],
     ['/suppliers', 'Suppliers / Manufacturers', 'पुरवठादार / उत्पादक'],
     ['/categories', 'Categories', 'श्रेण्या'],
