@@ -18,14 +18,20 @@ function generateBarcode() {
 // scoped to "your own dealer's products" throughout the app.
 router.get('/', authRequired, async (req, res) => {
   let where = {};
-  if (req.user.role === 'DEALER' || req.user.role === 'AGGREGATOR') {
-    // An AGGREGATOR login is tied to one dealer via the same dealerId field
-    // a DEALER login uses — scoped identically, so its integration only
-    // ever sees that dealer's own catalog, never the whole platform's.
+  if (req.user.role === 'DEALER') {
     where = { dealerId: req.user.dealerId };
   } else if (req.user.role === 'RETAILER') {
     const retailer = await prisma.retailer.findUnique({ where: { id: req.user.retailerId } });
     where = { dealerId: retailer?.primaryDealerId ?? -1 }; // -1 matches nothing if somehow unset
+  } else if (req.user.role === 'AGGREGATOR') {
+    // AGGREGATOR is not tied to any one dealer (see schema.prisma), so
+    // there's no single dealer's catalog to scope this to — and letting it
+    // fall through to the unfiltered `where` every other unlisted role
+    // would hit (ADMIN/ORGANISATION) would leak every dealer's entire
+    // catalog to it. It has no need for this route anyway: it only ever
+    // needs a specific retailer's own stock, already served (with product
+    // details included) by GET /inventory/retailer/:retailerId.
+    where = { id: -1 };
   }
   const products = await prisma.product.findMany({ where, include: { category: true, supplier: true, dealer: true }, orderBy: { id: 'desc' } });
   res.json(products);

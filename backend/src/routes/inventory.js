@@ -17,16 +17,16 @@ router.get('/', authRequired, async (req, res) => {
 // GET /api/inventory/retailer/:retailerId — AGGREGATOR only. Lets an
 // aggregator integration fetch a SPECIFIC retailer's live stock, once its
 // customer has picked that retailer — the aggregator authenticates with its
-// own dedicated AGGREGATOR-role login, tied to one dealer via
-// User.dealerId, never as the retailer itself. Mirrors the ownership check
-// in sales.js's POST /sales/on-behalf/:retailerId, so the two stay
-// consistent: one dealer's aggregator integration can never read (or later
-// sell against) another dealer's retailer.
+// own dedicated AGGREGATOR-role login, which is not tied to any one dealer
+// (see schema.prisma Role.AGGREGATOR): the external site itself may pick
+// any retailer, so this only checks that the retailer exists, not that it
+// belongs to any particular dealer. Mirrors sales.js's
+// POST /sales/on-behalf/:retailerId, so the two stay consistent.
 router.get('/retailer/:retailerId', authRequired, requireRole('AGGREGATOR'), async (req, res) => {
   const retailerId = Number(req.params.retailerId);
   const retailer = await prisma.retailer.findUnique({ where: { id: retailerId } });
-  if (!retailer || retailer.primaryDealerId !== req.user.dealerId) {
-    return res.status(403).json({ error: 'Not your retailer' });
+  if (!retailer) {
+    return res.status(404).json({ error: 'Retailer not found' });
   }
   const rows = await prisma.inventory.findMany({
     where: { ownerType: 'RETAILER', retailerId },

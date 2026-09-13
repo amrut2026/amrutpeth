@@ -10,13 +10,18 @@ const router = Router();
 // categories, read-only, across the whole platform.
 router.get('/', authRequired, async (req, res) => {
   let where = {};
-  if (req.user.role === 'DEALER' || req.user.role === 'AGGREGATOR') {
-    // Same dealerId-scoping as products.js — an AGGREGATOR login only ever
-    // sees its own tied dealer's categories, never every dealer's.
+  if (req.user.role === 'DEALER') {
     where = { dealerId: req.user.dealerId };
   } else if (req.user.role === 'RETAILER') {
     const retailer = await prisma.retailer.findUnique({ where: { id: req.user.retailerId } });
     where = { dealerId: retailer?.primaryDealerId ?? -1 }; // -1 matches nothing if somehow unset
+  } else if (req.user.role === 'AGGREGATOR') {
+    // AGGREGATOR is not tied to any one dealer (see schema.prisma) and has
+    // no need for the platform-wide category list either — same reasoning
+    // as products.js's GET /. Explicit deny-all rather than falling through
+    // to the unfiltered `where` ADMIN/ORGANISATION get, which would leak
+    // every dealer's categories to it.
+    where = { id: -1 };
   }
   const categories = await prisma.productCategory.findMany({ where, include: { dealer: true }, orderBy: { id: 'desc' } });
   res.json(categories);

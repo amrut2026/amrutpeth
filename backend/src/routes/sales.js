@@ -255,22 +255,21 @@ router.post('/pos-webhook', authRequired, (req, res) => {
 // aggregator integration create a CASH sale against a SPECIFIC retailer's
 // inventory — chosen by the external site's customer, not derived from who
 // is logged in (the aggregator authenticates with its own dedicated
-// AGGREGATOR-role login, tied to one dealer via User.dealerId, never as the
-// retailer itself). Reuses the exact same createSale logic a retailer's own
-// POST /sales would run, by handing it a scope built from the URL's
-// retailerId instead of ownerScope(req) — forcing customerType to CASH and
-// decrementing that retailer's own inventory, same as if the retailer had
-// made the sale themselves.
+// AGGREGATOR-role login, which is not tied to any one dealer — see
+// schema.prisma Role.AGGREGATOR). Reuses the exact same createSale logic a
+// retailer's own POST /sales would run, by handing it a scope built from
+// the URL's retailerId instead of ownerScope(req) — forcing customerType to
+// CASH and decrementing that retailer's own inventory, same as if the
+// retailer had made the sale themselves.
 //
-// The retailer must belong to the dealer the aggregator login is tied to —
-// checked here before anything else so one dealer's aggregator integration
-// can never touch another dealer's retailer, even if it guesses/enumerates
-// retailer ids.
+// Only checks that the retailer exists — an aggregator may act on behalf of
+// ANY retailer on the platform, not just one dealer's own, since it's no
+// longer scoped to a dealer at all.
 router.post('/on-behalf/:retailerId', authRequired, requireRole('AGGREGATOR'), async (req, res) => {
   const retailerId = Number(req.params.retailerId);
   const retailer = await prisma.retailer.findUnique({ where: { id: retailerId } });
-  if (!retailer || retailer.primaryDealerId !== req.user.dealerId) {
-    return res.status(403).json({ error: 'Not your retailer' });
+  if (!retailer) {
+    return res.status(404).json({ error: 'Retailer not found' });
   }
   return createSale(req, res, { ownerType: 'RETAILER', retailerId, dealerId: null });
 });
