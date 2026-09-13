@@ -100,19 +100,59 @@ router.put('/:id', authRequired, requireRole('ORGANISATION'), async (req, res) =
   const existing = await prisma.dealer.findUnique({ where: { id } });
   if (!existing) return res.status(404).json({ error: 'Dealer not found' });
   if (existing.organisationId !== req.user.organisationId) return res.status(403).json({ error: 'Forbidden' });
-  const { name, address, contactNumber, gstNumber, pinCode } = req.body;
+  const { name, address, contactNumber, gstNumber, pinCode, bankAccounts } = req.body;
   if (pinCode && !/^\d{6}$/.test(pinCode.trim())) {
     return res.status(400).json({ error: 'PIN code must be exactly 6 digits' });
   }
-  const dealer = await prisma.dealer.update({
-    where: { id },
-    data: {
-      name, address, contactNumber,
-      gstNumber: gstNumber ? gstNumber.trim() || null : null,
-      pinCode: pinCode !== undefined ? (pinCode ? pinCode.trim() || null : null) : undefined,
-    },
-    include: { bankAccounts: true, users: { select: { id: true, username: true } }, division: true, organisation: true }
+
+  const dealer = await prisma.$transaction(async (tx) => {
+    await tx.dealer.update({
+      where: { id },
+      data: {
+        name, address, contactNumber,
+        gstNumber: gstNumber ? gstNumber.trim() || null : null,
+        pinCode: pinCode !== undefined ? (pinCode ? pinCode.trim() || null : null) : undefined,
+      }
+    });
+
+    // bankAccounts is optional in the body - only touch bank accounts when
+    // the caller actually sent the array (the CrudTable edit form always
+    // does; other callers of this route may not).
+    if (bankAccounts) {
+      const current = await tx.dealerBankAccount.findMany({ where: { dealerId: id } });
+      const submittedIds = new Set(bankAccounts.filter((b) => b.id).map((b) => Number(b.id)));
+
+      // Rows that existed before but are no longer in the submitted list
+      // were removed on the form - delete them.
+      const removedIds = current.filter((a) => !submittedIds.has(a.id)).map((a) => a.id);
+      if (removedIds.length) {
+        await tx.dealerBankAccount.deleteMany({ where: { id: { in: removedIds } } });
+      }
+
+      for (const b of bankAccounts) {
+        const bankId = b.id ? Number(b.id) : null;
+        const belongsToThisDealer = bankId && current.some((a) => a.id === bankId);
+        if (belongsToThisDealer) {
+          await tx.dealerBankAccount.update({
+            where: { id: bankId },
+            data: { accountNumber: b.accountNumber, ifsc: b.ifsc, bankName: b.bankName }
+          });
+        } else if (!bankId) {
+          await tx.dealerBankAccount.create({
+            data: { dealerId: id, accountNumber: b.accountNumber, ifsc: b.ifsc, bankName: b.bankName }
+          });
+        }
+        // an id that doesn't belong to this dealer is silently ignored
+        // rather than trusted, so one dealer can't overwrite another's row.
+      }
+    }
+
+    return tx.dealer.findUnique({
+      where: { id },
+      include: { bankAccounts: true, users: { select: { id: true, username: true } }, division: true, organisation: true }
+    });
   });
+
   res.json(dealer);
 });
 

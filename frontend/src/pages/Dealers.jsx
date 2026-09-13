@@ -170,6 +170,7 @@ export default function Dealers() {
             maxLength: 6, pattern: '\\d{6}', inputMode: 'numeric', title: '6-digit PIN code',
             sanitize: (v) => v.replace(/\D/g, '').slice(0, 6),
           },
+          { key: 'bankAccounts', label: 'Bank accounts / बँक खाती', type: 'bankAccounts' },
         ]}
         columns={[
           { key: 'id', label: 'ID / आयडी' },
