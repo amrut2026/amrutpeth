@@ -3,19 +3,19 @@ import api from '../api.js';
 import { useAuth } from '../context/AuthContext.jsx';
 
 // ADMIN-only screen for provisioning AGGREGATOR logins — a third-party
-// integration (e.g. an aggregator storefront) acting on behalf of one
-// specific dealer's retailers (see schema.prisma Role.AGGREGATOR). Same
-// reasoning as Users.jsx (READONLY) for not building this on CrudTable —
-// but unlike READONLY, an aggregator must be tied to a dealer, so the
-// create form also needs a dealer picker and the table shows which dealer
-// each login belongs to.
+// integration that can act on behalf of ANY retailer, chosen per-request
+// by the external site itself via the on-behalf/:retailerId routes built
+// for this role (see schema.prisma Role.AGGREGATOR). Not tied to a dealer
+// or retailer, so this is the same shape as Users.jsx (READONLY) — same
+// reasoning for not building it on CrudTable: no field set beyond
+// username, password changes go through the separate reset-password
+// mini-form, and removal here is a hard delete.
 export default function Aggregators() {
   const { user } = useAuth();
   const canWrite = user.role === 'ADMIN';
 
   const [aggregators, setAggregators] = useState([]);
-  const [dealers, setDealers] = useState([]);
-  const [form, setForm] = useState({ username: '', password: '', dealerId: '' });
+  const [form, setForm] = useState({ username: '', password: '' });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -25,12 +25,8 @@ export default function Aggregators() {
 
   async function load() {
     try {
-      const [{ data: aggData }, { data: dealerData }] = await Promise.all([
-        api.get('/aggregators'),
-        api.get('/dealers'),
-      ]);
-      setAggregators(aggData);
-      setDealers(dealerData);
+      const { data } = await api.get('/aggregators');
+      setAggregators(data);
     } catch (err) {
       setError(err.response?.data?.error || `Failed to load aggregators (${err.response?.status || 'network error'})`);
     }
@@ -47,7 +43,7 @@ export default function Aggregators() {
     try {
       const { data } = await api.post('/aggregators', form);
       setAggregators((prev) => [data, ...prev]);
-      setForm({ username: '', password: '', dealerId: '' });
+      setForm({ username: '', password: '' });
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to create aggregator / एग्रीगेटर तयार करण्यात अयशस्वी');
     } finally {
@@ -100,18 +96,11 @@ export default function Aggregators() {
           <span className="block text-xs font-normal text-orange-700">एग्रीगेटर लॉगिन तयार करा</span>
         </div>
         {error && <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">{error}</div>}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <input placeholder="Username / वापरकर्तानाव" className="border rounded px-2 py-1" required autoComplete="off"
             value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
           <input placeholder="Password / पासवर्ड" type="password" className="border rounded px-2 py-1" required autoComplete="new-password"
             value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
-          <select className="border rounded px-2 py-1" required
-            value={form.dealerId} onChange={(e) => setForm({ ...form, dealerId: e.target.value })}>
-            <option value="">Select Dealer / वितरक निवडा</option>
-            {dealers.map((d) => (
-              <option key={d.id} value={d.id}>{d.name}</option>
-            ))}
-          </select>
         </div>
         <button disabled={loading} className="bg-emerald-700 text-white px-4 py-2 rounded hover:bg-emerald-800">
           {loading ? 'Saving... / जतन करत आहे...' : 'Create / तयार करा'}
@@ -124,7 +113,6 @@ export default function Aggregators() {
             <tr>
               <th className="text-left p-2">ID / आयडी</th>
               <th className="text-left p-2">Username / वापरकर्तानाव</th>
-              <th className="text-left p-2">Dealer / वितरक</th>
               <th className="text-left p-2">Actions / क्रिया</th>
             </tr>
           </thead>
@@ -133,7 +121,6 @@ export default function Aggregators() {
               <tr key={a.id} className="border-t">
                 <td className="p-2">{a.id}</td>
                 <td className="p-2">{a.username}</td>
-                <td className="p-2">{a.dealer?.name || '—'}</td>
                 <td className="p-2">
                   <div className="flex items-center gap-3">
                     <button type="button" className="text-emerald-700 text-sm hover:underline" onClick={() => openReset(a)}>
@@ -147,7 +134,7 @@ export default function Aggregators() {
               </tr>
             ))}
             {aggregators.length === 0 && (
-              <tr><td className="p-3 text-gray-400" colSpan={4}>No aggregator logins yet. / अद्याप एग्रीगेटर लॉगिन नाहीत.</td></tr>
+              <tr><td className="p-3 text-gray-400" colSpan={3}>No aggregator logins yet. / अद्याप एग्रीगेटर लॉगिन नाहीत.</td></tr>
             )}
           </tbody>
         </table>
