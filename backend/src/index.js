@@ -20,6 +20,7 @@ import organisationRoutes from './routes/organisations.js';
 import supplierRoutes from './routes/suppliers.js';
 import divisionRoutes from './routes/divisions.js';
 import usersRouter from './routes/users.js';
+import aggregatorsRouter from './routes/aggregators.js';
 
 const app = express();
 
@@ -75,6 +76,7 @@ app.use('/api/organisations', organisationRoutes);
 app.use('/api/suppliers', supplierRoutes);
 app.use('/api/divisions', divisionRoutes);
 app.use('/api/users', usersRouter);
+app.use('/api/aggregators', aggregatorsRouter);
 
 app.use((err, req, res, next) => {
   console.error(err);

@@ -5,21 +5,21 @@ const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(() => {
-    const raw = localStorage.getItem('foodmart_user');
+    const raw = localStorage.getItem('amrutpeth_user');
     return raw ? JSON.parse(raw) : null;
   });
 
   async function login(username, password) {
     const { data } = await api.post('/auth/login', { username, password });
-    localStorage.setItem('foodmart_token', data.token);
-    localStorage.setItem('foodmart_user', JSON.stringify(data.user));
+    localStorage.setItem('amrutpeth_token', data.token);
+    localStorage.setItem('amrutpeth_user', JSON.stringify(data.user));
     setUser(data.user);
     return data.user;
   }
 
   function logout() {
-    localStorage.removeItem('foodmart_token');
-    localStorage.removeItem('foodmart_user');
+    localStorage.removeItem('amrutpeth_token');
+    localStorage.removeItem('amrutpeth_user');
     setUser(null);
   }
 
