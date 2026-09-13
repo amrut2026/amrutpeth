@@ -3,26 +3,35 @@ import api from '../api.js';
 import CrudTable from '../components/CrudTable.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 
+const emptyForm = { name: '', address: '', contactNumber: '', gstNumber: '', pinCode: '', divisionId: '', username: '', password: '' };
+const emptyBankAccounts = [{ accountNumber: '', ifsc: '', bankName: '' }];
+
 export default function Dealers() {
   const { user } = useAuth();
   const [divisions, setDivisions] = useState([]);
   // organisationId is no longer picked here - the backend always creates
   // the dealer under the logged-in ORGANISATION user's own org.
-  const [form, setForm] = useState({ name: '', address: '', contactNumber: '', gstNumber: '', pinCode: '', divisionId: '', username: '', password: '' });
-  const [bankAccounts, setBankAccounts] = useState([{ accountNumber: '', ifsc: '', bankName: '' }]);
+  const [form, setForm] = useState(emptyForm);
+  const [bankAccounts, setBankAccounts] = useState(emptyBankAccounts);
   const [error, setError] = useState('');
 
-  // Login credentials aren't part of CrudTable's generic edit form (PUT
-  // /dealers/:id doesn't accept them) — set/reset happens through this
-  // separate mini-form instead, same pattern as Retailers.jsx.
+  // Same form doubles as create and edit, same as Retailers - `editingId`
+  // set means we're editing that dealer instead of creating a new one.
+  // PUT /dealers/:id only accepts name/address/contactNumber/gstNumber/
+  // pinCode/bankAccounts (not divisionId or a login), so those two bits
+  // are disabled/hidden while editing rather than silently no-op'd.
+  const [editingId, setEditingId] = useState(null);
+
+  // Login credentials aren't part of this form either way (create or
+  // edit) — set/reset happens through this separate mini-form instead,
+  // same pattern as Retailers.jsx.
   const [credEdit, setCredEdit] = useState(null); // dealer id currently setting/resetting a login
   const [credHasLogin, setCredHasLogin] = useState(false);
   const [credForm, setCredForm] = useState({ username: '', password: '' });
   const [credError, setCredError] = useState('');
 
-  // Bumped after the create form or the credentials form succeeds, so
-  // CrudTable reloads its own rows — both changes happen outside
-  // CrudTable's own create/edit flow.
+  // Bumped after create, edit, or the credentials form succeeds, so
+  // CrudTable reloads its own rows.
   const [refreshSignal, setRefreshSignal] = useState(0);
 
   useEffect(() => {
@@ -37,16 +46,59 @@ export default function Dealers() {
     setBankAccounts(copy);
   }
 
+  function startEdit(dealer) {
+    setEditingId(dealer.id);
+    setForm({
+      name: dealer.name || '',
+      address: dealer.address || '',
+      contactNumber: dealer.contactNumber || '',
+      gstNumber: dealer.gstNumber || '',
+      pinCode: dealer.pinCode || '',
+      divisionId: dealer.divisionId ? String(dealer.divisionId) : '',
+      username: '',
+      password: '',
+    });
+    // Keep each bank account's id so the backend knows to update it rather
+    // than create a new one.
+    setBankAccounts(
+      dealer.bankAccounts?.length
+        ? dealer.bankAccounts.map((b) => ({ id: b.id, accountNumber: b.accountNumber, ifsc: b.ifsc, bankName: b.bankName }))
+        : emptyBankAccounts
+    );
+    setError('');
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+    setForm(emptyForm);
+    setBankAccounts(emptyBankAccounts);
+    setError('');
+  }
+
   async function submit(e) {
     e.preventDefault();
     setError('');
     try {
-      await api.post('/dealers', { ...form, bankAccounts });
-      setForm({ name: '', address: '', contactNumber: '', gstNumber: '', pinCode: '', divisionId: '', username: '', password: '' });
-      setBankAccounts([{ accountNumber: '', ifsc: '', bankName: '' }]);
+      if (editingId) {
+        await api.put(`/dealers/${editingId}`, {
+          name: form.name,
+          address: form.address,
+          contactNumber: form.contactNumber,
+          gstNumber: form.gstNumber,
+          pinCode: form.pinCode,
+          bankAccounts,
+        });
+      } else {
+        await api.post('/dealers', { ...form, bankAccounts });
+      }
+      setEditingId(null);
+      setForm(emptyForm);
+      setBankAccounts(emptyBankAccounts);
       setRefreshSignal((n) => n + 1);
     } catch (err) {
-      setError(err.response?.data?.error || 'Failed to create dealer / वितरक तयार करण्यात अयशस्वी');
+      setError(err.response?.data?.error || (editingId
+        ? 'Failed to update dealer / वितरक अद्ययावत करण्यात अयशस्वी'
+        : 'Failed to create dealer / वितरक तयार करण्यात अयशस्वी'));
     }
   }
 
@@ -76,8 +128,10 @@ export default function Dealers() {
       {user.role === 'ORGANISATION' && (
         <form onSubmit={submit} className="bg-white p-4 rounded shadow mb-6 space-y-4">
           <div className="text-sm font-medium">
-            Create Dealer
-            <span className="block text-xs font-normal text-orange-700">वितरक तयार करा</span>
+            {editingId ? 'Edit Dealer' : 'Create Dealer'}
+            <span className="block text-xs font-normal text-orange-700">
+              {editingId ? 'वितरक संपादित करा' : 'वितरक तयार करा'}
+            </span>
           </div>
           {error && <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">{error}</div>}
 
@@ -93,33 +147,44 @@ export default function Dealers() {
             <input placeholder="PIN Code / पिन कोड" className="border rounded px-2 py-1"
               inputMode="numeric" pattern="\d{6}" maxLength={6} title="6-digit PIN code"
               value={form.pinCode} onChange={(e) => setForm({ ...form, pinCode: e.target.value.replace(/\D/g, '').slice(0, 6) })} />
-            <select className="border rounded px-2 py-1" required
+            <select className="border rounded px-2 py-1 disabled:bg-gray-100 disabled:text-gray-400" required={!editingId}
+              disabled={!!editingId}
               value={form.divisionId} onChange={(e) => setForm({ ...form, divisionId: e.target.value })}>
               <option value="">Division... / विभाग...</option>
               {divisions.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
             </select>
           </div>
-          {divisions.length === 0 && (
+          {!editingId && divisions.length === 0 && (
             <p className="text-xs text-amber-600 -mt-2">No divisions yet — add one under Divisions first. / अद्याप विभाग नाहीत — आधी विभाग विभागात एक जोडा.</p>
           )}
+          {editingId && (
+            <p className="text-xs text-gray-400 -mt-2">Division can't be changed after creation. / निर्मितीनंतर विभाग बदलता येत नाही.</p>
+          )}
 
-          <div>
-            <div className="text-sm font-medium mb-2">
-              Login (optional — lets this dealer sign in and see their own data)
-              <span className="block text-xs font-normal text-orange-700">लॉगिन (ऐच्छिक — यामुळे वितरक स्वतः साइन इन करून स्वतःचा डेटा पाहू शकतो)</span>
+          {editingId ? (
+            <p className="text-xs text-gray-400">
+              To set or reset this dealer's login, use "Reset password / Set login" in the table below.
+              <span className="block">या वितरकाचे लॉगिन सेट/रीसेट करण्यासाठी खालील तक्त्यातील "लॉगिन सेट करा" वापरा.</span>
+            </p>
+          ) : (
+            <div>
+              <div className="text-sm font-medium mb-2">
+                Login (optional — lets this dealer sign in and see their own data)
+                <span className="block text-xs font-normal text-orange-700">लॉगिन (ऐच्छिक — यामुळे वितरक स्वतः साइन इन करून स्वतःचा डेटा पाहू शकतो)</span>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <input placeholder="Username / वापरकर्तानाव" className="border rounded px-2 py-1" autoComplete="off"
+                  value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
+                <input placeholder="Password / पासवर्ड" type="password" className="border rounded px-2 py-1" autoComplete="new-password"
+                  value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+              </div>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <input placeholder="Username / वापरकर्तानाव" className="border rounded px-2 py-1" autoComplete="off"
-                value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
-              <input placeholder="Password / पासवर्ड" type="password" className="border rounded px-2 py-1" autoComplete="new-password"
-                value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
-            </div>
-          </div>
+          )}
 
           <div>
             <div className="text-sm font-medium mb-2">Bank accounts / बँक खाती</div>
             {bankAccounts.map((b, i) => (
-              <div key={i} className="grid grid-cols-3 gap-2 mb-2">
+              <div key={b.id ?? i} className="grid grid-cols-3 gap-2 mb-2">
                 <input placeholder="Account Number / खाते क्रमांक" className="border rounded px-2 py-1"
                   value={b.accountNumber} onChange={(e) => updateBank(i, 'accountNumber', e.target.value)} />
                 <input placeholder="IFSC Code / आयएफएससी कोड" className="border rounded px-2 py-1"
@@ -134,9 +199,16 @@ export default function Dealers() {
             </button>
           </div>
 
-          <button className="bg-emerald-700 text-white px-4 py-2 rounded hover:bg-emerald-800">
-            Create Dealer / वितरक तयार करा
-          </button>
+          <div className="flex items-center gap-3">
+            <button className="bg-emerald-700 text-white px-4 py-2 rounded hover:bg-emerald-800">
+              {editingId ? 'Save / जतन करा' : 'Create Dealer / वितरक तयार करा'}
+            </button>
+            {editingId && (
+              <button type="button" onClick={cancelEdit} className="text-gray-600 text-sm px-3 py-2 rounded hover:bg-gray-100">
+                Cancel / रद्द करा
+              </button>
+            )}
+          </div>
         </form>
       )}
 
@@ -149,29 +221,12 @@ export default function Dealers() {
         }
         endpoint="/dealers"
         refreshSignal={refreshSignal}
-        editable
-        // Dealers are only ever created through the form above (ORGANISATION
-        // only, POST /dealers) — CrudTable's own add-form would duplicate it
-        // and expose fields (division, bank accounts, login) that PUT
-        // /dealers/:id doesn't accept, so it's turned off here regardless
-        // of role.
+        // Edit and create now both go through the single form above, same
+        // as Retailers effectively only ever having one form - CrudTable's
+        // own generic edit UI is turned off so there's no second,
+        // mismatched form.
+        editable={false}
         canCreate={false}
-        // Editing is ORGANISATION-only, for any dealer under its own org
-        // (see dealers.js PUT /:id). DEALER can no longer edit its own
-        // record from here.
-        canWrite={user.role === 'ORGANISATION'}
-        fields={[
-          { key: 'name', label: 'Name / नाव', required: true },
-          { key: 'address', label: 'Address / पत्ता', required: true },
-          { key: 'contactNumber', label: 'Contact Number / संपर्क क्रमांक', required: true },
-          { key: 'gstNumber', label: 'GST Number (optional) / GST क्रमांक (ऐच्छिक)' },
-          {
-            key: 'pinCode', label: 'PIN Code / पिन कोड',
-            maxLength: 6, pattern: '\\d{6}', inputMode: 'numeric', title: '6-digit PIN code',
-            sanitize: (v) => v.replace(/\D/g, '').slice(0, 6),
-          },
-          { key: 'bankAccounts', label: 'Bank accounts / बँक खाती', type: 'bankAccounts' },
-        ]}
         columns={[
           { key: 'id', label: 'ID / आयडी' },
           { key: 'name', label: 'Name / नाव' },
@@ -209,6 +264,19 @@ export default function Dealers() {
               );
             },
           },
+          ...(user.role === 'ORGANISATION' ? [{
+            key: 'actions',
+            label: 'Actions / क्रिया',
+            render: (r) => (
+              <button
+                type="button"
+                onClick={() => startEdit(r)}
+                className="text-emerald-700 text-sm hover:underline"
+              >
+                Modify / सुधारणा करा
+              </button>
+            ),
+          }] : []),
         ]}
       />
 
