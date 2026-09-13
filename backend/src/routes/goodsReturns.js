@@ -570,6 +570,56 @@ router.patch('/:id/status', authRequired, requireRole('DEALER', 'RETAILER'), asy
             throw new Error(`Not enough stock left to return ${item.approvedQuantity} of batch "${item.batchName || '—'}" — only ${inv?.quantity ?? 0} remaining`);
           }
           await tx.inventory.update({ where: { id: item.inventoryId }, data: { quantity: { decrement: item.approvedQuantity } } });
+
+          // Credit the goods back onto the DEALER's shelf — only for Case B
+          // (a RETAILER's return confirmed by their DEALER). Case C (a
+          // DEALER returning to a SUPPLIER) has no counterpart Inventory to
+          // credit — a supplier isn't a first-class owner in this system,
+          // same reason a PAYABLE voucher has no receiving side. Same
+          // findUnique-then-update-or-create shape purchases.js uses to
+          // receive a batch into Inventory (POST /:id/status), keyed on the
+          // same compound unique — top up if this exact product+batch
+          // already has a row for this dealer, otherwise open a new one.
+          if (!isOwnDealerReturn) {
+            const dealerInvWhere = {
+              productId_ownerType_dealerId_retailerId_batchName: {
+                productId: item.productId,
+                ownerType: 'DEALER',
+                dealerId: existing.sourceDealerId,
+                retailerId: null,
+                batchName: item.batchName || '',
+              },
+            };
+            const existingDealerInv = await tx.inventory.findUnique({ where: dealerInvWhere }).catch(() => null);
+            if (existingDealerInv) {
+              await tx.inventory.update({
+                where: dealerInvWhere,
+                data: { quantity: { increment: item.approvedQuantity } },
+              });
+            } else {
+              // No pricing history left for this batch on the dealer's side
+              // (fully sold through before now) — fall back to the
+              // retailer's own copy of this batch (`inv`, looked up above)
+              // as the closest record of what it's worth.
+              await tx.inventory.create({
+                data: {
+                  productId: item.productId,
+                  ownerType: 'DEALER',
+                  dealerId: existing.sourceDealerId,
+                  batchName: item.batchName || '',
+                  quantity: item.approvedQuantity,
+                  reorderLevel: 10,
+                  rate: item.rate,
+                  mrp: inv.mrp,
+                  sellingPrice: inv.sellingPrice,
+                  discount: inv.discount,
+                  dealerCommission: inv.dealerCommission,
+                  manufacturingDate: inv.manufacturingDate,
+                  expiryDate: inv.expiryDate,
+                },
+              });
+            }
+          }
         }
         // Persisted regardless of whether it's 0 — a full rejection is
         // still a recorded approval decision, not an unset one.

@@ -267,7 +267,11 @@ router.patch('/:id/dispatch', authRequired, requireRole('DEALER'), async (req, r
     if (!PAYMENT_MODES.includes(paymentMode)) {
       return res.status(400).json({ error: `paymentMode must be one of ${PAYMENT_MODES.join(', ')}` });
     }
-    if (!items || !items.length) return res.status(400).json({ error: 'No items to dispatch' });
+    // Not required to be non-empty here — an order where every line ended up
+    // zeroed out (no stock for any of it) legitimately has nothing to pick a
+    // batch for, and is still a valid (if empty) dispatch. See `toDeliver`
+    // below for the actual per-line requirement.
+    if (!Array.isArray(items)) return res.status(400).json({ error: 'items must be an array' });
 
     const sale = await prisma.sale.findUnique({
       where: { id },
@@ -277,20 +281,24 @@ router.patch('/:id/dispatch', authRequired, requireRole('DEALER'), async (req, r
     if (sale.dealerId !== scope.dealerId) return res.status(403).json({ error: 'You can only dispatch your own sales' });
     if (sale.status !== 'IN_PENDING') return res.status(400).json({ error: 'Only a pending order can be dispatched' });
 
-    // A batch must be chosen for every line on the order — no partial dispatch.
+    // A batch must be chosen for every line the dealer is actually
+    // delivering. A line the dealer has already zeroed out via PATCH
+    // /:id/items (no stock left for that product at all) is exempt — there's
+    // nothing to pick a batch from, and nothing to dispatch for it.
+    const toDeliver = sale.items.filter((si) => si.quantity > 0);
     const chosenBySaleItemId = new Map(items.map((i) => [Number(i.saleItemId), Number(i.inventoryId)]));
-    if (sale.items.some((si) => !chosenBySaleItemId.has(si.id))) {
-      return res.status(400).json({ error: 'A batch must be chosen for every item' });
+    if (toDeliver.some((si) => !chosenBySaleItemId.has(si.id))) {
+      return res.status(400).json({ error: 'A batch must be chosen for every item being delivered' });
     }
 
-    const inventoryIds = [...chosenBySaleItemId.values()];
+    const inventoryIds = toDeliver.map((si) => chosenBySaleItemId.get(si.id));
     const invRows = await prisma.inventory.findMany({
       where: { id: { in: inventoryIds }, ownerType: 'DEALER', dealerId: scope.dealerId }
     });
     const invById = new Map(invRows.map((r) => [r.id, r]));
 
     const resolved = [];
-    for (const saleItem of sale.items) {
+    for (const saleItem of toDeliver) {
       const inv = invById.get(chosenBySaleItemId.get(saleItem.id));
       if (!inv) return res.status(403).json({ error: `Batch ${chosenBySaleItemId.get(saleItem.id)} does not belong to your inventory` });
       if (inv.productId !== saleItem.productId) return res.status(400).json({ error: 'Chosen batch does not match the ordered product' });
@@ -406,9 +414,18 @@ router.patch('/:id/items', authRequired, requireRole('DEALER'), async (req, res)
   for (const i of items) {
     const saleItem = validItemById.get(Number(i.id));
     if (!saleItem) return res.status(400).json({ error: 'Item does not belong to this sale' });
-    if (!i.quantity || Number(i.quantity) <= 0) return res.status(400).json({ error: 'Quantity must be greater than zero' });
+    // 0 is deliberately allowed here, not just a smaller positive number —
+    // it's how a dealer marks a line as "not delivering" when they have no
+    // stock left at all for that product (see PATCH /:id/dispatch below,
+    // which skips batch selection and inventory decrement entirely for any
+    // line left at 0). Only a genuinely negative or missing value is
+    // rejected.
+    if (i.quantity === undefined || i.quantity === null || i.quantity === '' || Number(i.quantity) < 0) {
+      return res.status(400).json({ error: 'Quantity cannot be negative' });
+    }
     // A dealer can fulfil for less than what the retailer ordered (partial
-    // fulfilment), but never more — originalQuantity is the ceiling.
+    // fulfilment, all the way down to 0 — not delivering it at all), but
+    // never more — originalQuantity is the ceiling.
     if (saleItem.originalQuantity != null && Number(i.quantity) > saleItem.originalQuantity) {
       return res.status(400).json({ error: `Quantity cannot exceed the ordered amount (${saleItem.originalQuantity})` });
     }

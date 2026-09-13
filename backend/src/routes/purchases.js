@@ -387,6 +387,17 @@ router.patch('/:id/status', authRequired, requireRole('DEALER', 'RETAILER'), asy
     (scope.ownerType === 'RETAILER' && status === 'RECEIVED');
   if (isTerminal) {
     for (const i of purchase.items) {
+      // A line the dealer never delivered (see sales.js PATCH /:id/dispatch
+      // and PATCH /:id/items — a dealer can zero out a line they have no
+      // stock for) has quantity 0 and no batchName to speak of. Nothing was
+      // actually received for it, so nothing should land in the retailer's
+      // Inventory — crediting it would both misrepresent stock on hand and
+      // hit the compound unique below with a null batchName, which no row
+      // can ever match. Can only happen on the RETAILER/RECEIVED side; a
+      // dealer's own purchase from a supplier always has quantity > 0 on
+      // every line (enforced at creation).
+      if (!i.quantity || Number(i.quantity) <= 0) continue;
+
       // Keyed on batchName too — each batch gets its own Inventory row with
       // its own quantity and its own pricing, so a seller can later choose
       // which batch to sell from (see sales.js). If the exact same batch

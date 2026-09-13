@@ -87,7 +87,11 @@ function computeRetailerPrice(it) {
 // purchases.js/sales.js comments on PurchaseItem.sellingPrice). For a
 // RETAILER, that field stays null until the dealer actually dispatches the
 // order (a retailer only ever submits productId+quantity up front), so the
-// total is reported as incomplete/pending until every line has it.
+// total is reported as incomplete/pending until every line has it — except
+// a line the dealer deliberately zeroed out (no stock at all for that
+// product, see sales.js PATCH /:id/dispatch): that one never gets pricing
+// and never will, so it's excluded from the "still pending" check rather
+// than leaving the total stuck on "pending" forever.
 function purchaseTotals(purchase, role) {
   const items = purchase?.items || [];
   const priceKey = role === 'DEALER' ? 'rate' : 'sellingPrice';
@@ -97,7 +101,7 @@ function purchaseTotals(purchase, role) {
     const price = it[priceKey];
     return sum + (price != null ? Number(price) * Number(it.quantity || 0) : 0);
   }, 0);
-  const isComplete = itemCount > 0 && items.every((it) => it[priceKey] != null);
+  const isComplete = itemCount > 0 && items.every((it) => it[priceKey] != null || Number(it.quantity || 0) === 0);
   return { itemCount, totalQuantity, totalAmount, isComplete };
 }
 
@@ -114,6 +118,12 @@ export default function Purchases() {
   const [suppliers, setSuppliers] = useState([]);
   const [myDealer, setMyDealer] = useState(null);
   const [supplierId, setSupplierId] = useState('');
+  // RETAILER only — narrows the product picker below by brand, the same
+  // role a Supplier selection plays for a DEALER (see availableProducts
+  // below). Retailers don't pick a supplier at all (always their own
+  // primary dealer), so without this their product list is every product
+  // that dealer carries, across every brand, in one long dropdown.
+  const [brandFilter, setBrandFilter] = useState('');
   const [error, setError] = useState('');
   const [editingPurchaseId, setEditingPurchaseId] = useState(null);
   const emptyItem = {
@@ -352,6 +362,13 @@ export default function Purchases() {
     setItems(items.map((it) => ({ ...it, productId: '' })));
   }
 
+  function updateBrandFilter(val) {
+    setBrandFilter(val);
+    // Same reasoning as updateSupplier — a product chosen under the old
+    // brand filter may not be in the new, narrower list.
+    setItems(items.map((it) => ({ ...it, productId: '' })));
+  }
+
   function updateItem(i, key, val) {
     setItems(items.map((it, idx) => (idx === i ? { ...it, [key]: val } : it)));
   }
@@ -398,6 +415,7 @@ export default function Purchases() {
   function cancelEditPurchase() {
     setEditingPurchaseId(null);
     setSupplierId('');
+    setBrandFilter('');
     setItems([{ ...emptyItem }]);
     setError('');
   }
@@ -408,6 +426,7 @@ export default function Purchases() {
   function selectPurchase(p) {
     setEditingPurchaseId(null);
     setSupplierId('');
+    setBrandFilter('');
     setItems([{ ...emptyItem }]);
     setError('');
     setSelectedPurchaseId(String(p.id));
@@ -435,6 +454,7 @@ export default function Purchases() {
     setSelectedPurchaseId('');
     setEditingPurchaseId(null);
     setSupplierId('');
+    setBrandFilter('');
     setItems([{ ...emptyItem }]);
     setError('');
   }
@@ -657,6 +677,7 @@ export default function Purchases() {
         await reloadPurchases();
       }
       setSupplierId('');
+      setBrandFilter('');
       setItems([{ ...emptyItem }]);
       setEditingPurchaseId(null);
     } catch (err) {
@@ -669,10 +690,19 @@ export default function Purchases() {
   // Dealer purchases are tied to a single supplier for the whole purchase, so
   // the product dropdown only offers products from that supplier. Retailers
   // don't pick a supplier (they always buy from their own primary dealer), so
-  // their product list is unfiltered.
+  // their product list is scoped by an optional brand filter instead — see
+  // brandFilter above.
   const availableProducts = user.role === 'DEALER'
     ? products.filter((p) => supplierId && p.supplierId === Number(supplierId))
-    : products;
+    : products.filter((p) => !brandFilter || p.brand === brandFilter);
+
+  // Distinct brands across the retailer's own dealer's products, for the
+  // brand filter dropdown — sorted for a stable, scannable list. A product
+  // with no brand set is left out of the filter options (nothing to filter
+  // it by) but still shows up in availableProducts when no filter is applied.
+  const retailerBrands = user.role === 'RETAILER'
+    ? [...new Set(products.map((p) => p.brand).filter(Boolean))].sort()
+    : [];
 
   // Recent Purchases — same table styling/behaviour as Sales' Recent Sales:
   // scrollable, sticky header, clicking a row loads that purchase into the
@@ -1050,6 +1080,21 @@ export default function Purchases() {
                 Retailers can only purchase from their own dealer.
                 <span className="block">किरकोळ विक्रेते फक्त त्यांच्या स्वतःच्या वितरकाकडूनच खरेदी करू शकतात.</span>
               </p>
+
+              {retailerBrands.length > 0 && (
+                <>
+                  <FieldLabel en="Brand (optional)" mr="ब्रँड (ऐच्छिक)" />
+                  <select className="border rounded px-2 py-1 w-full md:w-1/2"
+                    value={brandFilter} onChange={(e) => updateBrandFilter(e.target.value)}>
+                    <option value="">All brands / सर्व ब्रँड</option>
+                    {retailerBrands.map((b) => <option key={b} value={b}>{b}</option>)}
+                  </select>
+                  <p className="text-xs text-gray-400">
+                    Narrows the product list below to one brand.
+                    <span className="block">खालील उत्पादन यादी एका ब्रँडपुरती मर्यादित करते.</span>
+                  </p>
+                </>
+              )}
             </>
           )}
 

@@ -22,6 +22,7 @@ export default function Sales() {
   //    until a batch is chosen from the dropdown (see chooseRowBatch).
   const [cart, setCart] = useState([]);
   const [barcodeInput, setBarcodeInput] = useState('');
+  const [nameQuery, setNameQuery] = useState('');
   const [customerType, setCustomerType] = useState('CASH');
   const [customerRetailerId, setCustomerRetailerId] = useState('');
   const [paymentMode, setPaymentMode] = useState('CASH');
@@ -140,6 +141,43 @@ export default function Sales() {
     scanRef.current?.focus();
   }
 
+  // Product-name search — a lighter-weight alternative to scanning/typing a
+  // barcode, for when the operator knows the product but not its code.
+  // Matches live as the operator types, grouped by product (one product can
+  // have more than one in-stock batch) rather than listed per-batch, so the
+  // same product doesn't show up twice in the results. Matched against the
+  // same already-fetched availableItems list the barcode scan uses — no
+  // separate product lookup — so results are always in-stock, same as
+  // scanning. Capped to a handful of results; the operator is expected to
+  // narrow the query further rather than scroll a long list.
+  function nameMatches(query) {
+    const q = query.trim().toLowerCase();
+    if (!q) return [];
+    const byProduct = new Map();
+    for (const inv of availableItems) {
+      const name = inv.product?.name || '';
+      if (!name.toLowerCase().includes(q)) continue;
+      if (!byProduct.has(inv.productId)) byProduct.set(inv.productId, { product: inv.product, batches: [] });
+      byProduct.get(inv.productId).batches.push(inv);
+    }
+    return [...byProduct.values()].slice(0, 8);
+  }
+
+  // Selecting a product from the name-search results reuses the exact same
+  // path a barcode scan does once it's identified a product: straight to
+  // the cart for a single batch, or the existing multi-batch picker
+  // (pendingBatches) when there's more than one — so pricing, stock checks,
+  // and the "choose a batch" UI all stay identical either way.
+  function chooseProductFromSearch(entry) {
+    setNameQuery('');
+    if (entry.batches.length === 1) {
+      addToCart(entry.batches[0]);
+      scanRef.current?.focus();
+      return;
+    }
+    setPendingBatches(entry.batches);
+  }
+
   // Quantity edit for a brand-new scanned line (keyed by inventoryId, since
   // that's the batch it was scanned against).
   function updateQty(inventoryId, qty) {
@@ -244,15 +282,21 @@ export default function Sales() {
 
   // Quantity edit for a pending order line. Clamped to originalQuantity —
   // a dealer can fulfil for less than what was ordered (partial
-  // fulfilment) but never more; the server enforces the same ceiling
-  // independently (see sales.js PATCH /:id/items). If the currently-chosen
-  // batch no longer covers the new quantity, the choice is cleared rather
-  // than left silently under-stocked — the user has to pick again.
+  // fulfilment), all the way down to 0 when there's no stock at all left
+  // for that product — but never more; the server enforces the same
+  // ceiling (and the same 0 floor) independently (see sales.js PATCH
+  // /:id/items). If the currently-chosen batch no longer covers the new
+  // quantity, the choice is cleared rather than left silently
+  // under-stocked — the user has to pick again. At 0, no batch is needed
+  // at all (see the dispatch/status of "not delivering" this line).
   function updateRowQty(saleItemId, qty) {
     setCart((prev) => prev.map((c) => {
       if (c.saleItemId !== saleItemId || c.locked) return c;
-      let nextQty = Math.max(1, Number(qty) || 1);
+      let nextQty = Math.max(0, Number(qty) || 0);
       if (c.originalQuantity != null) nextQty = Math.min(nextQty, c.originalQuantity);
+      if (nextQty === 0) {
+        return { ...c, quantity: 0, inventoryId: null, batchName: null, mrp: null, sellingPrice: null, available: null };
+      }
       const stillFits = c.inventoryId && c.available != null && c.available >= nextQty;
       return stillFits
         ? { ...c, quantity: nextQty }
@@ -413,8 +457,10 @@ export default function Sales() {
     if (!activeSale || dispatching) return;
     setDispatchError('');
 
-    if (cart.some((c) => !c.inventoryId)) {
-      setDispatchError('Choose a batch for every item / प्रत्येक वस्तूसाठी बॅच निवडा');
+    // A batch is only required for lines actually being delivered — a line
+    // deliberately left at 0 (no stock for that product) needs no batch.
+    if (cart.some((c) => c.quantity > 0 && !c.inventoryId)) {
+      setDispatchError('Choose a batch for every item being delivered / पाठवल्या जाणाऱ्या प्रत्येक वस्तूसाठी बॅच निवडा');
       return;
     }
 
@@ -571,6 +617,38 @@ export default function Sales() {
               />
               {scanError && <p className="text-red-600 text-sm mt-1">{scanError}</p>}
 
+              <div className="mt-3 relative">
+                <label className="text-xs text-gray-500">Or search by product name <span className="text-gray-400">/ किंवा उत्पादनाच्या नावाने शोधा</span></label>
+                <input
+                  className="border rounded px-3 py-2 w-full text-lg"
+                  placeholder="Type a product name..."
+                  value={nameQuery}
+                  onChange={(e) => setNameQuery(e.target.value)}
+                />
+                {nameQuery.trim() && (
+                  <div className="absolute z-10 mt-1 w-full border rounded bg-white shadow max-h-56 overflow-y-auto">
+                    {nameMatches(nameQuery).length === 0 ? (
+                      <div className="p-2 text-sm text-gray-400">No in-stock product matches "{nameQuery}"</div>
+                    ) : (
+                      nameMatches(nameQuery).map((entry) => {
+                        const totalStock = entry.batches.reduce((s, b) => s + b.quantity, 0);
+                        return (
+                          <button key={entry.product.id} type="button"
+                            className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 border-t first:border-t-0"
+                            onClick={() => chooseProductFromSearch(entry)}>
+                            <div className="font-medium">{entry.product.name}</div>
+                            <div className="text-xs text-gray-400">
+                              {[entry.product.sizeWeight, entry.product.flavour, entry.product.brand].filter(Boolean).join(' · ')}
+                              {entry.batches.length > 1 ? ` · ${entry.batches.length} batches` : ''} · in stock {totalStock}
+                            </div>
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                )}
+              </div>
+
               {pendingBatches && (
                 <div className="mt-3 border rounded p-3 bg-amber-50">
                   <p className="text-sm font-medium mb-2">
@@ -631,7 +709,12 @@ export default function Sales() {
               {cart.map((c) => {
                 const price = unitPrice(c);
                 const mrp = c.mrp != null ? Number(c.mrp) : null;
-                const pendingNoBatch = c.saleItemId && !c.locked && !c.inventoryId;
+                // A pending line deliberately left at 0 (no stock at all for
+                // that product) — distinct from pendingNoBatch below, which
+                // is a line still awaiting a choice. This one needs no
+                // choice; it's simply not being delivered.
+                const notDelivering = c.saleItemId && !c.locked && c.quantity === 0;
+                const pendingNoBatch = c.saleItemId && !c.locked && !c.inventoryId && !notDelivering;
                 // Flags a fulfilled/being-fulfilled order line whose quantity
                 // has drifted from what was originally ordered — the dealer
                 // reduced it (partial fulfilment), whether that happened
@@ -650,7 +733,9 @@ export default function Sales() {
                       )}
                     </td>
                     <td className="p-2">
-                      {c.saleItemId && !c.locked ? (
+                      {notDelivering ? (
+                        <span className="text-gray-400 text-xs italic">Not delivering / पाठवत नाही</span>
+                      ) : c.saleItemId && !c.locked ? (
                         <select className="border rounded px-2 py-1 text-sm w-full" value={c.inventoryId || ''}
                           onChange={(e) => chooseRowBatch(c.saleItemId, e.target.value)}>
                           <option value="">Choose a batch... / बॅच निवडा...</option>
@@ -659,12 +744,14 @@ export default function Sales() {
                               {inv.batchName || '—'} · exp {inv.expiryDate ? new Date(inv.expiryDate).toLocaleDateString() : '-'} · in stock {inv.quantity} · ₹{Number(inv.sellingPrice).toFixed(2)}/unit
                             </option>
                           ))}
-                          {batchOptionsFor(c).length === 0 && <option disabled>No batch can fulfil this quantity</option>}
+                          {batchOptionsFor(c).length === 0 && <option disabled>No stock — set qty to 0 to skip this item</option>}
                         </select>
                       ) : (c.batchName || '-')}
                     </td>
                     <td className="p-2">
-                      {pendingNoBatch ? (
+                      {notDelivering ? (
+                        <span className="text-gray-400 text-xs">—</span>
+                      ) : pendingNoBatch ? (
                         <span className="text-gray-400 text-xs">Choose a batch</span>
                       ) : (
                         <>
@@ -680,12 +767,12 @@ export default function Sales() {
                     )}
                     <td className="p-2">
                       {c.locked ? c.quantity : (
-                        <input type="number" min="1" max={c.saleItemId ? (c.originalQuantity ?? undefined) : c.available}
+                        <input type="number" min={c.saleItemId ? 0 : 1} max={c.saleItemId ? (c.originalQuantity ?? undefined) : c.available}
                           className="border rounded w-16 px-1" value={c.quantity}
                           onChange={(e) => c.saleItemId ? updateRowQty(c.saleItemId, e.target.value) : updateQty(c.inventoryId, e.target.value)} />
                       )}
                     </td>
-                    <td className="p-2">{pendingNoBatch ? '—' : `₹${(price * c.quantity).toFixed(2)}`}</td>
+                    <td className="p-2">{notDelivering ? '—' : pendingNoBatch ? '—' : `₹${(price * c.quantity).toFixed(2)}`}</td>
                     <td className="p-2">
                       {!c.saleItemId && (
                         <button className="text-red-600 text-xs" onClick={() => removeItem(c.inventoryId)}>Remove / काढा</button>
@@ -762,7 +849,7 @@ export default function Sales() {
               {dispatchError && <p className="text-red-600 text-sm mb-2">{dispatchError}</p>}
 
               <button
-                disabled={dispatching || cart.some((c) => !c.inventoryId)}
+                disabled={dispatching || cart.some((c) => c.quantity > 0 && !c.inventoryId)}
                 onClick={submitDispatch}
                 className="w-full bg-emerald-700 text-white py-3 rounded font-semibold hover:bg-emerald-800 disabled:opacity-40">
                 {dispatching ? 'Dispatching... / पाठवत आहे...' : 'Dispatch Order / ऑर्डर पाठवा'}
