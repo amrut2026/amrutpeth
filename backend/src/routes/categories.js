@@ -10,7 +10,9 @@ const router = Router();
 // categories, read-only, across the whole platform.
 router.get('/', authRequired, async (req, res) => {
   let where = {};
-  if (req.user.role === 'DEALER') {
+  if (req.user.role === 'DEALER' || req.user.role === 'AGGREGATOR') {
+    // Same dealerId-scoping as products.js — an AGGREGATOR login only ever
+    // sees its own tied dealer's categories, never every dealer's.
     where = { dealerId: req.user.dealerId };
   } else if (req.user.role === 'RETAILER') {
     const retailer = await prisma.retailer.findUnique({ where: { id: req.user.retailerId } });

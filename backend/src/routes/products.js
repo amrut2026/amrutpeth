@@ -18,7 +18,10 @@ function generateBarcode() {
 // scoped to "your own dealer's products" throughout the app.
 router.get('/', authRequired, async (req, res) => {
   let where = {};
-  if (req.user.role === 'DEALER') {
+  if (req.user.role === 'DEALER' || req.user.role === 'AGGREGATOR') {
+    // An AGGREGATOR login is tied to one dealer via the same dealerId field
+    // a DEALER login uses — scoped identically, so its integration only
+    // ever sees that dealer's own catalog, never the whole platform's.
     where = { dealerId: req.user.dealerId };
   } else if (req.user.role === 'RETAILER') {
     const retailer = await prisma.retailer.findUnique({ where: { id: req.user.retailerId } });

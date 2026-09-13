@@ -65,9 +65,16 @@ router.get('/available-items', authRequired, async (req, res) => {
 //     (dealer's wholesale price to a retailer)
 // Discount is not applied at sale time — it was already baked into
 // retailerSellingPrice at purchase time (PurchaseItem.discount).
-async function createSale(req, res) {
+//
+// scopeOverride: normally omitted, in which case the seller's scope is
+// derived from whoever's logged in (ownerScope(req)) — the ordinary path
+// for a dealer or retailer's own POS. Passed explicitly by the
+// on-behalf/:retailerId route below, so a dealer's own integration
+// (e.g. an aggregator storefront) can create a sale against a SPECIFIC
+// retailer's inventory that was never the one who actually logged in.
+async function createSale(req, res, scopeOverride) {
   try {
-    const scope = ownerScope(req);
+    const scope = scopeOverride || ownerScope(req);
     if (!scope.ownerType) return res.status(403).json({ error: 'Only dealer/retailer accounts can create sales' });
 
     const customerType = scope.ownerType === 'RETAILER' ? 'CASH' : (req.body.customerType || 'CASH');
@@ -244,6 +251,30 @@ router.post('/pos-webhook', authRequired, (req, res) => {
   return createSale(req, res);
 });
 
+// POST /api/sales/on-behalf/:retailerId — AGGREGATOR only. Lets an
+// aggregator integration create a CASH sale against a SPECIFIC retailer's
+// inventory — chosen by the external site's customer, not derived from who
+// is logged in (the aggregator authenticates with its own dedicated
+// AGGREGATOR-role login, tied to one dealer via User.dealerId, never as the
+// retailer itself). Reuses the exact same createSale logic a retailer's own
+// POST /sales would run, by handing it a scope built from the URL's
+// retailerId instead of ownerScope(req) — forcing customerType to CASH and
+// decrementing that retailer's own inventory, same as if the retailer had
+// made the sale themselves.
+//
+// The retailer must belong to the dealer the aggregator login is tied to —
+// checked here before anything else so one dealer's aggregator integration
+// can never touch another dealer's retailer, even if it guesses/enumerates
+// retailer ids.
+router.post('/on-behalf/:retailerId', authRequired, requireRole('AGGREGATOR'), async (req, res) => {
+  const retailerId = Number(req.params.retailerId);
+  const retailer = await prisma.retailer.findUnique({ where: { id: retailerId } });
+  if (!retailer || retailer.primaryDealerId !== req.user.dealerId) {
+    return res.status(403).json({ error: 'Not your retailer' });
+  }
+  return createSale(req, res, { ownerType: 'RETAILER', retailerId, dealerId: null });
+});
+
 // PATCH /api/sales/:id/dispatch — a dealer fulfils a retailer's purchase
 // order (a Sale in IN_PENDING status, auto-created by purchases.js when the
 // retailer placed it — see PATCH /purchases/:id/status). Body:
@@ -283,7 +314,7 @@ router.patch('/:id/dispatch', authRequired, requireRole('DEALER'), async (req, r
 
     // A batch must be chosen for every line the dealer is actually
     // delivering. A line the dealer has already zeroed out via PATCH
-    // /:id/items (no stock left for that product at all) is exempt — there's
+    // /:id/items (no stock left at all for that product) is exempt — there's
     // nothing to pick a batch from, and nothing to dispatch for it.
     const toDeliver = sale.items.filter((si) => si.quantity > 0);
     const chosenBySaleItemId = new Map(items.map((i) => [Number(i.saleItemId), Number(i.inventoryId)]));

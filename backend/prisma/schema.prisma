@@ -17,6 +17,16 @@ enum Role {
   DEALER
   RETAILER
   READONLY // view-only oversight login: same screen set as ADMIN, but every write action must be gated off in each page/route — see notes at each Role usage site
+  // A third-party integration (e.g. an aggregator storefront) acting on
+  // behalf of one specific dealer's retailers. Tied to that dealer via
+  // User.dealerId, same field a DEALER login uses — but deliberately its
+  // own role rather than reusing DEALER, so it has NO access to any
+  // DEALER-gated route (catalog edits, dispatch, etc.) unless a route
+  // explicitly opts it in via requireRole('AGGREGATOR'). ownerScope()
+  // gives it no ownerType by design, so it can't touch the plain
+  // /sales, /sales/available-items, or /inventory routes either — only
+  // the retailer-scoped on-behalf/:retailerId routes built for it.
+  AGGREGATOR
 }
 
 enum OwnerType {
