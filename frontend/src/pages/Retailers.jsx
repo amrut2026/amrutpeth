@@ -59,6 +59,11 @@ export default function Retailers() {
           { key: 'address', label: 'Address / पत्ता', required: true },
           { key: 'contactNumber', label: 'Contact Number / संपर्क क्रमांक', required: true },
           { key: 'gstNumber', label: 'GST Number (optional) / GST क्रमांक (ऐच्छिक)' },
+          {
+            key: 'pinCode', label: 'PIN Code / पिन कोड',
+            maxLength: 6, pattern: '\\d{6}', inputMode: 'numeric', title: '6-digit PIN code',
+            sanitize: (v) => v.replace(/\D/g, '').slice(0, 6),
+          },
           { key: 'bankAccounts', label: 'Bank accounts / बँक खाती', type: 'bankAccounts' },
         ]}
         columns={[
@@ -67,6 +72,7 @@ export default function Retailers() {
           { key: 'address', label: 'Address / पत्ता' },
           { key: 'contactNumber', label: 'Contact / संपर्क' },
           { key: 'gstNumber', label: 'GST' },
+          { key: 'pinCode', label: 'PIN Code / पिन कोड', render: (r) => r.pinCode || '—' },
           { key: 'dealerName', label: 'Dealer / वितरक', render: (r) => r.dealer?.name || '—' },
           {
             key: 'bankAccounts',

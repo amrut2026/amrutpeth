@@ -42,7 +42,7 @@ router.get('/:id', authRequired, async (req, res) => {
 // ever create dealers under itself.
 // Optionally pass username + password to create that dealer's login in the same step.
 router.post('/', authRequired, requireRole('ORGANISATION'), async (req, res) => {
-  const { name, address, contactNumber, gstNumber, divisionId, bankAccounts, username, password } = req.body;
+  const { name, address, contactNumber, gstNumber, pinCode, divisionId, bankAccounts, username, password } = req.body;
   const organisationId = req.user.organisationId;
 
   if (username && !password) {
@@ -51,6 +51,11 @@ router.post('/', authRequired, requireRole('ORGANISATION'), async (req, res) => 
   if (password && !username) {
     return res.status(400).json({ error: 'Username is required to create a login' });
   }
+  // PIN codes are always exactly 6 digits (India) — optional field, so only
+  // enforced when something was actually provided.
+  if (pinCode && !/^\d{6}$/.test(pinCode.trim())) {
+    return res.status(400).json({ error: 'PIN code must be exactly 6 digits' });
+  }
 
   try {
     const dealer = await prisma.$transaction(async (tx) => {
@@ -58,6 +63,7 @@ router.post('/', authRequired, requireRole('ORGANISATION'), async (req, res) => 
         data: {
           name, address, contactNumber,
           gstNumber: gstNumber ? gstNumber.trim() || null : null,
+          pinCode: pinCode ? pinCode.trim() || null : null,
           divisionId: divisionId ? Number(divisionId) : null,
           organisationId,
           bankAccounts: { create: (bankAccounts || []).map(b => ({
@@ -94,10 +100,17 @@ router.put('/:id', authRequired, requireRole('ORGANISATION'), async (req, res) =
   const existing = await prisma.dealer.findUnique({ where: { id } });
   if (!existing) return res.status(404).json({ error: 'Dealer not found' });
   if (existing.organisationId !== req.user.organisationId) return res.status(403).json({ error: 'Forbidden' });
-  const { name, address, contactNumber, gstNumber } = req.body;
+  const { name, address, contactNumber, gstNumber, pinCode } = req.body;
+  if (pinCode && !/^\d{6}$/.test(pinCode.trim())) {
+    return res.status(400).json({ error: 'PIN code must be exactly 6 digits' });
+  }
   const dealer = await prisma.dealer.update({
     where: { id },
-    data: { name, address, contactNumber, gstNumber: gstNumber ? gstNumber.trim() || null : null }
+    data: {
+      name, address, contactNumber,
+      gstNumber: gstNumber ? gstNumber.trim() || null : null,
+      pinCode: pinCode !== undefined ? (pinCode ? pinCode.trim() || null : null) : undefined,
+    }
   });
   res.json(dealer);
 });

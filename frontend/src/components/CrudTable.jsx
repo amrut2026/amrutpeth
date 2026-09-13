@@ -233,8 +233,15 @@ export default function CrudTable({
                     className="border rounded px-2 py-1"
                     type={f.type || 'text'}
                     value={form[f.key] ?? ''}
-                    onChange={(e) => setForm({ ...form, [f.key]: e.target.value })}
+                    onChange={(e) => {
+                      const raw = e.target.value;
+                      setForm({ ...form, [f.key]: f.sanitize ? f.sanitize(raw) : raw });
+                    }}
                     required={f.required}
+                    maxLength={f.maxLength}
+                    pattern={f.pattern}
+                    inputMode={f.inputMode}
+                    title={f.title}
                   />
                 )}
               </div>

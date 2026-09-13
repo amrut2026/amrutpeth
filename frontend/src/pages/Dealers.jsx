@@ -8,7 +8,7 @@ export default function Dealers() {
   const [divisions, setDivisions] = useState([]);
   // organisationId is no longer picked here - the backend always creates
   // the dealer under the logged-in ORGANISATION user's own org.
-  const [form, setForm] = useState({ name: '', address: '', contactNumber: '', gstNumber: '', divisionId: '', username: '', password: '' });
+  const [form, setForm] = useState({ name: '', address: '', contactNumber: '', gstNumber: '', pinCode: '', divisionId: '', username: '', password: '' });
   const [bankAccounts, setBankAccounts] = useState([{ accountNumber: '', ifsc: '', bankName: '' }]);
   const [error, setError] = useState('');
 
@@ -42,7 +42,7 @@ export default function Dealers() {
     setError('');
     try {
       await api.post('/dealers', { ...form, bankAccounts });
-      setForm({ name: '', address: '', contactNumber: '', gstNumber: '', divisionId: '', username: '', password: '' });
+      setForm({ name: '', address: '', contactNumber: '', gstNumber: '', pinCode: '', divisionId: '', username: '', password: '' });
       setBankAccounts([{ accountNumber: '', ifsc: '', bankName: '' }]);
       setRefreshSignal((n) => n + 1);
     } catch (err) {
@@ -90,6 +90,9 @@ export default function Dealers() {
               value={form.contactNumber} onChange={(e) => setForm({ ...form, contactNumber: e.target.value })} />
             <input placeholder="GST Number (optional) / GST क्रमांक (ऐच्छिक)" className="border rounded px-2 py-1"
               value={form.gstNumber} onChange={(e) => setForm({ ...form, gstNumber: e.target.value })} />
+            <input placeholder="PIN Code / पिन कोड" className="border rounded px-2 py-1"
+              inputMode="numeric" pattern="\d{6}" maxLength={6} title="6-digit PIN code"
+              value={form.pinCode} onChange={(e) => setForm({ ...form, pinCode: e.target.value.replace(/\D/g, '').slice(0, 6) })} />
             <select className="border rounded px-2 py-1" required
               value={form.divisionId} onChange={(e) => setForm({ ...form, divisionId: e.target.value })}>
               <option value="">Division... / विभाग...</option>
@@ -162,6 +165,11 @@ export default function Dealers() {
           { key: 'address', label: 'Address / पत्ता', required: true },
           { key: 'contactNumber', label: 'Contact Number / संपर्क क्रमांक', required: true },
           { key: 'gstNumber', label: 'GST Number (optional) / GST क्रमांक (ऐच्छिक)' },
+          {
+            key: 'pinCode', label: 'PIN Code / पिन कोड',
+            maxLength: 6, pattern: '\\d{6}', inputMode: 'numeric', title: '6-digit PIN code',
+            sanitize: (v) => v.replace(/\D/g, '').slice(0, 6),
+          },
         ]}
         columns={[
           { key: 'id', label: 'ID / आयडी' },
@@ -169,6 +177,7 @@ export default function Dealers() {
           { key: 'address', label: 'Address / पत्ता' },
           { key: 'contactNumber', label: 'Contact / संपर्क' },
           { key: 'gstNumber', label: 'GST' },
+          { key: 'pinCode', label: 'PIN Code / पिन कोड', render: (r) => r.pinCode || '—' },
           { key: 'divisionName', label: 'Division / विभाग', render: (r) => r.division?.name || '—' },
           { key: 'organisationName', label: 'Organisation / संस्था', render: (r) => r.organisation?.orgName || '—' },
           {

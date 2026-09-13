@@ -220,6 +220,12 @@ model Dealer {
   contactNumber  String
   // Optional — a dealer may not be GST-registered.
   gstNumber      String?
+  // Optional, nullable so this lands as a plain additive migration against
+  // existing rows. Lets an AGGREGATOR integration's external site offer a
+  // pin-code-based area selection to its customers (see retailers.js
+  // GET /retailers/lookup) — kept on Dealer too for symmetry/reporting,
+  // even though the aggregator lookup itself only reads it off Retailer.
+  pinCode        String?
   divisionId     Int?
   division       Division?    @relation(fields: [divisionId], references: [id])
   organisationId Int          @default(1)
@@ -260,6 +266,12 @@ model Retailer {
   contactNumber   String
   // Optional — a retailer may not be GST-registered.
   gstNumber       String?
+  // Optional, nullable so this lands as a plain additive migration against
+  // existing rows. This is the field an AGGREGATOR integration's external
+  // site actually reads (see retailers.js GET /retailers/lookup) to let its
+  // customer pick a nearby retailer by pin code before a sale is made
+  // on-behalf/:retailerId.
+  pinCode         String?
   primaryDealerId Int
   dealer          Dealer   @relation(fields: [primaryDealerId], references: [id])
   createdAt       DateTime @default(now())
