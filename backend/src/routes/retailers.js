@@ -123,7 +123,8 @@ router.put('/:id', authRequired, requireRole('DEALER'), async (req, res) => {
       name, address, contactNumber,
       gstNumber: gstNumber ? gstNumber.trim() || null : null,
       pinCode: pinCode !== undefined ? (pinCode ? pinCode.trim() || null : null) : undefined,
-    }
+    },
+    include: { bankAccounts: true, users: { select: { id: true, username: true } }, dealer: true }
   });
   res.json(retailer);
 });
