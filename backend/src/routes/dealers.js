@@ -127,6 +127,24 @@ router.post('/:id/bank-accounts', authRequired, requireRole('DEALER'), async (re
   res.json(acc);
 });
 
+// Edit an existing bank account - same ownership rule as creating one above:
+// DEALER, and only for their own dealerId.
+router.put('/:id/bank-accounts/:bankAccountId', authRequired, requireRole('DEALER'), async (req, res) => {
+  const dealerId = Number(req.params.id);
+  const bankAccountId = Number(req.params.bankAccountId);
+  if (req.user.dealerId !== dealerId) return res.status(403).json({ error: 'Forbidden' });
+  const existing = await prisma.dealerBankAccount.findUnique({ where: { id: bankAccountId } });
+  if (!existing || existing.dealerId !== dealerId) {
+    return res.status(404).json({ error: 'Bank account not found' });
+  }
+  const { accountNumber, ifsc, bankName } = req.body;
+  const acc = await prisma.dealerBankAccount.update({
+    where: { id: bankAccountId },
+    data: { accountNumber, ifsc, bankName }
+  });
+  res.json(acc);
+});
+
 // Create a login for an existing dealer (no login yet), or reset an existing
 // one's password - ORGANISATION only, and only for a dealer under its own
 // organisation. This is a judgment call beyond the literal "ORGANISATION

@@ -145,6 +145,32 @@ router.post('/:id/bank-accounts', authRequired, requireRole('DEALER', 'RETAILER'
   res.json(acc);
 });
 
+// Edit an existing bank account (same ownership rules as creating one above:
+// DEALER for their own retailers, RETAILER for themselves).
+router.put('/:id/bank-accounts/:bankAccountId', authRequired, requireRole('DEALER', 'RETAILER'), async (req, res) => {
+  const retailerId = Number(req.params.id);
+  const bankAccountId = Number(req.params.bankAccountId);
+  if (req.user.role === 'DEALER') {
+    const retailer = await prisma.retailer.findUnique({ where: { id: retailerId } });
+    if (!retailer || retailer.primaryDealerId !== req.user.dealerId) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+  }
+  if (req.user.role === 'RETAILER' && req.user.retailerId !== retailerId) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  const existing = await prisma.retailerBankAccount.findUnique({ where: { id: bankAccountId } });
+  if (!existing || existing.retailerId !== retailerId) {
+    return res.status(404).json({ error: 'Bank account not found' });
+  }
+  const { accountNumber, ifsc, bankName } = req.body;
+  const acc = await prisma.retailerBankAccount.update({
+    where: { id: bankAccountId },
+    data: { accountNumber, ifsc, bankName }
+  });
+  res.json(acc);
+});
+
 // Create a login for an existing retailer (no login yet), or reset an existing one's password.
 // DEALER can only do this for their own retailers.
 router.post('/:id/credentials', authRequired, requireRole('DEALER'), async (req, res) => {
