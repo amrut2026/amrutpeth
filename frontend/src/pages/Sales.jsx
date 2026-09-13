@@ -626,7 +626,7 @@ export default function Sales() {
                   onChange={(e) => setNameQuery(e.target.value)}
                 />
                 {nameQuery.trim() && (
-                  <div className="absolute z-10 mt-1 w-full border rounded bg-white shadow max-h-56 overflow-y-auto">
+                  <div className="absolute z-20 mt-1 w-full border rounded bg-white shadow max-h-56 overflow-y-auto">
                     {nameMatches(nameQuery).length === 0 ? (
                       <div className="p-2 text-sm text-gray-400">No in-stock product matches "{nameQuery}"</div>
                     ) : (
