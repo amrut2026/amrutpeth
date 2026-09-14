@@ -241,7 +241,7 @@ async function createSale(req, res, scopeOverride) {
   }
 }
 
-router.post('/', authRequired, createSale);
+router.post('/', authRequired, (req, res) => createSale(req, res));
 
 // POS webhook: external POS/card machine posts completed transaction here.
 // This lets a physical POS terminal push a paid bill straight into the sales module
@@ -271,6 +271,12 @@ router.post('/on-behalf/:retailerId', authRequired, requireRole('AGGREGATOR'), a
   if (!retailer) {
     return res.status(404).json({ error: 'Retailer not found' });
   }
+  // customerType is already forced to CASH inside createSale for a RETAILER
+  // scope - paymentMode is a separate field though (how the CASH customer
+  // actually paid), and createSale only validates it's one of
+  // CASH/UPI/CARD, it doesn't restrict which. Force it here too, so an
+  // aggregator can only ever record a genuinely CASH sale, never UPI/CARD.
+  req.body.paymentMode = 'CASH';
   return createSale(req, res, { ownerType: 'RETAILER', retailerId, dealerId: null });
 });
 
