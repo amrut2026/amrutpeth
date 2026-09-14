@@ -40,8 +40,17 @@ router.get('/retailer/:retailerId', authRequired, requireRole('AGGREGATOR'), asy
   res.json(rows.map(r => {
     const mrp = Number(r.mrp || 0);
     const retailerSellingPrice = Number(r.retailerSellingPrice || 0);
+    // rate (retailer's own cost) and sellingPrice (dealer's wholesale price
+    // to the retailer) are dealer/retailer-side cost information — never
+    // sent to an AGGREGATOR caller, regardless of what the integration docs
+    // tell the aggregator's developer to ignore. originDealerRate is the
+    // same category of cost data one level further up the chain, so it's
+    // excluded here too. Destructured out (rather than trusted to just not
+    // be rendered) so this can't leak even if a future aggregator frontend
+    // gets sloppy about which fields it displays.
+    const { rate, sellingPrice, originDealerRate, ...safeRow } = r;
     return {
-      ...r,
+      ...safeRow,
       lowStock: r.quantity <= r.reorderLevel,
       // r.discount is already this exact percentage (retailerSellingPrice =
       // mrp - discount% of mrp - see schema.prisma Inventory.discount), but

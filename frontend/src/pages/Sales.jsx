@@ -3,6 +3,10 @@ import { useSearchParams } from 'react-router-dom';
 import api from '../api.js';
 import { useAuth } from '../context/AuthContext.jsx';
 
+// How many name-search results to show before the operator has to click
+// "Show more..." — see nameResultsLimit.
+const NAME_RESULTS_PAGE_SIZE = 8;
+
 export default function Sales() {
   const { user } = useAuth();
   const [searchParams] = useSearchParams();
@@ -23,6 +27,10 @@ export default function Sales() {
   const [cart, setCart] = useState([]);
   const [barcodeInput, setBarcodeInput] = useState('');
   const [nameQuery, setNameQuery] = useState('');
+  // How many name-search results to render before "Show more...". Resets
+  // to the initial page size whenever the query text changes, so a fresh
+  // search always starts collapsed.
+  const [nameResultsLimit, setNameResultsLimit] = useState(NAME_RESULTS_PAGE_SIZE);
   const [customerType, setCustomerType] = useState('CASH');
   const [customerRetailerId, setCustomerRetailerId] = useState('');
   const [paymentMode, setPaymentMode] = useState('CASH');
@@ -148,8 +156,9 @@ export default function Sales() {
   // same product doesn't show up twice in the results. Matched against the
   // same already-fetched availableItems list the barcode scan uses — no
   // separate product lookup — so results are always in-stock, same as
-  // scanning. Capped to a handful of results; the operator is expected to
-  // narrow the query further rather than scroll a long list.
+  // scanning. Returns every match; the caller decides how many to actually
+  // render (see nameResultsLimit / "Show more" below) rather than silently
+  // dropping anything past a fixed cap.
   function nameMatches(query) {
     const q = query.trim().toLowerCase();
     if (!q) return [];
@@ -160,7 +169,7 @@ export default function Sales() {
       if (!byProduct.has(inv.productId)) byProduct.set(inv.productId, { product: inv.product, batches: [] });
       byProduct.get(inv.productId).batches.push(inv);
     }
-    return [...byProduct.values()].slice(0, 8);
+    return [...byProduct.values()];
   }
 
   // Selecting a product from the name-search results reuses the exact same
@@ -170,6 +179,7 @@ export default function Sales() {
   // and the "choose a batch" UI all stay identical either way.
   function chooseProductFromSearch(entry) {
     setNameQuery('');
+    setNameResultsLimit(NAME_RESULTS_PAGE_SIZE);
     if (entry.batches.length === 1) {
       addToCart(entry.batches[0]);
       scanRef.current?.focus();
@@ -623,30 +633,44 @@ export default function Sales() {
                   className="border rounded px-3 py-2 w-full text-lg"
                   placeholder="Type a product name..."
                   value={nameQuery}
-                  onChange={(e) => setNameQuery(e.target.value)}
+                  onChange={(e) => { setNameQuery(e.target.value); setNameResultsLimit(NAME_RESULTS_PAGE_SIZE); }}
                 />
-                {nameQuery.trim() && (
-                  <div className="absolute z-20 mt-1 w-full border rounded bg-white shadow max-h-56 overflow-y-auto">
-                    {nameMatches(nameQuery).length === 0 ? (
-                      <div className="p-2 text-sm text-gray-400">No in-stock product matches "{nameQuery}"</div>
-                    ) : (
-                      nameMatches(nameQuery).map((entry) => {
-                        const totalStock = entry.batches.reduce((s, b) => s + b.quantity, 0);
-                        return (
-                          <button key={entry.product.id} type="button"
-                            className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 border-t first:border-t-0"
-                            onClick={() => chooseProductFromSearch(entry)}>
-                            <div className="font-medium">{entry.product.name}</div>
-                            <div className="text-xs text-gray-400">
-                              {[entry.product.sizeWeight, entry.product.flavour, entry.product.brand].filter(Boolean).join(' · ')}
-                              {entry.batches.length > 1 ? ` · ${entry.batches.length} batches` : ''} · in stock {totalStock}
-                            </div>
-                          </button>
-                        );
-                      })
-                    )}
-                  </div>
-                )}
+                {nameQuery.trim() && (() => {
+                  const allMatches = nameMatches(nameQuery);
+                  const visibleMatches = allMatches.slice(0, nameResultsLimit);
+                  const remaining = allMatches.length - visibleMatches.length;
+                  return (
+                    <div className="absolute z-20 mt-1 w-full border rounded bg-white shadow max-h-56 overflow-y-auto">
+                      {allMatches.length === 0 ? (
+                        <div className="p-2 text-sm text-gray-400">No in-stock product matches "{nameQuery}"</div>
+                      ) : (
+                        <>
+                          {visibleMatches.map((entry) => {
+                            const totalStock = entry.batches.reduce((s, b) => s + b.quantity, 0);
+                            return (
+                              <button key={entry.product.id} type="button"
+                                className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 border-t first:border-t-0"
+                                onClick={() => chooseProductFromSearch(entry)}>
+                                <div className="font-medium">{entry.product.name}</div>
+                                <div className="text-xs text-gray-400">
+                                  {[entry.product.sizeWeight, entry.product.flavour, entry.product.brand].filter(Boolean).join(' · ')}
+                                  {entry.batches.length > 1 ? ` · ${entry.batches.length} batches` : ''} · in stock {totalStock}
+                                </div>
+                              </button>
+                            );
+                          })}
+                          {remaining > 0 && (
+                            <button type="button"
+                              className="w-full text-center px-3 py-2 text-sm text-emerald-700 font-medium hover:bg-gray-50 border-t"
+                              onClick={() => setNameResultsLimit((n) => n + NAME_RESULTS_PAGE_SIZE)}>
+                              Show more... ({remaining} more) / आणखी दाखवा... ({remaining} अधिक)
+                            </button>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
 
               {pendingBatches && (
