@@ -358,15 +358,20 @@ export default function Purchases() {
 
   function updateSupplier(val) {
     setSupplierId(val);
-    // Previously chosen products may not belong to the new supplier, so clear them.
+    // A DEALER's purchase is always against a single supplier, so switching
+    // supplier mid-entry means starting that purchase over — clear every
+    // item, not just the current draft row (unlike updateBrandFilter below,
+    // which only narrows the product list and shouldn't touch items already
+    // added).
     setItems(items.map((it) => ({ ...it, productId: '' })));
   }
 
   function updateBrandFilter(val) {
     setBrandFilter(val);
-    // Same reasoning as updateSupplier — a product chosen under the old
-    // brand filter may not be in the new, narrower list.
-    setItems(items.map((it) => ({ ...it, productId: '' })));
+    // Same reasoning as updateSupplier — only the current draft row's
+    // product may fall outside the new, narrower brand list; earlier items
+    // already added to the purchase must stay untouched.
+    setItems((prev) => prev.map((it, idx) => (idx === prev.length - 1 ? { ...it, productId: '' } : it)));
   }
 
   function updateItem(i, key, val) {
@@ -1071,30 +1076,34 @@ export default function Purchases() {
 
           {user.role === 'RETAILER' && (
             <>
-              <FieldLabel en="Your Dealer" mr="तुमचा वितरक" />
-              <select className="border rounded px-2 py-1 w-full md:w-1/2 bg-gray-100 text-gray-700" disabled
-                value={myDealer?.id || ''}>
-                <option value={myDealer?.id || ''}>{myDealer ? myDealer.name : 'Loading your dealer... / तुमचा वितरक लोड होत आहे...'}</option>
-              </select>
-              <p className="text-xs text-gray-400">
-                Retailers can only purchase from their own dealer.
-                <span className="block">किरकोळ विक्रेते फक्त त्यांच्या स्वतःच्या वितरकाकडूनच खरेदी करू शकतात.</span>
-              </p>
-
-              {retailerBrands.length > 0 && (
-                <>
-                  <FieldLabel en="Brand (optional)" mr="ब्रँड (ऐच्छिक)" />
-                  <select className="border rounded px-2 py-1 w-full md:w-1/2"
-                    value={brandFilter} onChange={(e) => updateBrandFilter(e.target.value)}>
-                    <option value="">All brands / सर्व ब्रँड</option>
-                    {retailerBrands.map((b) => <option key={b} value={b}>{b}</option>)}
+              <div className="flex flex-col md:flex-row gap-3">
+                <div className="flex-1 md:max-w-[50%]">
+                  <FieldLabel en="Your Dealer" mr="तुमचा वितरक" />
+                  <select className="border rounded px-2 py-1 w-full bg-gray-100 text-gray-700 mt-1" disabled
+                    value={myDealer?.id || ''}>
+                    <option value={myDealer?.id || ''}>{myDealer ? myDealer.name : 'Loading your dealer... / तुमचा वितरक लोड होत आहे...'}</option>
                   </select>
-                  <p className="text-xs text-gray-400">
-                    Narrows the product list below to one brand.
-                    <span className="block">खालील उत्पादन यादी एका ब्रँडपुरती मर्यादित करते.</span>
+                  <p className="text-xs text-gray-400 mt-1">
+                    Retailers can only purchase from their own dealer.
+                    <span className="block">किरकोळ विक्रेते फक्त त्यांच्या स्वतःच्या वितरकाकडूनच खरेदी करू शकतात.</span>
                   </p>
-                </>
-              )}
+                </div>
+
+                {retailerBrands.length > 0 && (
+                  <div className="flex-1 md:max-w-[50%]">
+                    <FieldLabel en="Brand (optional)" mr="ब्रँड (ऐच्छिक)" />
+                    <select className="border rounded px-2 py-1 w-full mt-1"
+                      value={brandFilter} onChange={(e) => updateBrandFilter(e.target.value)}>
+                      <option value="">All brands / सर्व ब्रँड</option>
+                      {retailerBrands.map((b) => <option key={b} value={b}>{b}</option>)}
+                    </select>
+                    <p className="text-xs text-gray-400 mt-1">
+                      Narrows the product list below to one brand.
+                      <span className="block">खालील उत्पादन यादी एका ब्रँडपुरती मर्यादित करते.</span>
+                    </p>
+                  </div>
+                )}
+              </div>
             </>
           )}
 
