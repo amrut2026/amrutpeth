@@ -21,8 +21,16 @@ function ProductCell({ product }) {
   );
 }
 
+// Once a line has been decided (approvedQuantity set — even to 0, a full
+// rejection), that's what actually moved money/inventory, so the total
+// shown has to switch to it instead of the retailer's original request.
+// Still-undecided lines (OPEN/IN_REVIEW, approvedQuantity null) fall back
+// to the requested quantity, same as the detail table's own Qty column.
 function returnTotal(gr) {
-  return gr.items.reduce((sum, it) => sum + Number(it.rate || 0) * Number(it.quantity || 0), 0);
+  return gr.items.reduce((sum, it) => {
+    const qty = it.approvedQuantity ?? it.quantity;
+    return sum + Number(it.rate || 0) * Number(qty || 0);
+  }, 0);
 }
 
 function voucherRemaining(v) {

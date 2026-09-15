@@ -708,6 +708,13 @@ router.patch('/:id/status', authRequired, requireRole('DEALER', 'RETAILER'), asy
         const groupTotal = approvedTotal(groupItems);
         const voucher = groupItems[0].voucher; // same voucher object on every item in this group
 
+        // Every line in this group was rejected down to 0 (or the group
+        // was already zero-quantity) — nothing was actually credited
+        // against this voucher, so don't raise a Payment for it at all.
+        // Leaves these items' paymentId null, same as any other
+        // never-settled line.
+        if (groupTotal <= 0) continue;
+
         const payment = await tx.payment.create({
           data: isOwnDealerReturn
             ? {
