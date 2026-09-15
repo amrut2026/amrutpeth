@@ -26,11 +26,34 @@ function ProductCell({ product }) {
 // shown has to switch to it instead of the retailer's original request.
 // Still-undecided lines (OPEN/IN_REVIEW, approvedQuantity null) fall back
 // to the requested quantity, same as the detail table's own Qty column.
+// Once a line has been decided (approvedQuantity set — even to 0, a full
+// rejection), that's what actually moved money/inventory, so the total
+// shown has to switch to it instead of the retailer's original request.
+// Still-undecided lines (OPEN/IN_REVIEW, approvedQuantity null) fall back
+// to the requested quantity, same as the detail table's own Qty column.
 function returnTotal(gr) {
   return gr.items.reduce((sum, it) => {
     const qty = it.approvedQuantity ?? it.quantity;
     return sum + Number(it.rate || 0) * Number(qty || 0);
   }, 0);
+}
+
+function returnItemCount(gr) {
+  return gr.items.length;
+}
+
+function returnRequestedQty(gr) {
+  return gr.items.reduce((sum, it) => sum + Number(it.quantity || 0), 0);
+}
+
+// Every item's approvedQuantity is set together, in one PATCH /:id/status
+// call, at CONFIRMED (see goodsReturns.js) — so it's never a mix of some
+// decided and some not on the same return. Any item still null means the
+// whole return hasn't been decided yet, so the sum itself is meaningless
+// (not zero) until then.
+function returnApprovedQty(gr) {
+  if (gr.items.some((it) => it.approvedQuantity === null || it.approvedQuantity === undefined)) return null;
+  return gr.items.reduce((sum, it) => sum + Number(it.approvedQuantity || 0), 0);
 }
 
 function voucherRemaining(v) {
@@ -65,6 +88,79 @@ function counterpartyNameFor(gr) {
   return gr.supplier?.name || gr.retailer?.name || gr.sourceDealer?.name || '—';
 }
 
+// Opens a formatted, print-ready receipt for a single goods return in a
+// new tab and triggers the browser print dialog. Available regardless of
+// the return's status — the current state (badge text) is printed on the
+// receipt itself so it's clear from the printout alone.
+function printReturnDetail(gr) {
+  const badge = statusBadge(gr.status);
+  const rows = gr.items.map((it) => {
+    const details = productDetails(it.product);
+    const approved = it.approvedQuantity !== null && it.approvedQuantity !== undefined ? it.approvedQuantity : '—';
+    return `
+      <tr>
+        <td>${it.product?.name || '—'}${details ? `<div class="muted">${details}</div>` : ''}</td>
+        <td>${it.batchName || '—'}</td>
+        <td class="right">₹${Number(it.rate || 0).toFixed(2)}</td>
+        <td class="right">${it.quantity}</td>
+        <td class="right">${approved}</td>
+      </tr>`;
+  }).join('');
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>Goods Return #${gr.id}</title>
+        <meta charset="utf-8" />
+        <style>
+          body { font-family: Arial, sans-serif; padding: 24px; color: #111; }
+          h1 { font-size: 18px; margin: 0 0 4px; }
+          .muted { color: #666; font-size: 11px; }
+          .meta { margin-bottom: 16px; font-size: 13px; color: #444; }
+          .badge { display: inline-block; padding: 2px 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 12px; margin-top: 6px; }
+          table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 12px; }
+          th, td { padding: 6px 8px; border-bottom: 1px solid #ddd; text-align: left; vertical-align: top; }
+          .right { text-align: right; }
+          tfoot td { font-weight: bold; border-top: 2px solid #333; }
+        </style>
+      </head>
+      <body>
+        <h1>Goods Return #${gr.id}</h1>
+        <div class="meta">
+          ${counterpartyNameFor(gr)}<br/>
+          ${new Date(gr.date).toLocaleString()}<br/>
+          <span class="badge">${badge.text}</span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Product</th>
+              <th>Batch</th>
+              <th class="right">Cost Price</th>
+              <th class="right">Qty</th>
+              <th class="right">Approved Qty</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+          <tfoot>
+            <tr>
+              <td colspan="4">Total</td>
+              <td class="right">₹${returnTotal(gr).toFixed(2)}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </body>
+    </html>`;
+
+  const win = window.open('', '_blank', 'width=800,height=900');
+  if (!win) return;
+  win.document.write(html);
+  win.document.close();
+  win.focus();
+  setTimeout(() => win.print(), 300);
+}
+
 // The selected return's detail — counterparty, status/action, and item
 // table. Also doubles as the row content shown once something is picked
 // from the sidebar. editableApproval/approvals/notes only apply to a
@@ -87,6 +183,10 @@ function ReturnDetail({
         </div>
         <div className="flex items-center gap-2">
           <span className={`text-xs px-2 py-1 rounded border ${badge.className}`}>{badge.text}</span>
+          <button type="button" onClick={() => printReturnDetail(gr)}
+            className="text-xs bg-gray-50 text-gray-700 border border-gray-200 px-3 py-1.5 rounded hover:bg-gray-100">
+            Print<span className="block">प्रिंट करा</span>
+          </button>
           {action}
         </div>
       </div>
@@ -182,7 +282,12 @@ function ReturnDetail({
         </div>
       )}
 
-      <div className="text-right text-sm font-medium mt-2">Total: ₹{returnTotal(gr).toFixed(2)}</div>
+      <div className="flex items-center justify-end gap-4 text-xs text-gray-500 mt-2 flex-wrap">
+        <span>Items / वस्तू: <span className="font-medium text-gray-700">{returnItemCount(gr)}</span></span>
+        <span>Requested Qty / मागितलेले प्रमाण: <span className="font-medium text-gray-700">{returnRequestedQty(gr)}</span></span>
+        <span>Approved Qty / मंजूर प्रमाण: <span className="font-medium text-gray-700">{returnApprovedQty(gr) ?? '—'}</span></span>
+      </div>
+      <div className="text-right text-sm font-medium mt-1">Total: ₹{returnTotal(gr).toFixed(2)}</div>
     </div>
   );
 }
