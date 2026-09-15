@@ -5,95 +5,55 @@ import { authRequired, ownerScope, requireRole } from '../middleware/auth.js';
 const router = Router();
 
 const returnIncludeShape = {
-  items: { include: { product: true } },
+  items: { include: { product: true, voucher: true, payment: true } },
   supplier: true,
   sourceDealer: true,
   retailer: true,
   dealer: true,
-  payment: true,
-  voucher: true,
 };
-
-function itemsTotal(items) {
-  return items.reduce((sum, it) => sum + Number(it.rate) * it.quantity, 0);
-}
 
 function approvedTotal(items) {
   return items.reduce((sum, it) => sum + Number(it.rate) * (it.approvedQuantity ?? 0), 0);
 }
 
 // GET /goods-returns/inventory — the exact batches this dealer/retailer
-// can currently return from (quantity > 0 only). Kept local to this
-// router, rather than assumed from whatever other inventory listing
-// exists elsewhere, so this feature is self-contained regardless of what
-// else is in the app. RETURNS are only ever possible against one of
-// these rows — never an arbitrary product/quantity.
+// can currently return from (quantity > 0 only), each annotated with the
+// specific vouchers it could be credited against. The picker is
+// product-first now (see GoodsReturns.jsx): the caller picks a product,
+// then a voucher FOR that product — never a voucher first — so instead of
+// narrowing the whole inventory list down to one already-chosen voucher,
+// every eligible row needs its own list of valid vouchers up front.
+//
+// "Valid for this row" means: an outstanding (not fully PAID) voucher
+// whose underlying purchase actually included this exact product+batch.
+// The two owner types resolve "the purchase a voucher was for" differently
+// (same join either side has always used for this):
+//   - RETAILER: a RECEIVABLE voucher raised off the mirror Sale on the
+//     dealer's side (Voucher.saleId) — the same Sale this retailer's own
+//     Purchase points to once placed (Purchase.linkedSaleId) — so the
+//     purchase has to be looked up via that join.
+//   - DEALER: a PAYABLE voucher auto-raised directly from their own
+//     purchase (Voucher.purchaseId) — no join needed.
+// A voucher that can't be resolved to a purchase at all (a legacy voucher,
+// or one never raised from one) is offered as a fallback option on EVERY
+// row instead of being silently excluded — same "never leave the picker
+// looking emptier than it should" reasoning the old ?voucherId= narrowing
+// used.
 router.get('/inventory', authRequired, requireRole('DEALER', 'RETAILER'), async (req, res) => {
   const scope = ownerScope(req);
   const where = scope.ownerType === 'DEALER'
     ? { ownerType: 'DEALER', dealerId: scope.dealerId }
     : { ownerType: 'RETAILER', retailerId: scope.retailerId };
-  const rows = await prisma.inventory.findMany({ where, include: { product: true }, orderBy: { updatedAt: 'desc' } });
-  let eligible = rows.filter((r) => r.quantity > 0);
-
-  // ?voucherId= — narrow the picker down to exactly the products that
-  // came in on the purchase this voucher was raised for, so a return
-  // raised against a specific voucher is a return against that delivery,
-  // not a free pick across everything on hand. Every eligible row is also
-  // tagged with purchasedQuantity — how much of that product+batch came in
-  // on the purchase — alongside its own (unfiltered) current `quantity`,
-  // so the picker can show both what was originally bought and what's
-  // actually still on the shelf. If the voucher can't be resolved to a
-  // purchase (a legacy voucher, or one never raised from one),
-  // scopedToPurchase comes back false and every row is left exactly as it
-  // would be unscoped — never a silently empty picker.
-  //
-  // The two owner types resolve "the purchase this voucher was for"
-  // differently:
-  //   - RETAILER: a RECEIVABLE voucher raised off the mirror Sale on the
-  //     dealer's side (Voucher.saleId, schema.prisma) — the same Sale this
-  //     retailer's own Purchase points to once placed (Purchase.linkedSaleId,
-  //     see purchases.js) — so the purchase has to be looked up via that join.
-  //   - DEALER: a PAYABLE voucher auto-raised directly from their own
-  //     purchase (Voucher.purchaseId, schema.prisma) — no join needed, the
-  //     purchase id is right there on the voucher.
-  let scopedToPurchase = false;
-  if (req.query.voucherId) {
-    const voucher = await prisma.voucher.findUnique({ where: { id: Number(req.query.voucherId) } });
-    if (!voucher) return res.status(404).json({ error: 'Voucher not found' });
-
-    let purchase = null;
-    if (scope.ownerType === 'RETAILER') {
-      if (voucher.retailerId !== scope.retailerId) {
-        return res.status(403).json({ error: 'Voucher does not belong to you' });
-      }
-      purchase = voucher.saleId
-        ? await prisma.purchase.findFirst({
-            where: { linkedSaleId: voucher.saleId, ownerType: 'RETAILER', retailerId: scope.retailerId },
-            include: { items: true },
-          })
-        : null;
-    } else {
-      if (voucher.dealerId !== scope.dealerId) {
-        return res.status(403).json({ error: 'Voucher does not belong to you' });
-      }
-      purchase = voucher.purchaseId
-        ? await prisma.purchase.findUnique({ where: { id: voucher.purchaseId }, include: { items: true } })
-        : null;
-    }
-
-    if (purchase) {
-      scopedToPurchase = true;
-      const purchasedByKey = new Map();
-      for (const it of purchase.items) {
-        const key = `${it.productId}::${it.batchName || ''}`;
-        purchasedByKey.set(key, (purchasedByKey.get(key) || 0) + it.quantity);
-      }
-      eligible = eligible
-        .filter((r) => purchasedByKey.has(`${r.productId}::${r.batchName || ''}`))
-        .map((r) => ({ ...r, purchasedQuantity: purchasedByKey.get(`${r.productId}::${r.batchName || ''}`) }));
-    }
-  }
+  const rows = await prisma.inventory.findMany({
+    where,
+    // product.category included so the picker's Category filter (see
+    // GoodsReturns.jsx) has something to filter/group on — every other
+    // route in this file that reads Inventory only needs the product
+    // itself, not its category, so this include is local to this route.
+    include: { product: { include: { category: true } } },
+    orderBy: { updatedAt: 'desc' },
+  });
+  const eligible = rows.filter((r) => r.quantity > 0);
 
   // How much of THIS exact batch has actually been approved/settled to
   // date — GoodsReturnItem.approvedQuantity is null until a return reaches
@@ -109,13 +69,62 @@ router.get('/inventory', authRequired, requireRole('DEALER', 'RETAILER'), async 
     : [];
   const approvedByInventoryId = new Map(approved.map((a) => [a.inventoryId, a._sum.approvedQuantity || 0]));
 
+  let vouchers = [];
+  if (eligible.length) {
+    if (scope.ownerType === 'DEALER') {
+      vouchers = await prisma.voucher.findMany({
+        where: { type: 'PAYABLE', dealerId: scope.dealerId, status: { not: 'PAID' } },
+        include: { purchase: { include: { items: true } } },
+      });
+    } else {
+      vouchers = await prisma.voucher.findMany({
+        where: { type: 'RECEIVABLE', retailerId: scope.retailerId, status: { not: 'PAID' } },
+      });
+      // A RETAILER's voucher only carries saleId directly — resolved to
+      // the actual purchase via the same join GET /inventory used to do
+      // for a single ?voucherId=.
+      for (const v of vouchers) {
+        v.purchase = v.saleId
+          ? await prisma.purchase.findFirst({
+              where: { linkedSaleId: v.saleId, ownerType: 'RETAILER', retailerId: scope.retailerId },
+              include: { items: true },
+            })
+          : null;
+      }
+    }
+  }
+
+  // key -> Set<voucherId> for every voucher that resolved to a purchase
+  // containing that product+batch, plus the purchased quantity for each
+  // (voucherId, key) pair — shown alongside the picker's per-row Inventory
+  // Qty, same as the old single-voucher purchasedQuantity did.
+  const matchedVoucherIdsByKey = new Map();
+  const purchasedQtyByVoucherAndKey = new Map();
+  const unresolvedVoucherIds = [];
+  for (const v of vouchers) {
+    if (!v.purchase) { unresolvedVoucherIds.push(v.id); continue; }
+    for (const it of v.purchase.items) {
+      const key = `${it.productId}::${it.batchName || ''}`;
+      if (!matchedVoucherIdsByKey.has(key)) matchedVoucherIdsByKey.set(key, new Set());
+      matchedVoucherIdsByKey.get(key).add(v.id);
+      const pk = `${v.id}::${key}`;
+      purchasedQtyByVoucherAndKey.set(pk, (purchasedQtyByVoucherAndKey.get(pk) || 0) + it.quantity);
+    }
+  }
+
   res.json({
-    items: eligible.map((r) => ({
-      ...r,
-      approvedQuantity: approvedByInventoryId.get(r.id) || 0,
-      purchasedQuantity: r.purchasedQuantity ?? null,
-    })),
-    scopedToPurchase,
+    items: eligible.map((r) => {
+      const key = `${r.productId}::${r.batchName || ''}`;
+      const matched = [...(matchedVoucherIdsByKey.get(key) || [])];
+      return {
+        ...r,
+        approvedQuantity: approvedByInventoryId.get(r.id) || 0,
+        eligibleVoucherIds: [...matched, ...unresolvedVoucherIds],
+        purchasedQuantityByVoucherId: Object.fromEntries(
+          matched.map((vid) => [vid, purchasedQtyByVoucherAndKey.get(`${vid}::${key}`)])
+        ),
+      };
+    }),
   });
 });
 
@@ -151,31 +160,39 @@ router.get('/', authRequired, requireRole('DEALER', 'RETAILER'), async (req, res
   res.json({ context: 'DEALER', supplierReturns, retailerReturns });
 });
 
-// Create a goods return, always against a specific voucher — same
-// required-voucher, capped-to-remaining-balance convention every other
-// payment in this app follows (see receipts.js POST / and vouchers.js
-// POST /:id/payments), since this return is a credit against that
-// voucher's balance, not a free-floating adjustment.
+// Create a goods return. Each line is always against a specific voucher —
+// same required-voucher, capped-to-remaining-balance convention every
+// other payment in this app follows (see receipts.js POST / and
+// vouchers.js POST /:id/payments), since a line is a credit against that
+// voucher's balance, not a free-floating adjustment — but unlike before,
+// the voucher is now chosen PER LINE rather than once for the whole
+// return: the picker is product-first (see GoodsReturns.jsx and GET
+// /inventory above), and different products on the same return can easily
+// have come in on different purchases, so they can credit different
+// vouchers. The balance check below therefore runs once per distinct
+// voucher referenced across the return's lines, not once for the return
+// as a whole.
 //
-// Always starts OPEN, whichever owner type raised it — the voucher itself
-// is left untouched until CONFIRMED (see PATCH /:id/status below). A
-// RETAILER can only ever return to their own primary dealer (derived
-// server-side, same as purchases.js POST /), and their return needs that
-// dealer's confirmation. A DEALER can return to any supplier under them,
-// and — since a supplier has no login of their own in this system to
-// confirm receipt — confirms their own return themselves.
+// Always starts OPEN, whichever owner type raised it — every voucher
+// referenced is left untouched until CONFIRMED (see PATCH /:id/status
+// below). A RETAILER can only ever return to their own primary dealer
+// (derived server-side, same as purchases.js POST /), and their return
+// needs that dealer's confirmation. A DEALER can return to any supplier
+// under them, and — since a supplier has no login of their own in this
+// system to confirm receipt — confirms their own return themselves.
 router.post('/', authRequired, requireRole('DEALER', 'RETAILER'), async (req, res) => {
   const scope = ownerScope(req);
   if (!scope.ownerType) return res.status(403).json({ error: 'Only dealer/retailer accounts can record goods returns' });
-  const { supplierId, voucherId, items } = req.body;
-  // items: [{ inventoryId, quantity }]
+  const { supplierId, items } = req.body;
+  // items: [{ inventoryId, quantity, voucherId }] — voucherId is now
+  // required per line (see doc comment above), not once for the return.
 
   if (!items || !items.length) return res.status(400).json({ error: 'No items in return' });
   for (const i of items) {
     if (!i.inventoryId) return res.status(400).json({ error: 'An inventory item is required for every line' });
     if (!i.quantity || Number(i.quantity) <= 0) return res.status(400).json({ error: 'Quantity must be greater than zero for every line' });
+    if (!i.voucherId) return res.status(400).json({ error: 'A voucher is required for every line' });
   }
-  if (!voucherId) return res.status(400).json({ error: 'Voucher is required' });
 
   let supplierIdToUse = null;
   let sourceDealerIdToUse = null;
@@ -224,6 +241,28 @@ router.post('/', authRequired, requireRole('DEALER', 'RETAILER'), async (req, re
     }
   }
 
+  // Every distinct voucher referenced across the return's lines must
+  // belong to the right counterparty in the right direction (PAYABLE for
+  // a DEALER's own return, RECEIVABLE for a RETAILER's) — checked once per
+  // distinct voucher, not once per line, since several lines can share
+  // the same voucher.
+  const voucherIds = [...new Set(items.map((i) => Number(i.voucherId)))];
+  const vouchers = await prisma.voucher.findMany({
+    where: { id: { in: voucherIds } },
+    include: { receipts: true, payments: true, goodsReturnItems: { include: { goodsReturn: true } } },
+  });
+  const voucherById = new Map(vouchers.map((v) => [v.id, v]));
+  if (voucherById.size !== voucherIds.length) {
+    return res.status(404).json({ error: 'One or more selected vouchers were not found' });
+  }
+  for (const v of vouchers) {
+    const validVoucher = scope.ownerType === 'DEALER'
+      ? v.type === 'PAYABLE' && v.dealerId === scope.dealerId && v.supplierId === supplierIdToUse
+      : v.type === 'RECEIVABLE' && v.dealerId === sourceDealerIdToUse && v.retailerId === scope.retailerId;
+    if (!validVoucher) return res.status(403).json({ error: `Voucher #${v.id} does not belong to this counterparty` });
+    if (v.status === 'PAID') return res.status(400).json({ error: `Voucher #${v.id} is already fully paid` });
+  }
+
   const returnItemsData = items.map((i) => {
     const inv = inventoryById.get(Number(i.inventoryId));
     return {
@@ -232,6 +271,7 @@ router.post('/', authRequired, requireRole('DEALER', 'RETAILER'), async (req, re
       batchName: inv.batchName,
       quantity: Number(i.quantity),
       rate: inv.rate,
+      voucherId: Number(i.voucherId),
       // Left null for both owner types now — nothing is approved until
       // CONFIRMED (see GoodsReturnStatus in schema.prisma and PATCH
       // /:id/status below), whether that confirmation comes from the
@@ -241,51 +281,49 @@ router.post('/', authRequired, requireRole('DEALER', 'RETAILER'), async (req, re
       approvedQuantity: null,
     };
   });
-  const returnTotal = itemsTotal(returnItemsData);
 
-  // Voucher must belong to the right counterparty in the right direction
-  // (PAYABLE for a DEALER's own return, RECEIVABLE for a RETAILER's), and
-  // the return can't exceed what's actually still outstanding on it.
-  const voucher = await prisma.voucher.findUnique({
-    where: { id: Number(voucherId) },
-    include: { receipts: true, payments: true, goodsReturns: { include: { items: true } } },
-  });
-  if (!voucher) return res.status(404).json({ error: 'Voucher not found' });
+  // Balance check now runs per distinct voucher, summing only the lines
+  // THIS return is putting against that voucher — same "capped to
+  // remaining balance" rule as before, just no longer assuming every line
+  // on the return shares one voucher.
+  const subtotalByVoucherId = new Map();
+  for (const it of returnItemsData) {
+    const line = Number(it.rate) * it.quantity;
+    subtotalByVoucherId.set(it.voucherId, (subtotalByVoucherId.get(it.voucherId) || 0) + line);
+  }
 
-  const validVoucher = scope.ownerType === 'DEALER'
-    ? voucher.type === 'PAYABLE' && voucher.dealerId === scope.dealerId && voucher.supplierId === supplierIdToUse
-    : voucher.type === 'RECEIVABLE' && voucher.dealerId === sourceDealerIdToUse && voucher.retailerId === scope.retailerId;
-  if (!validVoucher) return res.status(403).json({ error: 'Voucher does not belong to this counterparty' });
-  if (voucher.status === 'PAID') return res.status(400).json({ error: 'This voucher is already fully paid' });
-
-  const receiptsAmount = voucher.receipts.reduce((sum, r) => sum + Number(r.amount), 0);
-  const paymentsAmount = voucher.payments.reduce((sum, p) => sum + Number(p.amount), 0);
-  // Every OTHER goods return still sitting OPEN/IN_REVIEW against this
-  // same voucher — not yet a Payment, but still a pending claim on the
-  // balance, so it has to count here too or either side could stack up
-  // several pending returns that would together overcommit the voucher
-  // before any of them is actually confirmed. Same reasoning receipts.js
-  // gives for counting still-pending receipts, not just confirmed ones.
-  const pendingReturnsAmount = voucher.goodsReturns
-    .filter((gr) => gr.status !== 'CONFIRMED')
-    .reduce((sum, gr) => sum + itemsTotal(gr.items), 0);
-  // A DEALER's own voucher (PAYABLE) has no receipts at all, and
-  // `paymentsAmount` already covers every prior GOODS_RETURN-mode credit
-  // on it (those create a real Payment once CONFIRMED — see PATCH
-  // /:id/status below). A RETAILER's voucher (RECEIVABLE) needs
-  // `receiptsAmount` for ordinary cash/UPI/card claims (mirroring
-  // receipts.js exactly) PLUS any prior CONFIRMED goods-return credit,
-  // which — unlike a Receipt — has no receipt row of its own to be
-  // counted by `receiptsAmount`.
-  const confirmedGoodsReturnAmount = voucher.payments
-    .filter((p) => p.mode === 'GOODS_RETURN')
-    .reduce((sum, p) => sum + Number(p.amount), 0);
-  const alreadyAccountedFor = scope.ownerType === 'RETAILER'
-    ? receiptsAmount + confirmedGoodsReturnAmount + pendingReturnsAmount
-    : paymentsAmount + pendingReturnsAmount;
-  const remaining = Number(voucher.amount) - alreadyAccountedFor;
-  if (returnTotal > remaining) {
-    return res.status(400).json({ error: `Return value exceeds the remaining balance of ${remaining.toFixed(2)} on this voucher` });
+  for (const [vId, subtotal] of subtotalByVoucherId) {
+    const voucher = voucherById.get(vId);
+    const receiptsAmount = voucher.receipts.reduce((sum, r) => sum + Number(r.amount), 0);
+    const paymentsAmount = voucher.payments.reduce((sum, p) => sum + Number(p.amount), 0);
+    // Every OTHER return LINE still sitting OPEN/IN_REVIEW against this
+    // same voucher — not yet a Payment, but still a pending claim on the
+    // balance, so it has to count here too or several pending returns
+    // could together overcommit the voucher before any is confirmed. Same
+    // reasoning receipts.js gives for counting still-pending receipts, not
+    // just confirmed ones — just scoped to voucher.goodsReturnItems (the
+    // item-level relation) now, not a whole GoodsReturn's total.
+    const pendingItemsAmount = voucher.goodsReturnItems
+      .filter((gi) => gi.goodsReturn.status !== 'CONFIRMED')
+      .reduce((sum, gi) => sum + Number(gi.rate) * gi.quantity, 0);
+    // A DEALER's own voucher (PAYABLE) has no receipts at all, and
+    // `paymentsAmount` already covers every prior GOODS_RETURN-mode credit
+    // on it (those create a real Payment once CONFIRMED — see PATCH
+    // /:id/status below). A RETAILER's voucher (RECEIVABLE) needs
+    // `receiptsAmount` for ordinary cash/UPI/card claims (mirroring
+    // receipts.js exactly) PLUS any prior CONFIRMED goods-return credit,
+    // which — unlike a Receipt — has no receipt row of its own to be
+    // counted by `receiptsAmount`.
+    const confirmedGoodsReturnAmount = voucher.payments
+      .filter((p) => p.mode === 'GOODS_RETURN')
+      .reduce((sum, p) => sum + Number(p.amount), 0);
+    const alreadyAccountedFor = scope.ownerType === 'RETAILER'
+      ? receiptsAmount + confirmedGoodsReturnAmount + pendingItemsAmount
+      : paymentsAmount + pendingItemsAmount;
+    const remaining = Number(voucher.amount) - alreadyAccountedFor;
+    if (subtotal > remaining) {
+      return res.status(400).json({ error: `Return value for voucher #${vId} exceeds its remaining balance of ${remaining.toFixed(2)}` });
+    }
   }
 
   // Always created OPEN now, for both owner types — see GoodsReturnStatus
@@ -300,7 +338,6 @@ router.post('/', authRequired, requireRole('DEALER', 'RETAILER'), async (req, re
         retailerId: scope.ownerType === 'RETAILER' ? scope.retailerId : null,
         supplierId: supplierIdToUse,
         sourceDealerId: sourceDealerIdToUse,
-        voucherId: voucher.id,
         status: 'OPEN',
         items: { create: returnItemsData },
       },
@@ -381,34 +418,54 @@ router.patch('/:id/quantities', authRequired, requireRole('DEALER', 'RETAILER'),
   }
 
   // Same voucher-balance guard POST / applies at creation — an edit that
-  // bumps a quantity up can't push this return's own total past what's
-  // still actually left on the voucher either.
-  if (existing.voucherId) {
-    const voucher = await prisma.voucher.findUnique({
-      where: { id: existing.voucherId },
-      include: { receipts: true, payments: true, goodsReturns: { include: { items: true } } },
-    });
-    if (voucher) {
-      // Every OTHER pending (non-CONFIRMED) return against this voucher —
-      // this return's own OLD total is deliberately excluded here, since
-      // it's about to be replaced by the new total being validated below.
-      const otherPendingAmount = voucher.goodsReturns
-        .filter((gr) => gr.id !== existing.id && gr.status !== 'CONFIRMED')
-        .reduce((sum, gr) => sum + itemsTotal(gr.items), 0);
-      // Same PAYABLE-vs-RECEIVABLE split POST / uses — see the comment
-      // there for why a DEALER's own (PAYABLE) voucher counts every
-      // Payment, while a RETAILER's (RECEIVABLE) voucher only counts
-      // confirmed Receipts plus GOODS_RETURN-mode Payments.
-      const alreadyAccountedFor = scope.ownerType === 'DEALER'
-        ? voucher.payments.reduce((sum, p) => sum + Number(p.amount), 0) + otherPendingAmount
-        : voucher.receipts.reduce((sum, r) => sum + Number(r.amount), 0)
-          + voucher.payments.filter((p) => p.mode === 'GOODS_RETURN').reduce((sum, p) => sum + Number(p.amount), 0)
-          + otherPendingAmount;
-      const remaining = Number(voucher.amount) - alreadyAccountedFor;
-      const newTotal = itemsTotal(updatedItemsData);
-      if (newTotal > remaining) {
-        return res.status(400).json({ error: `Updated return value exceeds the remaining balance of ${remaining.toFixed(2)} on this voucher` });
-      }
+  // bumps a quantity up can't push this line's voucher past what's still
+  // actually left on it either. Grouped by each item's OWN voucherId now
+  // (items on the same return can credit different vouchers — see
+  // schema.prisma GoodsReturnItem.voucherId) rather than one shared
+  // voucher for the whole return. A null voucherId (a pre-existing row
+  // from before this column existed — see schema.prisma) is filtered out
+  // before either query: there's no voucher to check a balance against,
+  // and Voucher.id is a required Int, so a raw `null` inside an `in`
+  // filter would be a Prisma validation error, not just a harmless
+  // no-match.
+  const voucherIdsInvolved = [...new Set(updatedItemsData.map((it) => it.voucherId).filter((v) => v != null))];
+  const vouchersInvolved = voucherIdsInvolved.length
+    ? await prisma.voucher.findMany({
+        where: { id: { in: voucherIdsInvolved } },
+        include: { receipts: true, payments: true, goodsReturnItems: { include: { goodsReturn: true } } },
+      })
+    : [];
+  const voucherByIdInvolved = new Map(vouchersInvolved.map((v) => [v.id, v]));
+
+  const newSubtotalByVoucherId = new Map();
+  for (const it of updatedItemsData) {
+    if (it.voucherId == null) continue;
+    const line = Number(it.rate) * it.quantity;
+    newSubtotalByVoucherId.set(it.voucherId, (newSubtotalByVoucherId.get(it.voucherId) || 0) + line);
+  }
+
+  for (const [vId, newSubtotal] of newSubtotalByVoucherId) {
+    const voucher = voucherByIdInvolved.get(vId);
+    if (!voucher) continue;
+    // Every OTHER pending (non-CONFIRMED) return line against this same
+    // voucher, from ANY return — this return's own line(s) against this
+    // voucher are deliberately excluded here (via goodsReturn.id !==
+    // existing.id), since they're about to be replaced by newSubtotal.
+    const otherPendingAmount = voucher.goodsReturnItems
+      .filter((gi) => gi.goodsReturn.id !== existing.id && gi.goodsReturn.status !== 'CONFIRMED')
+      .reduce((sum, gi) => sum + Number(gi.rate) * gi.quantity, 0);
+    // Same PAYABLE-vs-RECEIVABLE split POST / uses — see the comment
+    // there for why a DEALER's own (PAYABLE) voucher counts every
+    // Payment, while a RETAILER's (RECEIVABLE) voucher only counts
+    // confirmed Receipts plus GOODS_RETURN-mode Payments.
+    const alreadyAccountedFor = scope.ownerType === 'DEALER'
+      ? voucher.payments.reduce((sum, p) => sum + Number(p.amount), 0) + otherPendingAmount
+      : voucher.receipts.reduce((sum, r) => sum + Number(r.amount), 0)
+        + voucher.payments.filter((p) => p.mode === 'GOODS_RETURN').reduce((sum, p) => sum + Number(p.amount), 0)
+        + otherPendingAmount;
+    const remaining = Number(voucher.amount) - alreadyAccountedFor;
+    if (newSubtotal > remaining) {
+      return res.status(400).json({ error: `Updated return value for voucher #${vId} exceeds its remaining balance of ${remaining.toFixed(2)}` });
     }
   }
 
@@ -432,17 +489,18 @@ router.patch('/:id/quantities', authRequired, requireRole('DEALER', 'RETAILER'),
 //       happened to this return yet at either stage.
 //     IN_REVIEW -> CONFIRMED, by the DEALER the return was made to — this
 //       is the step that actually decrements the retailer's inventory,
-//       raises the credit Payment against them, and pushes the linked
-//       voucher's status forward, exactly like receipts.js PATCH
-//       /:id/confirm does for an ordinary cash receipt.
+//       raises the credit Payment(s) against them (one per distinct
+//       voucher touched — see the settlement block below), and pushes
+//       each of those vouchers' status forward, exactly like receipts.js
+//       PATCH /:id/confirm does for an ordinary cash receipt.
 //   DEALER-owned return (to a supplier):
 //     No IN_REVIEW stage at all — a supplier has no login to put it in
 //     front of, so the same dealer who raised it is also the one who
 //     settles it:
 //     OPEN -> CANCELLED, by that dealer — same dead-end reasoning as above.
 //     OPEN -> CONFIRMED, by that dealer — decrements their own inventory
-//       and raises the credit Payment against the supplier, same as the
-//       RETAILER case above just without anything to partially reject
+//       and raises the credit Payment(s) against the supplier, same as
+//       the RETAILER case above just without anything to partially reject
 //       (there's no separate party's request to second-guess).
 router.patch('/:id/status', authRequired, requireRole('DEALER', 'RETAILER'), async (req, res) => {
   const scope = ownerScope(req);
@@ -458,7 +516,7 @@ router.patch('/:id/status', authRequired, requireRole('DEALER', 'RETAILER'), asy
 
   const existing = await prisma.goodsReturn.findUnique({
     where: { id },
-    include: { items: true, voucher: { include: { receipts: true, payments: true } } },
+    include: { items: { include: { voucher: { include: { receipts: true, payments: true } } } } },
   });
   if (!existing) return res.status(404).json({ error: 'Goods return not found' });
 
@@ -554,7 +612,6 @@ router.patch('/:id/status', authRequired, requireRole('DEALER', 'RETAILER'), asy
     itemsWithApproval.push({ ...item, approvedQuantity, approvalNote: approvedQuantity !== item.quantity ? note : null });
   }
 
-  const returnTotal = approvedTotal(itemsWithApproval);
   const isOwnDealerReturn = existing.ownerType === 'DEALER';
 
   try {
@@ -629,46 +686,74 @@ router.patch('/:id/status', authRequired, requireRole('DEALER', 'RETAILER'), asy
         });
       }
 
-      const payment = await tx.payment.create({
-        data: isOwnDealerReturn
-          ? {
-              dealerId: existing.dealerId,
-              supplierId: existing.supplierId,
-              voucherId: existing.voucherId,
-              amount: returnTotal,
-              mode: 'GOODS_RETURN',
-              reference: `Goods Return #${existing.id}`,
-            }
-          : {
-              dealerId: existing.sourceDealerId,
-              retailerId: existing.retailerId,
-              voucherId: existing.voucherId,
-              amount: returnTotal,
-              mode: 'GOODS_RETURN',
-              reference: `Goods Return #${existing.id}`,
-            },
-      });
+      // One Payment per DISTINCT voucher touched by this return's lines —
+      // no longer a single Payment/voucher update for the whole return,
+      // since different lines can now credit different vouchers (see
+      // schema.prisma GoodsReturnItem.voucherId). Each group's own
+      // approved subtotal is what actually reduces that voucher's
+      // remaining balance — this is the "product line total is reduced
+      // from that voucher" behaviour. A null voucherId (a pre-existing
+      // row from before this column existed — see schema.prisma) is its
+      // own group but is skipped below: there's no voucher to credit, so
+      // those items are approved/settled at the inventory level (already
+      // done above) but never get a Payment or paymentId of their own.
+      const itemsByVoucherId = new Map();
+      for (const item of itemsWithApproval) {
+        if (!itemsByVoucherId.has(item.voucherId)) itemsByVoucherId.set(item.voucherId, []);
+        itemsByVoucherId.get(item.voucherId).push(item);
+      }
 
-      if (existing.voucher) {
-        // Same PAYABLE-vs-RECEIVABLE split POST / uses for the equivalent
-        // balance check at creation — see the comment there. A DEALER's
-        // own (PAYABLE) voucher counts every prior Payment of any mode
-        // (Payment is the only settlement record type on it, no Receipt
-        // ever applies to a dealer-supplier voucher); a RETAILER's
-        // (RECEIVABLE) voucher counts confirmed Receipts plus prior
-        // GOODS_RETURN-mode Payments only.
-        const alreadyConfirmedOnVoucher = isOwnDealerReturn
-          ? existing.voucher.payments.reduce((sum, p) => sum + Number(p.amount), 0)
-          : existing.voucher.receipts.filter((r) => r.status !== 'TO_BE_CONFIRMED').reduce((sum, r) => sum + Number(r.amount), 0)
-            + existing.voucher.payments.filter((p) => p.mode === 'GOODS_RETURN').reduce((sum, p) => sum + Number(p.amount), 0);
-        const totalConfirmed = alreadyConfirmedOnVoucher + returnTotal;
-        const newStatus = totalConfirmed >= Number(existing.voucher.amount) ? 'PAID' : 'PARTIALLY_PAID';
-        await tx.voucher.update({ where: { id: existing.voucher.id }, data: { status: newStatus } });
+      for (const [vId, groupItems] of itemsByVoucherId) {
+        if (vId == null) continue;
+        const groupTotal = approvedTotal(groupItems);
+        const voucher = groupItems[0].voucher; // same voucher object on every item in this group
+
+        const payment = await tx.payment.create({
+          data: isOwnDealerReturn
+            ? {
+                dealerId: existing.dealerId,
+                supplierId: existing.supplierId,
+                voucherId: vId,
+                amount: groupTotal,
+                mode: 'GOODS_RETURN',
+                reference: `Goods Return #${existing.id} (Voucher #${vId})`,
+              }
+            : {
+                dealerId: existing.sourceDealerId,
+                retailerId: existing.retailerId,
+                voucherId: vId,
+                amount: groupTotal,
+                mode: 'GOODS_RETURN',
+                reference: `Goods Return #${existing.id} (Voucher #${vId})`,
+              },
+        });
+
+        await tx.goodsReturnItem.updateMany({
+          where: { id: { in: groupItems.map((it) => it.id) } },
+          data: { paymentId: payment.id },
+        });
+
+        if (voucher) {
+          // Same PAYABLE-vs-RECEIVABLE split POST / uses for the
+          // equivalent balance check at creation — see the comment there.
+          // A DEALER's own (PAYABLE) voucher counts every prior Payment of
+          // any mode (Payment is the only settlement record type on it, no
+          // Receipt ever applies to a dealer-supplier voucher); a
+          // RETAILER's (RECEIVABLE) voucher counts confirmed Receipts plus
+          // prior GOODS_RETURN-mode Payments only.
+          const alreadyConfirmedOnVoucher = isOwnDealerReturn
+            ? voucher.payments.reduce((sum, p) => sum + Number(p.amount), 0)
+            : voucher.receipts.filter((r) => r.status !== 'TO_BE_CONFIRMED').reduce((sum, r) => sum + Number(r.amount), 0)
+              + voucher.payments.filter((p) => p.mode === 'GOODS_RETURN').reduce((sum, p) => sum + Number(p.amount), 0);
+          const totalConfirmed = alreadyConfirmedOnVoucher + groupTotal;
+          const newStatus = totalConfirmed >= Number(voucher.amount) ? 'PAID' : 'PARTIALLY_PAID';
+          await tx.voucher.update({ where: { id: voucher.id }, data: { status: newStatus } });
+        }
       }
 
       return tx.goodsReturn.update({
         where: { id },
-        data: { status: 'CONFIRMED', paymentId: payment.id },
+        data: { status: 'CONFIRMED' },
         include: returnIncludeShape,
       });
     });

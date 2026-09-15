@@ -163,6 +163,17 @@ enum SaleStatus {
   DISPATCHED
 }
 
+// POS = the logged-in dealer/retailer made this sale themselves, the
+// ordinary path. AGGREGATOR = created via POST /sales/on-behalf/:retailerId
+// by a third-party integration acting on a retailer's behalf (see Role.AGGREGATOR
+// above) — the retailer's own inventory/ledger are affected exactly as if
+// they'd made the sale, but this flag plus Sale.placedByUserId is what lets
+// that activity be told apart from a genuine walk-in POS sale after the fact.
+enum SaleChannel {
+  POS
+  AGGREGATOR
+}
+
 // OPEN the moment a CASH-sale line item is recorded (see sales.js
 // createSale), PAID once the seller settles up with their own
 // dealer/supplier for it (see soldProducts.js POST /pay).
@@ -195,6 +206,11 @@ model User {
   retailer       Retailer?     @relation(fields: [retailerId], references: [id])
   organisation   Organisation? @relation(fields: [organisationId], references: [orgId])
   createdAt      DateTime      @default(now())
+
+  // Inverse of Sale.placedByUser — every sale this login actually created,
+  // whether an ordinary POS sale (channel: POS) or one placed on a
+  // retailer's behalf (channel: AGGREGATOR, e.g. an AGGREGATOR-role login).
+  salesPlaced    Sale[]        @relation("SalePlacedBy")
 }
 
 // ---------------- Divisions (geographic/business areas) ----------------
@@ -665,22 +681,6 @@ model GoodsReturn {
   date           DateTime          @default(now())
   status         GoodsReturnStatus @default(OPEN)
   items          GoodsReturnItem[]
-
-  // Optional — the specific outstanding voucher (RECEIVABLE for a
-  // RETAILER's return, PAYABLE for a DEALER's) this return's credit was
-  // applied against, chosen by whoever confirms/raises it. Left null if
-  // it was recorded as a general credit rather than against one
-  // particular voucher — same as an ordinary Payment can have a null
-  // voucherId.
-  voucherId Int?
-  voucher   Voucher? @relation(fields: [voucherId], references: [id])
-
-  // Set once the credit is raised — immediately for a DEALER-initiated
-  // return (created already CONFIRMED), or on the dealer's confirmation
-  // for a RETAILER-initiated one (see goodsReturns.js PATCH /:id/status).
-  // Null until then.
-  paymentId Int?     @unique
-  payment   Payment? @relation(fields: [paymentId], references: [id])
 }
 
 model GoodsReturnItem {
@@ -703,6 +703,33 @@ model GoodsReturnItem {
   // ownerType (dealer's cost from supplier, or retailer's cost from
   // dealer), so the same field works unmodified for both directions.
   rate          Decimal     @db.Decimal(10, 2)
+
+  // Which specific outstanding voucher THIS LINE's credit is applied
+  // against (RECEIVABLE for a RETAILER's return, PAYABLE for a DEALER's)
+  // — chosen per product/batch when the return is built (see
+  // GoodsReturns.jsx and goodsReturns.js GET /inventory), since the
+  // vouchers a given product could be credited against depend on which
+  // purchase(s) actually brought that product+batch in, and different
+  // lines on the same return can easily point at different purchases (and
+  // therefore different vouchers). This used to live on GoodsReturn
+  // itself (one voucher for the whole return) — moved here so each line
+  // can carry its own.
+  //
+  // Nullable at the DB level only for pre-existing rows recorded before
+  // this column existed (they have no per-line voucher to backfill from —
+  // the old, single, GoodsReturn-level voucherId this replaced wasn't
+  // even guaranteed to be set, see the old GoodsReturn.voucherId this
+  // superseded). goodsReturns.js POST / still REQUIRES a voucherId for
+  // every line on any NEW return — a line is only ever raised as a credit
+  // against a specific voucher, never as a free-floating adjustment — so
+  // null only ever appears on those legacy rows going forward. Anywhere
+  // that groups items by voucherId (PATCH /:id/quantities' balance
+  // recheck, PATCH /:id/status's per-voucher settlement) explicitly skips
+  // the null group, since there's no voucher to check a balance against
+  // or credit a Payment to.
+  voucherId Int?
+  voucher   Voucher? @relation(fields: [voucherId], references: [id])
+
   // Null until the dealer actually acts on this line. For a RETAILER's
   // return: null while OPEN/IN_REVIEW, then set by the dealer at
   // confirmation — see goodsReturns.js PATCH /:id/status — to whatever
@@ -720,6 +747,18 @@ model GoodsReturnItem {
   // null whenever the line is approved in full, including a DEALER's own
   // auto-confirmed return (which is always approved in full — see above).
   approvalNote     String?
+
+  // Set once this line's credit is actually raised — immediately for a
+  // DEALER-initiated return (created already CONFIRMED), or on the
+  // dealer's confirmation for a RETAILER-initiated one (see
+  // goodsReturns.js PATCH /:id/status). One Payment can cover more than
+  // one line on the same return (every line sharing the same voucherId is
+  // settled together, one Payment per distinct voucher touched — see
+  // goodsReturns.js), which is why this lives per-item rather than as a
+  // single GoodsReturn.paymentId the way it used to when a return only
+  // ever touched one voucher. Null until then.
+  paymentId Int?
+  payment   Payment? @relation(fields: [paymentId], references: [id])
 }
 
 // ---------------- Sales / POS ----------------
@@ -741,6 +780,20 @@ model Sale {
   paymentMode        PaymentMode? // null until DISPATCHED for an order-linked Sale
   posTransactionRef  String?
   items              SaleItem[]
+
+  // Who actually initiated this sale, independent of dealerId/retailerId
+  // above (which is whose inventory/ledger it's recorded against — for an
+  // AGGREGATOR-channel sale that's the retailer being acted on behalf of,
+  // NOT the aggregator). channel defaults to POS for the ordinary path
+  // (a dealer/retailer's own login creating their own sale); createSale
+  // sets both from the authenticated req.user, never from the request
+  // body, so this can't be spoofed by the client. placedByUserId is
+  // nullable/SetNull so an aggregator login being removed later doesn't
+  // block deleting that User — the channel flag alone is enough to keep
+  // the sale recognizable as aggregator-placed even if so.
+  channel            SaleChannel  @default(POS)
+  placedByUserId     Int?
+  placedByUser       User?        @relation("SalePlacedBy", fields: [placedByUserId], references: [id], onDelete: SetNull)
 
   // Inverse of Purchase.linkedSale — set when this Sale was auto-created
   // from a retailer's purchase order rather than entered directly at POS.
@@ -892,11 +945,12 @@ model Voucher {
   saleId Int?  @unique
   sale   Sale? @relation(fields: [saleId], references: [id])
 
-  // Every GoodsReturn whose credit was applied against this specific
-  // voucher (an optional choice made when the return is confirmed/raised
-  // — see goodsReturns.js). A voucher can have more than one, same as it
-  // can have more than one ordinary Payment.
-  goodsReturns GoodsReturn[]
+  // Every GoodsReturnItem whose credit was applied against this specific
+  // voucher (a required choice made per line when the return is built —
+  // see goodsReturns.js). Used to live at the GoodsReturn level (one
+  // voucher per whole return) — moved to the item level so different
+  // lines on the same return can credit different vouchers.
+  goodsReturnItems GoodsReturnItem[]
 }
 
 // ---------------- Receipts (money received against vouchers) ----------------
@@ -986,10 +1040,13 @@ model Payment {
   // voucher/receipt flow above.
   soldProducts SoldProduct[]
 
-  // Inverse of GoodsReturn.paymentId — set when this Payment was raised as
-  // the credit for a confirmed goods return (see goodsReturns.js) rather
-  // than an ordinary cash/UPI/card payment or a sold-products settlement.
-  goodsReturn GoodsReturn?
+  // Inverse of GoodsReturnItem.paymentId — every return line settled by
+  // this Payment (more than one when several lines on the same return
+  // shared the same voucher — see goodsReturns.js), rather than an
+  // ordinary cash/UPI/card payment or a sold-products settlement. Used to
+  // be a single GoodsReturn?, back when a whole return could only ever
+  // touch one voucher.
+  goodsReturnItems GoodsReturnItem[]
 }
 
 // ============================================================

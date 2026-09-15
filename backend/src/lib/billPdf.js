@@ -46,6 +46,12 @@ const L = {
   posRef: 'POS Ref / पीओएस संदर्भ',
   customer: 'Customer / ग्राहक',
   cashCustomer: 'Cash Customer / रोख ग्राहक',
+  // Shown only when Sale.channel === 'AGGREGATOR' (see sales.js) — this
+  // bill was never handed to the customer at the point of sale (the
+  // aggregator's own external site/app is what completed that transaction),
+  // so anyone printing it later from here is printing a reference copy for
+  // the retailer's own records, not the original receipt.
+  viaAggregator: 'Sold via Aggregator (Reference Copy) / एग्रीगेटरमार्फत विक्री (संदर्भ प्रत)',
   batch: 'Batch / बॅच',
   mrp: 'MRP',
   save: 'Save / बचत',
@@ -133,6 +139,12 @@ function renderBillMeta(c, sale) {
     ? (sale.customerRetailer?.name || 'Retailer')
     : L.cashCustomer;
   c.text(`${L.customer}: ${customerLabel}`);
+  if (sale.channel === 'AGGREGATOR') {
+    c.moveDown(0.15);
+    c.font(FONT_BOLD).fontSize(7);
+    c.text(L.viaAggregator, { align: 'center' });
+    c.font(FONT_REGULAR).fontSize(7.5);
+  }
   c.moveDown(0.3);
 }
 
@@ -207,7 +219,9 @@ function renderBill(c, sale, party, isB2B) {
 //        so the bill still shows correct figures even if that batch's
 //        inventory row later changes. product additionally needs
 //        name/sizeWeight/flavour/brand, all shown under the item (see
-//        renderItem).
+//        renderItem). sale.channel (a plain scalar column, present even
+//        without an explicit Prisma include) drives the "Reference Copy"
+//        note for an AGGREGATOR-placed sale — see L.viaAggregator above.
 // party: the Dealer or Retailer that made the sale (for the header).
 export async function generateSaleBillPdf(sale, party) {
   const isB2B = sale.customerType === 'RETAILER';

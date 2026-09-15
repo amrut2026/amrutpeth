@@ -16,7 +16,22 @@ router.get('/', authRequired, requireRole('DEALER', 'RETAILER'), async (req, res
   let where = {};
   if (scope.ownerType === 'DEALER') where = { ownerType: 'DEALER', dealerId: scope.dealerId };
   if (scope.ownerType === 'RETAILER') where = { ownerType: 'RETAILER', retailerId: scope.retailerId };
-  const sales = await prisma.sale.findMany({ where, include: { items: { include: { product: true } } }, orderBy: { date: 'desc' } });
+  // Optional ?channel=AGGREGATOR — lets a retailer (or their dealer) pull up
+  // just the sales an aggregator placed on their behalf, separate from their
+  // own POS activity.
+  if (req.query.channel && ['POS', 'AGGREGATOR'].includes(req.query.channel)) {
+    where.channel = req.query.channel;
+  }
+  const sales = await prisma.sale.findMany({
+    where,
+    include: {
+      items: { include: { product: true } },
+      // username only — role is implied by channel, and the aggregator's
+      // own account details aren't this dealer/retailer's business.
+      placedByUser: { select: { username: true } },
+    },
+    orderBy: { date: 'desc' }
+  });
   res.json(sales);
 });
 
@@ -147,6 +162,16 @@ async function createSale(req, res, scopeOverride) {
 
     const totalAmount = resolvedItems.reduce((sum, i) => sum + i.price * i.quantity, 0);
 
+    // Who actually created this sale — deliberately from req.user, not from
+    // `scope`. For an aggregator-placed sale, scope has been overridden to
+    // the target retailer (see the on-behalf/:retailerId route below), but
+    // req.user is still the AGGREGATOR login that's actually authenticated
+    // for this request. That's exactly the distinction we need to record:
+    // whose inventory it affects (scope) vs who really initiated it
+    // (req.user).
+    const channel = scopeOverride ? 'AGGREGATOR' : 'POS';
+    const placedByUserId = req.user?.id ?? null;
+
     // Needed only for a RETAILER's CASH sale, to raise the second
     // (dealer-owed-to-supplier) SoldProduct row against the right dealer —
     // sale.dealerId is null on a retailer's own Sale, so it can't be read
@@ -172,6 +197,8 @@ async function createSale(req, res, scopeOverride) {
           totalAmount,
           paymentMode,
           posTransactionRef: posTransactionRef || null,
+          channel,
+          placedByUserId,
           items: { create: resolvedItems }
         },
         include: { items: { include: { product: true } } }
@@ -261,6 +288,12 @@ router.post('/pos-webhook', authRequired, (req, res) => {
 // the URL's retailerId instead of ownerScope(req) — forcing customerType to
 // CASH and decrementing that retailer's own inventory, same as if the
 // retailer had made the sale themselves.
+//
+// The resulting Sale is otherwise indistinguishable from the retailer's own
+// POS activity (same ownerType/retailerId/customerType), so createSale
+// separately stamps channel: 'AGGREGATOR' and placedByUserId: req.user.id —
+// that's the only record of who actually initiated it. See schema.prisma
+// Sale.channel/placedByUserId.
 //
 // Only checks that the retailer exists — an aggregator may act on behalf of
 // ANY retailer on the platform, not just one dealer's own, since it's no

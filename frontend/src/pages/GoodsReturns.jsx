@@ -75,7 +75,6 @@ function ReturnDetail({
           <div className="font-semibold">{counterpartyNameFor(gr)}</div>
           <div className="text-xs text-gray-400">
             {new Date(gr.date).toLocaleString()}
-            {gr.voucherId && <span> · Voucher #{gr.voucherId}</span>}
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -99,6 +98,7 @@ function ReturnDetail({
             <th className="py-1 font-normal">Product / उत्पादन</th>
             <th className="py-1 font-normal">Batch / बॅच</th>
             <th className="py-1 font-normal text-right">Cost Price / खरेदी किंमत</th>
+            <th className="py-1 font-normal">Voucher / व्हाउचर</th>
             <th className="py-1 font-normal text-right w-24">{editableQuantity ? 'Return Qty / परत प्रमाण' : 'Qty / प्रमाण'}</th>
             <th className="py-1 font-normal text-right w-24">Approved Qty / मंजूर प्रमाण</th>
           </tr>
@@ -112,6 +112,7 @@ function ReturnDetail({
                 <td className="py-1.5"><ProductCell product={it.product} /></td>
                 <td className="py-1.5 text-gray-500">{it.batchName || '—'}</td>
                 <td className="py-1.5 text-right">₹{Number(it.rate).toFixed(2)}</td>
+                <td className="py-1.5 text-gray-500">#{it.voucherId}</td>
                 <td className="py-1.5 text-right">
                   {editableQuantity ? (
                     <input
@@ -138,7 +139,7 @@ function ReturnDetail({
               </tr>,
               differs && (
                 <tr key={`${it.id}-note`} className="bg-amber-50/50">
-                  <td colSpan={5} className="px-1.5 pb-2">
+                  <td colSpan={6} className="px-1.5 pb-2">
                     {editableApproval ? (
                       <input
                         type="text"
@@ -191,8 +192,39 @@ export default function GoodsReturns() {
   const [vouchers, setVouchers] = useState([]);
   const [myDealer, setMyDealer] = useState(null);
   const [supplierId, setSupplierId] = useState('');
-  const [voucherId, setVoucherId] = useState('');
-  const [quantities, setQuantities] = useState({}); // inventoryId -> qty string
+
+  // The return being built, as a running list — same "pick a product, it's
+  // added to the list, pick another, it's added too" pattern Sales.jsx's
+  // cart uses, rather than one big always-shown inventory table to check
+  // rows in. Each entry is { key, quantity, voucherId }: key identifies
+  // WHICH row was picked (String(inventoryId) for a DEALER — one raw
+  // Inventory row IS the line; the group key `${productId}::${batchName}`
+  // for a RETAILER — see groupInventoryRows below, since a return line
+  // still ties to exactly one Inventory row but purchases.js can leave
+  // more than one row sharing the same product+batch). Selecting a
+  // DIFFERENT product from the picker below never touches this list — it
+  // only ever appends.
+  const [items, setItems] = useState([]);
+  // The picker <select>'s own value — always reset back to '' right after
+  // an item is added, so the same control is ready to add the next one
+  // rather than sitting on whatever was just picked.
+  const [pickerValue, setPickerValue] = useState('');
+
+  function addItem(key) {
+    if (!key) return;
+    setItems((prev) => [...prev, { key, quantity: '1', voucherId: '' }]);
+    setPickerValue('');
+  }
+  function updateItemQuantity(idx, value) {
+    setItems((prev) => prev.map((it, i) => (i === idx ? { ...it, quantity: value } : it)));
+  }
+  function updateItemVoucher(idx, value) {
+    setItems((prev) => prev.map((it, i) => (i === idx ? { ...it, voucherId: value } : it)));
+  }
+  function removeItem(idx) {
+    setItems((prev) => prev.filter((_, i) => i !== idx));
+  }
+
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   // Distinguishes "still fetching" from "fetched, and it's genuinely
@@ -200,25 +232,6 @@ export default function GoodsReturns() {
   // without this, a failed request and a merely-empty result look
   // identical to the user (nothing rendered, no explanation).
   const [loading, setLoading] = useState(true);
-
-  // RETAILER only — which inventory rows are checked for inclusion in the
-  // return being built. The Return Qty input is disabled until a row is
-  // checked; unchecking clears whatever quantity was entered.
-  const [selectedRows, setSelectedRows] = useState(new Set());
-  function toggleSelected(id) {
-    const next = new Set(selectedRows);
-    if (next.has(id)) {
-      next.delete(id);
-      setQuantities((prev) => {
-        const copy = { ...prev };
-        delete copy[id];
-        return copy;
-      });
-    } else {
-      next.add(id);
-    }
-    setSelectedRows(next);
-  }
 
   // DEALER only — the approved quantity/note the dealer is editing for
   // whichever retailer return is currently selected and still IN_REVIEW:
@@ -429,77 +442,50 @@ export default function GoodsReturns() {
   }
   useEffect(() => { load(); }, []);
 
-  // Whether the current inventory list was actually narrowed down to a
-  // specific purchase (see loadInventoryForVoucher below / goodsReturns.js
-  // GET /inventory?voucherId=). Drives the amber "couldn't match this
-  // voucher" hint in the picker — kept as its own flag rather than
-  // inferred from the fetched rows themselves, since an empty or
-  // fully-depleted purchase would otherwise look identical to an
-  // unresolved voucher.
-  const [voucherScopedToPurchase, setVoucherScopedToPurchase] = useState(false);
-
-  // Re-fetches the picker's inventory every time the chosen voucher
-  // changes, for both roles, so the products on offer — and their
-  // original Purchased Qty — always match whichever voucher (and
-  // therefore whichever purchase) is currently selected. Also re-fires
-  // back to the full unscoped list when the voucher is cleared — one
-  // small redundant fetch against what load() already got on mount, in
-  // exchange for keeping this effect simple.
-  useEffect(() => {
-    let cancelled = false;
-    async function loadInventoryForVoucher() {
-      try {
-        const { data } = await api.get('/goods-returns/inventory', voucherId ? { params: { voucherId } } : undefined);
-        if (cancelled) return;
-        setInventory(data.items);
-        setVoucherScopedToPurchase(data.scopedToPurchase);
-      } catch (err) {
-        if (!cancelled) {
-          console.error('Failed to load stock for this voucher:', err);
-          setError(err.response?.data?.error || 'Failed to load stock for this voucher / या व्हाउचरसाठी साठा लोड करण्यात अयशस्वी');
-        }
-      }
-    }
-    loadInventoryForVoucher();
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [voucherId]);
-
   // RETAILER only — a return line still ties to exactly one raw Inventory
   // row (its own batch, its own snapshotted rate), but purchases.js can
   // leave more than one Inventory row sharing the same product+batch (a
   // batch restocked across separate purchases, etc.) — same product name,
   // flavour, sizeWeight, brand AND batch, just a different row. The picker
-  // below shows ONE row per distinct product+batch, quantity summed
-  // across whichever raw rows match, marked with a * whenever that sum
-  // came from more than one row so it reads as "combined", not a single
-  // batch's own count. Selecting/entering a quantity against a summed row
-  // is resolved back down to its underlying raw rows at submit time (see
+  // below offers ONE option per distinct product+batch, quantity summed
+  // across whichever raw rows match. Picking it, then submitting, is
+  // resolved back down to its underlying raw rows (see
   // allocateGroupQuantity below) — the API itself is unchanged, still one
-  // inventoryId per line.
+  // inventoryId per line, all sharing whichever single voucher was chosen
+  // for this product line.
   function groupInventoryRows(rows) {
     const map = new Map();
     for (const row of rows) {
       const key = `${row.productId}::${row.batchName || ''}`;
       if (!map.has(key)) {
-        map.set(key, { key, product: row.product, batchName: row.batchName, rate: row.rate, quantity: 0, approvedQuantity: 0, purchasedQuantity: null, rows: [] });
+        map.set(key, {
+          key, product: row.product, batchName: row.batchName, rate: row.rate,
+          quantity: 0, approvedQuantity: 0,
+          eligibleVoucherIds: new Set(), purchasedQuantityByVoucherId: {},
+          rows: [],
+        });
       }
       const g = map.get(key);
       g.quantity += row.quantity;
       g.approvedQuantity += row.approvedQuantity || 0;
-      // purchasedQuantity only comes back once a voucher is selected and
-      // resolves to a purchase (see loadInventoryForVoucher above) — stays
-      // null here too when it's null on every underlying row, rather than
-      // quietly summing to 0.
-      if (row.purchasedQuantity != null) {
-        g.purchasedQuantity = (g.purchasedQuantity || 0) + row.purchasedQuantity;
+      // Every underlying raw row shares the same product+batch, so their
+      // eligibleVoucherIds/purchasedQuantityByVoucherId (computed
+      // server-side off that same key — see goodsReturns.js GET
+      // /inventory) should already agree; union them defensively rather
+      // than assume it.
+      for (const vid of row.eligibleVoucherIds || []) g.eligibleVoucherIds.add(vid);
+      for (const [vid, qty] of Object.entries(row.purchasedQuantityByVoucherId || {})) {
+        g.purchasedQuantityByVoucherId[vid] = (g.purchasedQuantityByVoucherId[vid] || 0) + qty;
       }
       g.rows.push(row);
     }
     // Oldest first, so a return draws down the earliest-stocked batch rows
     // before newer ones (FIFO) when a quantity has to be split across more
     // than one underlying row.
-    for (const g of map.values()) g.rows.sort((a, b) => a.id - b.id);
+    for (const g of map.values()) {
+      g.rows.sort((a, b) => a.id - b.id);
+      g.eligibleVoucherIds = [...g.eligibleVoucherIds];
+    }
     return [...map.values()];
   }
 
@@ -534,79 +520,93 @@ export default function GoodsReturns() {
     ? vouchers.filter((v) => v.type === 'PAYABLE' && String(v.supplierId) === String(supplierId))
     : vouchers;
 
-  // DEALER only — default to that supplier's first available voucher as
-  // soon as a supplier is chosen (directly, or auto-selected above because
-  // the dealer only has one) — one less click for the common case of a
-  // single open voucher, same "get straight to work" convenience the
-  // single-supplier auto-select already applies. Keyed only on supplierId,
-  // not on vouchers/eligibleVouchers, so this fires once per supplier
-  // change and never overrides a voucher the dealer has since picked
-  // manually.
-  useEffect(() => {
-    if (!isDealer || !supplierId) return;
-    const firstVoucher = vouchers.find((v) => v.type === 'PAYABLE' && String(v.supplierId) === String(supplierId));
-    setVoucherId(firstVoucher ? String(firstVoucher.id) : '');
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [supplierId]);
-
-  function setQuantity(inventoryId, value) {
-    setQuantities((prev) => ({ ...prev, [inventoryId]: value }));
-  }
-
-  // RETAILER only — filters the inventory list below down to one product
-  // at a time. Built from the retailer's own inventory rather than a
-  // separate /products call, so it only ever offers products the retailer
-  // actually holds stock of (and could therefore return).
-  const [productFilter, setProductFilter] = useState('');
-  const productOptions = !isDealer
-    ? [...new Map(inventory.map((r) => [r.productId, r.product?.name])).entries()]
-        .map(([id, name]) => ({ id, name }))
+  // RETAILER only — narrows the ADD-PRODUCT picker below down to one
+  // category at a time (purely a picker aid — it never hides anything
+  // already added to the list, since removing a product from the picker's
+  // options never removes it from `items`). Built from the retailer's own
+  // inventory rather than a separate /categories call, so it only ever
+  // offers categories the retailer actually holds stock in (and could
+  // therefore return). Replaces a per-PRODUCT filter — redundant now that
+  // the Add Product picker below is itself a searchable/scrollable list of
+  // every product, so narrowing it product-by-product added a step
+  // instead of saving one; narrowing by category (a coarser grouping the
+  // product list itself doesn't offer) is the filter actually worth
+  // having alongside it.
+  const [categoryFilter, setCategoryFilter] = useState('');
+  const categoryOptions = !isDealer
+    ? [...new Map(inventory.map((r) => [r.product?.categoryId, r.product?.category])).values()]
+        .filter(Boolean)
         .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
     : [];
-  const retailerInventory = productFilter
-    ? inventory.filter((r) => String(r.productId) === String(productFilter))
-    : inventory;
 
-  // allGroupedRetailerRows (from the full, unfiltered inventory) is what
-  // submission and the total below resolve against, so a quantity entered
-  // before the product filter was changed is never dropped. groupedRows is
-  // the filtered set actually rendered in the table.
-  const allGroupedRetailerRows = !isDealer ? groupInventoryRows(inventory) : [];
-  const groupedRetailerRows = !isDealer ? groupInventoryRows(retailerInventory) : [];
+  // One shared shape for both roles — a DEALER's picker works off raw
+  // Inventory rows (one row IS one line), a RETAILER's off product+batch
+  // groups (see groupInventoryRows above) — normalized here to the same
+  // `.key` field so the picker, the added-items table, and submitReturn
+  // below don't need to branch on role at every point, only where the two
+  // genuinely differ (how a key resolves back to {inventoryId, quantity}
+  // pairs for the API).
+  const availableRows = isDealer
+    ? eligibleInventory.map((r) => ({ ...r, key: String(r.id) }))
+    : groupInventoryRows(inventory);
+  const availableRowsByKey = new Map(availableRows.map((r) => [r.key, r]));
 
-  const enteredTotal = isDealer
-    ? eligibleInventory.reduce((sum, row) => sum + (Number(quantities[row.id]) || 0) * Number(row.rate || 0), 0)
-    : allGroupedRetailerRows.reduce((sum, g) => {
-        const qty = Math.min(Number(quantities[g.key]) || 0, g.quantity);
-        return sum + qty * Number(g.rate || 0);
-      }, 0);
+  // The picker's own options — every row not already added to `items`
+  // (picking the same batch/group twice would just create a second,
+  // redundant line for it — better to fold that into raising the
+  // quantity on the one line already there), narrowed further by
+  // categoryFilter for a RETAILER.
+  const usedKeys = new Set(items.map((it) => it.key));
+  const pickerOptions = availableRows
+    .filter((r) => !usedKeys.has(r.key))
+    .filter((r) => !categoryFilter || String(r.product?.categoryId) === String(categoryFilter));
+
+  const enteredTotal = items.reduce((sum, it) => {
+    const row = availableRowsByKey.get(it.key);
+    if (!row) return sum;
+    const qty = Math.min(Number(it.quantity) || 0, row.quantity);
+    return sum + qty * Number(row.rate || 0);
+  }, 0);
 
   async function submitReturn() {
     setError('');
-    // DEALER: quantities is keyed by raw inventoryId, same as always.
-    // RETAILER: quantities is keyed by product+batch group — resolved
-    // back down to one or more underlying {inventoryId, quantity} lines
-    // here, since the API itself still only ever accepts a single
-    // inventoryId per line (see allocateGroupQuantity above).
-    const items = isDealer
-      ? Object.entries(quantities)
-          .filter(([, qty]) => Number(qty) > 0)
-          .map(([inventoryId, qty]) => ({ inventoryId: Number(inventoryId), quantity: Number(qty) }))
-      : allGroupedRetailerRows.flatMap((g) => {
-          const qty = Number(quantities[g.key]) || 0;
-          return qty > 0 ? allocateGroupQuantity(g, qty) : [];
-        });
-
-    if (!items.length) {
-      setError('Enter a quantity to return for at least one item / किमान एका वस्तूसाठी परतीचे प्रमाण भरा');
-      return;
-    }
     if (isDealer && !supplierId) {
       setError('Select a supplier / पुरवठादार निवडा');
       return;
     }
-    if (!voucherId) {
-      setError('Select a voucher to credit this return against / हे परत कोणत्या व्हाउचरवर जमा करायचे ते निवडा');
+    if (!items.length) {
+      setError('Add at least one product to return / परत करण्यासाठी किमान एक उत्पादन जोडा');
+      return;
+    }
+    if (items.some((it) => !it.quantity || Number(it.quantity) <= 0)) {
+      setError('Enter a quantity to return for every product added / जोडलेल्या प्रत्येक उत्पादनासाठी परतीचे प्रमाण भरा');
+      return;
+    }
+    if (items.some((it) => !it.voucherId)) {
+      setError('Select a voucher for every product being returned / परत केल्या जाणाऱ्या प्रत्येक उत्पादनासाठी व्हाउचर निवडा');
+      return;
+    }
+
+    // DEALER: each item's key IS the raw inventoryId already.
+    // RETAILER: each item's key is a product+batch group — resolved back
+    // down to one or more underlying {inventoryId, quantity} lines here,
+    // since the API itself still only ever accepts a single inventoryId
+    // per line (see allocateGroupQuantity above); every raw row split out
+    // of the same group shares that group's one chosen voucher.
+    const payloadItems = isDealer
+      ? items.map((it) => ({
+          inventoryId: Number(it.key),
+          quantity: Number(it.quantity),
+          voucherId: Number(it.voucherId),
+        }))
+      : items.flatMap((it) => {
+          const g = availableRowsByKey.get(it.key);
+          if (!g) return [];
+          return allocateGroupQuantity(g, Number(it.quantity)).map((line) => ({ ...line, voucherId: Number(it.voucherId) }));
+        });
+
+    if (!payloadItems.length) {
+      setError('Add at least one product to return / परत करण्यासाठी किमान एक उत्पादन जोडा');
       return;
     }
 
@@ -614,12 +614,10 @@ export default function GoodsReturns() {
     try {
       await api.post('/goods-returns', {
         supplierId: isDealer ? Number(supplierId) : undefined,
-        voucherId: Number(voucherId),
-        items,
+        items: payloadItems,
       });
-      setQuantities({});
-      setSelectedRows(new Set());
-      setVoucherId('');
+      setItems([]);
+      setPickerValue('');
       load();
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to record return / परत नोंदवण्यात अयशस्वी');
@@ -627,6 +625,7 @@ export default function GoodsReturns() {
       setSubmitting(false);
     }
   }
+
 
   async function markForReview(id) {
     try {
@@ -845,7 +844,7 @@ export default function GoodsReturns() {
                       <select
                         className="border rounded px-2 py-1.5 text-sm w-64"
                         value={supplierId}
-                        onChange={(e) => { setSupplierId(e.target.value); setQuantities({}); setVoucherId(''); }}
+                        onChange={(e) => { setSupplierId(e.target.value); setItems([]); setPickerValue(''); }}
                       >
                         <option value="">Select supplier / पुरवठादार निवडा</option>
                         {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
@@ -858,84 +857,103 @@ export default function GoodsReturns() {
                   )}
 
                   {supplierId && (
-                    <div>
-                      <label className="text-xs text-gray-500 flex flex-col leading-tight mb-1">
-                        <span>Voucher to credit</span>
-                        <span className="text-orange-700">कोणत्या व्हाउचरवर जमा करायचे</span>
-                      </label>
-                      {eligibleVouchers.length === 0 ? (
-                        <div className="text-sm text-gray-400 italic">No open vouchers for this counterparty / या पक्षासाठी कोणतेही उघडे व्हाउचर नाही</div>
-                      ) : (
-                        <select
-                          className="border rounded px-2 py-1.5 text-sm w-80"
-                          value={voucherId}
-                          onChange={(e) => {
-                            // A new voucher means a new (or no) purchase to
-                            // scope the picker to — whatever quantity was
-                            // typed against the previous voucher's rows may
-                            // not even be in the list anymore, so start
-                            // clean rather than leave stale entries lying
-                            // around.
-                            setVoucherId(e.target.value);
-                            setQuantities({});
-                          }}
-                        >
-                          <option value="">Select voucher... / व्हाउचर निवडा...</option>
-                          {eligibleVouchers.map((v) => (
-                            <option key={v.id} value={v.id}>
-                              #{v.id} · ₹{Number(v.amount).toFixed(2)} ({v.status}) — ₹{voucherRemaining(v).toFixed(2)} remaining
-                            </option>
-                          ))}
-                        </select>
-                      )}
-                    </div>
-                  )}
-
-                  {supplierId && (
                     eligibleInventory.length === 0 ? (
                       <div className="text-sm text-gray-400 italic">No stock available to return / परत करण्यासाठी साठा उपलब्ध नाही</div>
                     ) : (
                       <>
-                        {voucherId && !voucherScopedToPurchase && (
-                          <div className="text-xs text-amber-600">
-                            Couldn't match this voucher to a specific purchase — showing all your stock instead / हे व्हाउचर विशिष्ट खरेदीशी जुळवता आले नाही — त्याऐवजी तुमचा संपूर्ण साठा दाखवत आहे
+                        <div>
+                          <label className="text-xs text-gray-500 flex flex-col leading-tight mb-1">
+                            <span>Add Product</span>
+                            <span className="text-orange-700">उत्पादन जोडा</span>
+                          </label>
+                          <select
+                            className="border rounded px-2 py-1.5 text-sm w-full md:w-96"
+                            value={pickerValue}
+                            onChange={(e) => addItem(e.target.value)}
+                          >
+                            <option value="">Select product to add... / जोडण्यासाठी उत्पादन निवडा...</option>
+                            {pickerOptions.map((row) => (
+                              <option key={row.key} value={row.key}>
+                                {row.product?.name}{productDetails(row.product) ? ` — ${productDetails(row.product)}` : ''}
+                                {row.batchName ? ` (Batch: ${row.batchName})` : ''} · Qty {row.quantity}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        {items.length === 0 ? (
+                          <div className="text-sm text-gray-400 italic">No products added yet — pick one above to start building the return / अद्याप कोणतेही उत्पादन जोडलेले नाही — परत तयार करण्यासाठी वरील निवडा</div>
+                        ) : (
+                          <div className="max-h-[60vh] overflow-y-auto">
+                          <table className="w-full text-sm">
+                            <thead className="sticky top-0 bg-white">
+                              <tr className="text-left text-gray-500 border-b">
+                                <th className="py-2">Product / उत्पादन</th>
+                                <th className="py-2">Batch / बॅच</th>
+                                <th className="py-2 text-right">Inventory Qty / साठा प्रमाण</th>
+                                <th className="py-2 text-right">Cost Price / खरेदी किंमत</th>
+                                <th className="py-2 text-right w-28">Return Qty / परत प्रमाण</th>
+                                <th className="py-2 w-64">Voucher to credit / कोणत्या व्हाउचरवर जमा करायचे</th>
+                                <th className="py-2 w-8"></th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {items.map((it, idx) => {
+                                const row = availableRowsByKey.get(it.key);
+                                if (!row) return null;
+                                const rowVouchers = eligibleVouchers.filter((v) => (row.eligibleVoucherIds || []).includes(v.id));
+                                const chosenPurchasedQty = it.voucherId ? row.purchasedQuantityByVoucherId?.[it.voucherId] : undefined;
+                                return (
+                                  <tr key={it.key} className="border-b last:border-0 align-top">
+                                    <td className="py-2"><ProductCell product={row.product} /></td>
+                                    <td className="py-2 text-gray-500">{row.batchName || '—'}</td>
+                                    <td className="py-2 text-right">{row.quantity}</td>
+                                    <td className="py-2 text-right">₹{inventoryPrice(row, isDealer).toFixed(2)}</td>
+                                    <td className="py-2 text-right">
+                                      <input
+                                        type="number"
+                                        min="1"
+                                        max={row.quantity}
+                                        className="border rounded px-2 py-1 w-24 text-right"
+                                        value={it.quantity}
+                                        onChange={(e) => updateItemQuantity(idx, e.target.value)}
+                                      />
+                                    </td>
+                                    <td className="py-2">
+                                      {rowVouchers.length === 0 ? (
+                                        <div className="text-xs text-gray-400 italic">No open voucher for this product / या उत्पादनासाठी उघडे व्हाउचर नाही</div>
+                                      ) : (
+                                        <select
+                                          className="border rounded px-2 py-1 text-xs w-full"
+                                          value={it.voucherId}
+                                          onChange={(e) => updateItemVoucher(idx, e.target.value)}
+                                        >
+                                          <option value="">Select voucher... / व्हाउचर निवडा...</option>
+                                          {rowVouchers.map((v) => (
+                                            <option key={v.id} value={v.id}>
+                                              #{v.id} · ₹{voucherRemaining(v).toFixed(2)} remaining
+                                            </option>
+                                          ))}
+                                        </select>
+                                      )}
+                                      {it.voucherId && chosenPurchasedQty === undefined && (
+                                        <div className="text-[10px] text-amber-600 mt-0.5">Couldn't match this voucher to a specific purchase / हे व्हाउचर विशिष्ट खरेदीशी जुळवता आले नाही</div>
+                                      )}
+                                      {it.voucherId && chosenPurchasedQty !== undefined && (
+                                        <div className="text-[10px] text-gray-400 mt-0.5">Purchased qty / खरेदी प्रमाण: {chosenPurchasedQty}</div>
+                                      )}
+                                    </td>
+                                    <td className="py-2 text-right">
+                                      <button type="button" onClick={() => removeItem(idx)}
+                                        className="text-gray-400 hover:text-red-600 text-xs" title="Remove / काढा">✕</button>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
                           </div>
                         )}
-                        <div className="max-h-[60vh] overflow-y-auto">
-                        <table className="w-full text-sm">
-                          <thead className="sticky top-0 bg-white">
-                            <tr className="text-left text-gray-500 border-b">
-                              <th className="py-2">Product / उत्पादन</th>
-                              <th className="py-2">Batch / बॅच</th>
-                              <th className="py-2 text-right">Purchased Qty / खरेदी प्रमाण</th>
-                              <th className="py-2 text-right">Inventory Qty / साठा प्रमाण</th>
-                              <th className="py-2 text-right">Cost Price / खरेदी किंमत</th>
-                              <th className="py-2 text-right w-32">Return Qty / परत प्रमाण</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {eligibleInventory.map((row) => (
-                              <tr key={row.id} className="border-b last:border-0">
-                                <td className="py-2"><ProductCell product={row.product} /></td>
-                                <td className="py-2 text-gray-500">{row.batchName || '—'}</td>
-                                <td className="py-2 text-right text-gray-500">{row.purchasedQuantity ?? '—'}</td>
-                                <td className="py-2 text-right">{row.quantity}</td>
-                                <td className="py-2 text-right">₹{inventoryPrice(row, isDealer).toFixed(2)}</td>
-                                <td className="py-2 text-right">
-                                  <input
-                                    type="number"
-                                    min="0"
-                                    max={row.quantity}
-                                    className="border rounded px-2 py-1 w-24 text-right"
-                                    value={quantities[row.id] || ''}
-                                    onChange={(e) => setQuantity(row.id, e.target.value)}
-                                  />
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                        </div>
                       </>
                     )
                   )}
@@ -949,117 +967,127 @@ export default function GoodsReturns() {
                     </div>
                   )}
 
-                  <div>
-                    <label className="text-xs text-gray-500 flex flex-col leading-tight mb-1">
-                      <span>Voucher to credit</span>
-                      <span className="text-orange-700">कोणत्या व्हाउचरवर जमा करायचे</span>
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <label className="text-xs text-gray-500 flex flex-col leading-tight">
+                      <span>Filter by Category</span>
+                      <span className="text-orange-700">श्रेणीनुसार फिल्टर करा</span>
                     </label>
-                    {eligibleVouchers.length === 0 ? (
-                      <div className="text-sm text-gray-400 italic">No open vouchers / कोणतेही उघडे व्हाउचर नाही</div>
-                    ) : (
-                      <select
-                        className="border rounded px-2 py-1.5 text-sm w-80"
-                        value={voucherId}
-                        onChange={(e) => {
-                          // A new voucher means a new (or no) purchase to
-                          // scope the picker to — whatever was checked/typed
-                          // against the previous voucher's rows may not even
-                          // be in the list anymore, so start clean rather
-                          // than leave stale selections lying around.
-                          setVoucherId(e.target.value);
-                          setQuantities({});
-                          setSelectedRows(new Set());
-                        }}
-                      >
-                        <option value="">Select voucher... / व्हाउचर निवडा...</option>
-                        {eligibleVouchers.map((v) => (
-                          <option key={v.id} value={v.id}>
-                            #{v.id} · ₹{Number(v.amount).toFixed(2)} — ₹{voucherRemaining(v).toFixed(2)} left
-                          </option>
-                        ))}
-                      </select>
-                    )}
+                    <select
+                      className="border rounded px-2 py-1.5 text-sm"
+                      value={categoryFilter}
+                      onChange={(e) => setCategoryFilter(e.target.value)}
+                    >
+                      <option value="">All Categories / सर्व श्रेणी</option>
+                      {categoryOptions.map((c) => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
+                      ))}
+                    </select>
                   </div>
 
-                  {!voucherId ? (
-                    <div className="text-sm text-gray-400 italic">
-                      Select a voucher above to see the products from that purchase / वरील व्हाउचर निवडा — त्या खरेदीतील उत्पादने दिसतील
-                    </div>
+                  {loading ? (
+                    <div className="text-sm text-gray-400 italic">Loading... / लोड होत आहे...</div>
                   ) : (
                     <>
-                      <div className="flex items-center justify-between flex-wrap gap-2">
-                        <label className="text-xs text-gray-500 flex flex-col leading-tight">
-                          <span>Filter by Product</span>
-                          <span className="text-orange-700">उत्पादनानुसार फिल्टर करा</span>
+                      <div>
+                        <label className="text-xs text-gray-500 flex flex-col leading-tight mb-1">
+                          <span>Add Product</span>
+                          <span className="text-orange-700">उत्पादन जोडा</span>
                         </label>
-                        <select
-                          className="border rounded px-2 py-1.5 text-sm"
-                          value={productFilter}
-                          onChange={(e) => setProductFilter(e.target.value)}
-                        >
-                          <option value="">All Products / सर्व उत्पादने</option>
-                          {productOptions.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                        </select>
+                        {pickerOptions.length === 0 ? (
+                          <div className="text-sm text-gray-400 italic">No matching stock available to return / जुळणारा साठा उपलब्ध नाही</div>
+                        ) : (
+                          <select
+                            className="border rounded px-2 py-1.5 text-sm w-full md:w-96"
+                            value={pickerValue}
+                            onChange={(e) => addItem(e.target.value)}
+                          >
+                            <option value="">Select product to add... / जोडण्यासाठी उत्पादन निवडा...</option>
+                            {pickerOptions.map((row) => (
+                              <option key={row.key} value={row.key}>
+                                {row.product?.name}{productDetails(row.product) ? ` — ${productDetails(row.product)}` : ''}
+                                {row.batchName ? ` (Batch: ${row.batchName})` : ''} · Qty {row.quantity}
+                              </option>
+                            ))}
+                          </select>
+                        )}
                       </div>
 
-                      {loading ? (
-                        <div className="text-sm text-gray-400 italic">Loading... / लोड होत आहे...</div>
-                      ) : groupedRetailerRows.length === 0 ? (
-                        <div className="text-sm text-gray-400 italic">No stock from this purchase available to return / या खरेदीतील परत करण्यासाठी साठा उपलब्ध नाही</div>
+                      {items.length === 0 ? (
+                        <div className="text-sm text-gray-400 italic">No products added yet — pick one above to start building the return / अद्याप कोणतेही उत्पादन जोडलेले नाही — परत तयार करण्यासाठी वरील निवडा</div>
                       ) : (
                         <>
-                          {!voucherScopedToPurchase && (
-                            <div className="text-xs text-amber-600">
-                              Couldn't match this voucher to a specific purchase — showing all your stock instead / हे व्हाउचर विशिष्ट खरेदीशी जुळवता आले नाही — त्याऐवजी तुमचा संपूर्ण साठा दाखवत आहे
-                            </div>
-                          )}
                           <div className="max-h-[60vh] overflow-y-auto">
                           <table className="w-full text-sm">
                             <thead className="sticky top-0 bg-white">
                               <tr className="text-left text-gray-500 border-b">
-                                <th className="py-2 w-8"></th>
                                 <th className="py-2">Product / उत्पादन</th>
                                 <th className="py-2">Batch / बॅच</th>
-                                <th className="py-2 text-right">Purchased Qty / खरेदी प्रमाण</th>
                                 <th className="py-2 text-right">Inventory Qty / साठा प्रमाण</th>
                                 <th className="py-2 text-right">Cost Price / खरेदी किंमत</th>
-                                <th className="py-2 text-right w-28">Return Qty / परत प्रमाण</th>
-                                <th className="py-2 text-right w-28">Approved Qty / मंजूर प्रमाण</th>
+                                <th className="py-2 text-right w-24">Return Qty / परत प्रमाण</th>
+                                <th className="py-2 text-right w-24">Approved Qty / मंजूर प्रमाण</th>
+                                <th className="py-2 w-56">Voucher to credit / कोणत्या व्हाउचरवर जमा करायचे</th>
+                                <th className="py-2 w-8"></th>
                               </tr>
                             </thead>
                             <tbody>
-                              {groupedRetailerRows.map((g) => (
-                                <tr key={g.key} className="border-b last:border-0">
-                                  <td className="py-2">
-                                    <input
-                                      type="checkbox"
-                                      checked={selectedRows.has(g.key)}
-                                      onChange={() => toggleSelected(g.key)}
-                                    />
-                                  </td>
-                                  <td className="py-2"><ProductCell product={g.product} /></td>
-                                  <td className="py-2 text-gray-500">{g.batchName || '—'}</td>
-                                  <td className="py-2 text-right text-gray-500">{g.purchasedQuantity ?? '—'}</td>
-                                  <td className="py-2 text-right">{g.quantity}{g.rows.length > 1 && '*'}</td>
-                                  <td className="py-2 text-right">₹{Number(g.rate || 0).toFixed(2)}</td>
-                                  <td className="py-2 text-right">
-                                    <input
-                                      type="number"
-                                      min="0"
-                                      max={g.quantity}
-                                      disabled={!selectedRows.has(g.key)}
-                                      className="border rounded px-2 py-1 w-20 text-right disabled:bg-gray-50 disabled:text-gray-300"
-                                      value={quantities[g.key] || ''}
-                                      onChange={(e) => setQuantity(g.key, e.target.value)}
-                                    />
-                                  </td>
-                                  <td className="py-2 text-right text-gray-500">{g.approvedQuantity || 0}</td>
-                                </tr>
-                              ))}
+                              {items.map((it, idx) => {
+                                const g = availableRowsByKey.get(it.key);
+                                if (!g) return null;
+                                const rowVouchers = eligibleVouchers.filter((v) => g.eligibleVoucherIds.includes(v.id));
+                                const chosenPurchasedQty = it.voucherId ? g.purchasedQuantityByVoucherId?.[it.voucherId] : undefined;
+                                return (
+                                  <tr key={it.key} className="border-b last:border-0 align-top">
+                                    <td className="py-2"><ProductCell product={g.product} /></td>
+                                    <td className="py-2 text-gray-500">{g.batchName || '—'}</td>
+                                    <td className="py-2 text-right">{g.quantity}{g.rows.length > 1 && '*'}</td>
+                                    <td className="py-2 text-right">₹{Number(g.rate || 0).toFixed(2)}</td>
+                                    <td className="py-2 text-right">
+                                      <input
+                                        type="number"
+                                        min="1"
+                                        max={g.quantity}
+                                        className="border rounded px-2 py-1 w-20 text-right"
+                                        value={it.quantity}
+                                        onChange={(e) => updateItemQuantity(idx, e.target.value)}
+                                      />
+                                    </td>
+                                    <td className="py-2 text-right text-gray-500">{g.approvedQuantity || 0}</td>
+                                    <td className="py-2">
+                                      {rowVouchers.length === 0 ? (
+                                        <div className="text-xs text-gray-400 italic">No open voucher / उघडे व्हाउचर नाही</div>
+                                      ) : (
+                                        <select
+                                          className="border rounded px-2 py-1 text-xs w-full"
+                                          value={it.voucherId}
+                                          onChange={(e) => updateItemVoucher(idx, e.target.value)}
+                                        >
+                                          <option value="">Select voucher... / व्हाउचर निवडा...</option>
+                                          {rowVouchers.map((v) => (
+                                            <option key={v.id} value={v.id}>
+                                              #{v.id} · ₹{voucherRemaining(v).toFixed(2)} left
+                                            </option>
+                                          ))}
+                                        </select>
+                                      )}
+                                      {it.voucherId && chosenPurchasedQty === undefined && (
+                                        <div className="text-[10px] text-amber-600 mt-0.5">Couldn't match this voucher to a specific purchase / हे व्हाउचर विशिष्ट खरेदीशी जुळवता आले नाही</div>
+                                      )}
+                                      {it.voucherId && chosenPurchasedQty !== undefined && (
+                                        <div className="text-[10px] text-gray-400 mt-0.5">Purchased qty / खरेदी प्रमाण: {chosenPurchasedQty}</div>
+                                      )}
+                                    </td>
+                                    <td className="py-2 text-right">
+                                      <button type="button" onClick={() => removeItem(idx)}
+                                        className="text-gray-400 hover:text-red-600 text-xs" title="Remove / काढा">✕</button>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
                             </tbody>
                           </table>
                           </div>
-                          {groupedRetailerRows.some((g) => g.rows.length > 1) && (
+                          {items.some((it) => (availableRowsByKey.get(it.key)?.rows.length || 0) > 1) && (
                             <div className="text-xs text-gray-400 mt-1">* combined quantity across more than one purchase, same product and batch / * एकाच उत्पादनाच्या आणि बॅचच्या अनेक खरेदींमधील एकत्रित प्रमाण</div>
                           )}
                         </>

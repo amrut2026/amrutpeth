@@ -353,7 +353,16 @@ export default function Sales() {
                   onClick={() => loadSaleIntoCart(s)}>
                   <td className="p-2">{s.id}</td>
                   <td className="p-2">{new Date(s.date).toLocaleString()}</td>
-                  <td className="p-2">{s.customerType}{s.posTransactionRef ? ` · ${s.posTransactionRef}` : ''}</td>
+                  <td className="p-2">
+                    {s.customerType}{s.posTransactionRef ? ` · ${s.posTransactionRef}` : ''}
+                    {s.channel === 'AGGREGATOR' && (
+                      <span
+                        className="ml-1 text-xs bg-sky-50 text-sky-700 font-medium px-1.5 py-0.5 rounded border border-sky-200"
+                        title={s.placedByUser?.username ? `Placed by aggregator login: ${s.placedByUser.username}` : 'Placed by an aggregator integration'}>
+                        Aggregator<span className="block">एग्रीगेटर</span>
+                      </span>
+                    )}
+                  </td>
                   <td className="p-2">{s.paymentMode || '—'}</td>
                   <td className="p-2">{s.totalAmount != null ? `₹${Number(s.totalAmount).toFixed(2)}` : '—'}</td>
                   <td className="p-2">
@@ -839,7 +848,16 @@ export default function Sales() {
         <div className="bg-white p-4 rounded shadow sticky top-4">
           {activeSaleLocked ? (
             <>
-              <h2 className="font-semibold mb-3">Sale #{activeSale.id}</h2>
+              <h2 className="font-semibold mb-3">
+                Sale #{activeSale.id}
+                {activeSale.channel === 'AGGREGATOR' && (
+                  <span
+                    className="ml-2 align-middle text-xs bg-sky-50 text-sky-700 font-medium px-1.5 py-0.5 rounded border border-sky-200"
+                    title={activeSale.placedByUser?.username ? `Placed by aggregator login: ${activeSale.placedByUser.username}` : 'Placed by an aggregator integration'}>
+                    Via Aggregator<span className="block">एग्रीगेटरमार्फत</span>
+                  </span>
+                )}
+              </h2>
               <div className="text-3xl font-bold mb-1">
                 ₹{activeSale.totalAmount != null ? Number(activeSale.totalAmount).toFixed(2) : total.toFixed(2)}
               </div>
