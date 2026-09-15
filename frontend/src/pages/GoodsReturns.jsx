@@ -88,6 +88,19 @@ function counterpartyNameFor(gr) {
   return gr.supplier?.name || gr.retailer?.name || gr.sourceDealer?.name || '—';
 }
 
+// Which direction a return went, based on gr.kind (set when the three
+// return lists — own/toSupplier/fromRetailer — are merged into
+// allReturns): a dealer's own return goes TO a supplier, a retailer's
+// own return goes TO their dealer, and a dealer reviewing a retailer's
+// return receives it FROM that retailer. Used on the printed receipt so
+// it's explicit which party the goods moved to/from, not just a name.
+function counterpartyLabelFor(gr) {
+  if (gr.kind === 'toSupplier') return { en: 'Returned to Supplier', mr: 'पुरवठादाराला परत केले' };
+  if (gr.kind === 'own') return { en: 'Returned to Dealer', mr: 'वितरकाला परत केले' };
+  if (gr.kind === 'fromRetailer') return { en: 'Returned from Retailer', mr: 'किरकोळ विक्रेत्याकडून परत आले' };
+  return { en: 'Party', mr: '' };
+}
+
 // Opens a formatted, print-ready receipt for a single goods return in a
 // new tab and triggers the browser print dialog. Available regardless of
 // the return's status — the current state (badge text) is printed on the
@@ -128,7 +141,7 @@ function printReturnDetail(gr) {
       <body>
         <h1>Goods Return #${gr.id}</h1>
         <div class="meta">
-          ${counterpartyNameFor(gr)}<br/>
+          <div><span class="muted">${counterpartyLabelFor(gr).en}${counterpartyLabelFor(gr).mr ? ` / ${counterpartyLabelFor(gr).mr}` : ''}:</span> <strong>${counterpartyNameFor(gr)}</strong></div>
           ${new Date(gr.date).toLocaleString()}<br/>
           <span class="badge">${badge.text}</span>
         </div>
