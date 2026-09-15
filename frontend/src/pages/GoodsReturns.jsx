@@ -215,8 +215,19 @@ export default function GoodsReturns() {
     setItems((prev) => [...prev, { key, quantity: '1', voucherId: '' }]);
     setPickerValue('');
   }
+  // Clamps to the row/group's available quantity (availableRowsByKey,
+  // defined further down but in scope by the time this runs, since it's
+  // only ever called from an onChange after render) — typing more than
+  // what's on hand snaps back to the max instead of accepting it.
   function updateItemQuantity(idx, value) {
-    setItems((prev) => prev.map((it, i) => (i === idx ? { ...it, quantity: value } : it)));
+    setItems((prev) => prev.map((it, i) => {
+      if (i !== idx) return it;
+      const row = availableRowsByKey.get(it.key);
+      const max = row ? row.quantity : undefined;
+      const num = Number(value);
+      const next = max !== undefined && Number.isFinite(num) && num > max ? String(max) : value;
+      return { ...it, quantity: next };
+    }));
   }
   function updateItemVoucher(idx, value) {
     setItems((prev) => prev.map((it, i) => (i === idx ? { ...it, voucherId: value } : it)));
