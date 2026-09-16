@@ -144,11 +144,13 @@ export default function Purchases() {
   const [quantityError, setQuantityError] = useState('');
   const [savingQuantities, setSavingQuantities] = useState(false);
 
-  // DEALER-only: correct Cost Price / Dealer Commission / MRP / Discount on
-  // an already-CONFIRMED purchase (a mistake caught after inventory's
-  // already been credited and the voucher already raised — see
+  // DEALER-only: correct Cost Price / Dealer Commission / MRP / Discount /
+  // Expiry Date on an already-CONFIRMED purchase (a mistake caught after
+  // inventory's already been credited and the voucher already raised — see
   // purchases.js PATCH /:id/prices, which also cascades the correction
-  // into any retailer sale already fulfilled from the same batch).
+  // into any retailer sale already fulfilled from the same batch, and —
+  // for expiry specifically — into that retailer's own Inventory too, if
+  // they've already received it).
   // sellingPrice/retailerSellingPrice are shown recalculated live from
   // these edits, same formulas as the create form, but the server always
   // recomputes them itself rather than trusting what's submitted.
@@ -214,6 +216,7 @@ export default function Purchases() {
         dealerCommission: it.dealerCommission != null ? String(it.dealerCommission) : '',
         mrp: it.mrp != null ? String(it.mrp) : '',
         discount: it.discount != null ? String(it.discount) : '0',
+        expiryDate: toMonthInputValue(it.expiryDate),
       };
     });
     setPriceEdits(edits);
@@ -241,9 +244,14 @@ export default function Purchases() {
       dealerCommission: priceEdits[it.id]?.dealerCommission,
       mrp: priceEdits[it.id]?.mrp,
       discount: priceEdits[it.id]?.discount,
+      expiryDate: priceEdits[it.id]?.expiryDate,
     }));
     if (payloadItems.some((it) => it.rate === '' || it.dealerCommission === '' || it.mrp === '' || it.discount === '')) {
       setPriceError('Cost Price, Dealer Commission, MRP, and Discount % are required for every item / प्रत्येक वस्तूसाठी क्रय किंमत, वितरक कमिशन, एमआरपी आणि सवलत % आवश्यक आहे');
+      return;
+    }
+    if (payloadItems.some((it) => !it.expiryDate)) {
+      setPriceError('Expiry Date is required for every item / प्रत्येक वस्तूसाठी एक्सपायरी तारीख आवश्यक आहे');
       return;
     }
     setSavingPrices(true);
@@ -257,8 +265,8 @@ export default function Purchases() {
       setPriceEdits({});
       setPriceSuccessMessage(
         data.affectedSaleCount > 0
-          ? `Prices updated — also corrected ${data.affectedSaleCount} downstream retailer sale(s) and their voucher(s). / किंमती अद्ययावत केल्या — ${data.affectedSaleCount} किरकोळ विक्रेत्यांच्या विक्री आणि व्हाउचरमध्येही दुरुस्ती केली.`
-          : 'Prices updated. / किंमती अद्ययावत केल्या.'
+          ? `Prices and expiry updated — also corrected ${data.affectedSaleCount} downstream retailer sale(s) and their voucher(s). / किंमती आणि एक्सपायरी अद्ययावत केल्या — ${data.affectedSaleCount} किरकोळ विक्रेत्यांच्या विक्री आणि व्हाउचरमध्येही दुरुस्ती केली.`
+          : 'Prices and expiry updated. / किंमती आणि एक्सपायरी अद्ययावत केल्या.'
       );
     } catch (err) {
       setPriceError(err.response?.data?.error || 'Failed to update pricing / किंमत अद्ययावत करण्यात अयशस्वी');
@@ -852,7 +860,7 @@ export default function Purchases() {
                     {user.role === 'DEALER' && (selectedPurchase.status === 'CONFIRMED' || selectedPurchase.status === 'MODIFIED') && !editingPrices && (
                       <button type="button" onClick={startEditPrices}
                         className="text-xs bg-white border border-emerald-700 text-emerald-700 px-3 py-1.5 rounded hover:bg-emerald-50">
-                        Correct Prices<span className="block">किंमती दुरुस्त करा</span>
+                        Correct Prices / Expiry<span className="block">किंमती / एक्सपायरी दुरुस्त करा</span>
                       </button>
                     )}
                     {statusAction(selectedPurchase)}
@@ -1006,7 +1014,13 @@ export default function Purchases() {
                               </td>
                               <td className="p-1">₹{editingPrices ? (liveRetailerPrice || '—') : (it.retailerSellingPrice ?? computeRetailerPrice(it))}</td>
                               <td className="p-1">{formatMMYYYY(it.manufacturingDate)}</td>
-                              <td className="p-1">{formatMMYYYY(it.expiryDate)}</td>
+                              <td className="p-1">
+                                {editingPrices ? (
+                                  <input type="month" className="border rounded px-1 py-0.5 w-28"
+                                    value={edit?.expiryDate ?? ''}
+                                    onChange={(e) => updatePriceEdit(it.id, 'expiryDate', e.target.value)} />
+                                ) : formatMMYYYY(it.expiryDate)}
+                              </td>
                             </tr>
                           );
                         })}

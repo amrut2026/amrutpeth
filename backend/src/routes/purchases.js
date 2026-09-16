@@ -27,13 +27,16 @@ function minimalItemFieldsError(items) {
 // Validation + recompute for PATCH /:id/prices below — mirrors the same
 // formulas Purchases.jsx uses client-side (computeSellingPrice /
 // computeRetailerPrice), so a correction here always lands on the same
-// numbers the dealer would see on screen while entering it.
+// numbers the dealer would see on screen while entering it. expiryDate is
+// corrected alongside pricing rather than through a separate endpoint —
+// same "mistake caught after CONFIRMED" moment, same cascade targets.
 function priceEditFieldsError(items) {
   for (const i of items) {
     if (i.rate === undefined || i.rate === '' || Number(i.rate) <= 0) return 'Cost price is required and must be greater than zero for every item';
     if (i.dealerCommission === undefined || i.dealerCommission === '' || Number(i.dealerCommission) < 0) return 'Dealer commission is required for every item';
     if (i.mrp === undefined || i.mrp === '' || Number(i.mrp) <= 0) return 'MRP is required and must be greater than zero for every item';
     if (i.discount === undefined || i.discount === '' || Number(i.discount) < 0) return 'Discount % is required for every item';
+    if (!i.expiryDate || isNaN(new Date(i.expiryDate).getTime())) return 'A valid expiry date is required for every item';
   }
   return null;
 }
@@ -483,14 +486,15 @@ router.patch('/:id/status', authRequired, requireRole('DEALER', 'RETAILER'), asy
 });
 
 // PATCH /api/purchases/:id/prices — DEALER only. Corrects Cost Price,
-// Dealer Commission, MRP, and Discount % on one or more items of an
-// already-CONFIRMED purchase (a mistake caught after the fact, not the
-// pre-confirmation edit PUT /:id already covers). sellingPrice and
+// Dealer Commission, MRP, Discount %, and Expiry Date on one or more items
+// of an already-CONFIRMED purchase (a mistake caught after the fact, not
+// the pre-confirmation edit PUT /:id already covers). sellingPrice and
 // retailerSellingPrice are always recalculated here from the corrected
 // values, never trusted from the client — same formulas Purchases.jsx uses
 // on screen (see computeSellingPrice/computeRetailerPrice above).
 //
-// Cascades everywhere this batch's pricing already flowed to:
+// Cascades everywhere this batch's pricing (and now expiry) already flowed
+// to:
 //   1. This purchase's own PurchaseItem rows.
 //   2. This dealer's own Inventory row for that exact batch (quantity is
 //      untouched — see PATCH /:id/quantities for that axis instead).
@@ -505,8 +509,9 @@ router.patch('/:id/status', authRequired, requireRole('DEALER', 'RETAILER'), asy
 //      discount, and the parent Sale's totalAmount recomputed.
 //   5. For a RETAILER-sale line, the downstream retailer's own PurchaseItem
 //      (linked via SaleItem.purchaseItemId) gets the same backfill dispatch
-//      would have written, and — if that retailer has already marked the
-//      purchase RECEIVED — their own Inventory row for the batch too.
+//      would have written — pricing AND expiryDate — and, if that retailer
+//      has already marked the purchase RECEIVED — their own Inventory row
+//      for the batch too (pricing and expiryDate both).
 //   6. That sale's own RECEIVABLE voucher (Sale.receivableVoucher), amount
 //      and status recomputed the same way as the payable voucher above —
 //      and raised now if it's missing, same reasoning, but never for a
@@ -557,13 +562,14 @@ router.patch('/:id/prices', authRequired, requireRole('DEALER'), async (req, res
         const dealerCommission = Number(i.dealerCommission);
         const mrp = Number(i.mrp);
         const discount = Number(i.discount);
+        const expiryDate = new Date(i.expiryDate);
         const sellingPrice = computeSellingPrice(rate, dealerCommission);
         const retailerSellingPrice = computeRetailerPrice(mrp, discount);
-        correctedById.set(existingItem.id, { rate, dealerCommission, mrp, discount, sellingPrice, retailerSellingPrice, batchName: existingItem.batchName, productId: existingItem.productId });
+        correctedById.set(existingItem.id, { rate, dealerCommission, mrp, discount, expiryDate, sellingPrice, retailerSellingPrice, batchName: existingItem.batchName, productId: existingItem.productId });
 
         await tx.purchaseItem.update({
           where: { id: existingItem.id },
-          data: { rate, dealerCommission, mrp, discount, sellingPrice, retailerSellingPrice }
+          data: { rate, dealerCommission, mrp, discount, expiryDate, sellingPrice, retailerSellingPrice }
         });
 
         await tx.inventory.updateMany({
@@ -574,7 +580,7 @@ router.patch('/:id/prices', authRequired, requireRole('DEALER'), async (req, res
             retailerId: null,
             batchName: existingItem.batchName,
           },
-          data: { rate, dealerCommission, sellingPrice, discount, mrp, retailerSellingPrice }
+          data: { rate, dealerCommission, sellingPrice, discount, mrp, retailerSellingPrice, expiryDate }
         });
       }
 
@@ -653,6 +659,7 @@ router.patch('/:id/prices', authRequired, requireRole('DEALER'), async (req, res
                 mrp: corrected.mrp,
                 retailerSellingPrice: corrected.retailerSellingPrice,
                 originDealerRate: corrected.rate,
+                expiryDate: corrected.expiryDate,
               }
             });
 
@@ -680,6 +687,7 @@ router.patch('/:id/prices', authRequired, requireRole('DEALER'), async (req, res
                   mrp: corrected.mrp,
                   retailerSellingPrice: corrected.retailerSellingPrice,
                   originDealerRate: corrected.rate,
+                  expiryDate: corrected.expiryDate,
                 }
               });
             }
