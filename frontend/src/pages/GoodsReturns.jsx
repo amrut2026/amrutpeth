@@ -319,6 +319,12 @@ export default function GoodsReturns() {
   const [myDealer, setMyDealer] = useState(null);
   const [supplierId, setSupplierId] = useState('');
 
+  // Page-level tab: 'build' is the existing return-building/detail view,
+  // 'expiring' is the new browse-by-expiry view (see renderExpiringSoonTab
+  // below). Both share the same `items` cart, so switching tabs never
+  // loses anything already added.
+  const [pageTab, setPageTab] = useState('build');
+
   // The return being built, as a running list — same "pick a product, it's
   // added to the list, pick another, it's added too" pattern Sales.jsx's
   // cart uses, rather than one big always-shown inventory table to check
@@ -597,7 +603,7 @@ export default function GoodsReturns() {
       if (!map.has(key)) {
         map.set(key, {
           key, product: row.product, batchName: row.batchName, rate: row.rate,
-          quantity: 0, approvedQuantity: 0,
+          quantity: 0, approvedQuantity: 0, expiryDate: null,
           eligibleVoucherIds: new Set(), purchasedQuantityByVoucherId: {},
           rows: [],
         });
@@ -605,6 +611,14 @@ export default function GoodsReturns() {
       const g = map.get(key);
       g.quantity += row.quantity;
       g.approvedQuantity += row.approvedQuantity || 0;
+      // Same product+batch should share one expiry in practice, but take
+      // the earliest of whatever's actually on the underlying rows —
+      // consistent with the FIFO (oldest-row-first) draw-down these groups
+      // already do below, and it means the group never understates how
+      // soon it needs attention.
+      if (row.expiryDate) {
+        if (!g.expiryDate || new Date(row.expiryDate) < new Date(g.expiryDate)) g.expiryDate = row.expiryDate;
+      }
       // Every underlying raw row shares the same product+batch, so their
       // eligibleVoucherIds/purchasedQuantityByVoucherId (computed
       // server-side off that same key — see goodsReturns.js GET
@@ -704,6 +718,198 @@ export default function GoodsReturns() {
     const qty = Math.min(Number(it.quantity) || 0, row.quantity);
     return sum + qty * Number(row.rate || 0);
   }, 0);
+
+  // Backs the page-level "Expiring Soon" tab (see renderExpiringSoonTab
+  // below) — filters pickerOptions down to batches whose expiry falls
+  // within the chosen window, so someone building a return for near-expiry
+  // stock can find it directly instead of hunting for it in the full
+  // "Add Product" dropdown on the Build Return tab.
+  const [expiryFilterValue, setExpiryFilterValue] = useState('1');
+  const [expiryFilterUnit, setExpiryFilterUnit] = useState('weeks');
+
+  // Today + the entered value/unit — the default (1, weeks) means "expiring
+  // any time between now and 7 days from now". 'months' uses setMonth so
+  // "1 month" tracks the actual next-month date rather than a flat
+  // 30-day approximation.
+  function expiryThresholdDate() {
+    const n = Number(expiryFilterValue);
+    const amount = Number.isFinite(n) && n > 0 ? n : 1;
+    const d = new Date();
+    if (expiryFilterUnit === 'days') d.setDate(d.getDate() + amount);
+    else if (expiryFilterUnit === 'months') d.setMonth(d.getMonth() + amount);
+    else d.setDate(d.getDate() + amount * 7);
+    return d;
+  }
+
+  // No lower bound on purpose — a batch that's already past its expiry
+  // needs returning even more urgently than one merely approaching it, so
+  // it stays in this list rather than dropping out the moment it expires.
+  const expiryThreshold = expiryThresholdDate();
+  const expiringPickerOptions = pickerOptions
+    .filter((row) => row.expiryDate && new Date(row.expiryDate) <= expiryThreshold)
+    .sort((a, b) => new Date(a.expiryDate) - new Date(b.expiryDate));
+
+  // Shared by both the dealer and retailer "Add Product" sections below —
+  // pickerOptions is already role-normalized, so this doesn't need to
+  // branch on role.
+  function renderAddProductSection() {
+    return (
+      <div>
+        <label className="text-xs text-gray-500 flex flex-col leading-tight mb-1">
+          <span>Add Product</span>
+          <span className="text-orange-700">उत्पादन जोडा</span>
+        </label>
+        {pickerOptions.length === 0 ? (
+          <div className="text-sm text-gray-400 italic">No matching stock available to return / जुळणारा साठा उपलब्ध नाही</div>
+        ) : (
+          <select
+            className="border rounded px-2 py-1.5 text-sm w-full md:w-96"
+            value={pickerValue}
+            onChange={(e) => addItem(e.target.value)}
+          >
+            <option value="">Select product to add... / जोडण्यासाठी उत्पादन निवडा...</option>
+            {pickerOptions.map((row) => (
+              <option key={row.key} value={row.key}>
+                {row.product?.name}{productDetails(row.product) ? ` — ${productDetails(row.product)}` : ''}
+                {row.batchName ? ` (Batch: ${row.batchName})` : ''} · Qty {row.quantity}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+    );
+  }
+
+  // Page-level tab: browse/filter batches by expiry and add straight into
+  // the same `items` cart the Build Return tab's table shows — switching
+  // tabs never clears `items`, so anything added here is already sitting
+  // in the cart when the user switches back to finish the return.
+  function renderExpiringSoonTab() {
+    return (
+      <div className="bg-white p-4 rounded shadow space-y-4">
+        <h2 className="text-lg font-semibold">
+          Expiring Soon
+          <span className="text-sm font-normal text-gray-500 ml-2">(लवकर एक्सपायर होणारे)</span>
+        </h2>
+
+        {isDealer && (
+          <div>
+            <label className="text-xs text-gray-500 flex flex-col leading-tight mb-1">
+              <span>Supplier</span>
+              <span className="text-orange-700">पुरवठादार</span>
+            </label>
+            {loading ? (
+              <div className="text-sm text-gray-400 italic">Loading... / लोड होत आहे...</div>
+            ) : suppliers.length === 0 ? (
+              <div className="text-sm text-gray-400 italic">No suppliers set up yet / अद्याप कोणतेही पुरवठादार जोडलेले नाहीत</div>
+            ) : (
+              <select
+                className="border rounded px-2 py-1.5 text-sm w-64"
+                value={supplierId}
+                onChange={(e) => { setSupplierId(e.target.value); setItems([]); setPickerValue(''); }}
+              >
+                <option value="">Select supplier / पुरवठादार निवडा</option>
+                {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            )}
+          </div>
+        )}
+
+        {isDealer && !supplierId ? (
+          <div className="text-sm text-gray-400 italic">Select a supplier above to see stock expiring soon / लवकर एक्सपायर होणारा साठा पाहण्यासाठी वरील पुरवठादार निवडा</div>
+        ) : (
+          <>
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-xs text-gray-500">Expiring within</span>
+                <input
+                  type="number"
+                  min="1"
+                  className="border rounded px-2 py-1 text-sm w-16"
+                  value={expiryFilterValue}
+                  onChange={(e) => setExpiryFilterValue(e.target.value)}
+                />
+                <select
+                  className="border rounded px-2 py-1 text-sm"
+                  value={expiryFilterUnit}
+                  onChange={(e) => setExpiryFilterUnit(e.target.value)}
+                >
+                  <option value="days">Day/s</option>
+                  <option value="weeks">Week/s</option>
+                  <option value="months">Month/s</option>
+                </select>
+                <span className="text-xs text-orange-700">एक्सपायरी मुदत</span>
+              </div>
+
+              {!isDealer && categoryOptions.length > 0 && (
+                <div className="flex items-center gap-2">
+                  <label className="text-xs text-gray-500 flex flex-col leading-tight">
+                    <span>Filter by Category</span>
+                    <span className="text-orange-700">श्रेणीनुसार फिल्टर करा</span>
+                  </label>
+                  <select
+                    className="border rounded px-2 py-1.5 text-sm"
+                    value={categoryFilter}
+                    onChange={(e) => setCategoryFilter(e.target.value)}
+                  >
+                    <option value="">All Categories / सर्व श्रेणी</option>
+                    {categoryOptions.map((c) => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
+
+            {expiringPickerOptions.length === 0 ? (
+              <div className="text-sm text-gray-400 italic">No stock expiring in this period / या कालावधीत एक्सपायर होणारा साठा नाही</div>
+            ) : (
+              <div className="max-h-[65vh] overflow-y-auto">
+                <table className="w-full text-sm">
+                  <thead className="sticky top-0 bg-white">
+                    <tr className="text-left text-gray-500 border-b">
+                      <th className="py-2">Product / उत्पादन</th>
+                      <th className="py-2">Batch / बॅच</th>
+                      <th className="py-2 text-right">Inventory Qty / साठा प्रमाण</th>
+                      <th className="py-2 text-right">Cost Price / खरेदी किंमत</th>
+                      <th className="py-2">Expiry Date / एक्सपायरी दिनांक</th>
+                      <th className="py-2 w-20"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {expiringPickerOptions.map((row) => (
+                      <tr key={row.key} className="border-b last:border-0 align-top">
+                        <td className="py-2"><ProductCell product={row.product} /></td>
+                        <td className="py-2 text-gray-500">{row.batchName || '—'}</td>
+                        <td className="py-2 text-right">{row.quantity}{row.rows && row.rows.length > 1 && '*'}</td>
+                        <td className="py-2 text-right">₹{Number(row.rate || 0).toFixed(2)}</td>
+                        <td className="py-2 text-amber-700">{new Date(row.expiryDate).toLocaleDateString()}</td>
+                        <td className="py-2 text-right">
+                          <button type="button" onClick={() => addItem(row.key)}
+                            className="text-xs bg-emerald-700 text-white px-2 py-1 rounded hover:bg-emerald-800">
+                            Add
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {expiringPickerOptions.some((row) => row.rows && row.rows.length > 1) && (
+                  <div className="text-xs text-gray-400 mt-1">* combined quantity across more than one purchase, same product and batch / * एकाच उत्पादनाच्या आणि बॅचच्या अनेक खरेदींमधील एकत्रित प्रमाण</div>
+                )}
+              </div>
+            )}
+
+            {items.length > 0 && (
+              <div className="text-xs text-gray-500 border-t pt-2">
+                {items.length} product{items.length > 1 ? 's' : ''} in your return so far — switch to the Build Return tab to set quantities and submit. / तुमच्या परतीमध्ये आतापर्यंत {items.length} उत्पादने आहेत — प्रमाण सेट करण्यासाठी आणि सादर करण्यासाठी "परत तयार करा" टॅबवर जा.
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    );
+  }
 
   async function submitReturn() {
     setError('');
@@ -895,10 +1101,32 @@ export default function GoodsReturns() {
         <p className="text-sm text-orange-700">मालाची परत</p>
       </div>
 
+      <div className="flex border-b mb-4">
+        <button type="button" onClick={() => setPageTab('build')}
+          className={`text-sm px-3 py-2 border-b-2 -mb-px whitespace-nowrap ${
+            pageTab === 'build'
+              ? 'border-emerald-700 text-emerald-700 font-medium'
+              : 'border-transparent text-gray-500 hover:text-gray-700'
+          }`}>
+          Build Return{items.length > 0 ? ` (${items.length})` : ''}<span className="block text-xs font-normal">परत तयार करा</span>
+        </button>
+        <button type="button" onClick={() => setPageTab('expiring')}
+          className={`text-sm px-3 py-2 border-b-2 -mb-px whitespace-nowrap ${
+            pageTab === 'expiring'
+              ? 'border-emerald-700 text-emerald-700 font-medium'
+              : 'border-transparent text-gray-500 hover:text-gray-700'
+          }`}>
+          Expiring Soon<span className="block text-xs font-normal">लवकर एक्सपायर होणारे</span>
+        </button>
+      </div>
+
       {error && (
         <div className="mb-4 text-sm text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">{error}</div>
       )}
 
+      {pageTab === 'expiring' ? (
+        renderExpiringSoonTab()
+      ) : (
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
         <div className="lg:col-span-2">
           {selectedReturn && (
@@ -998,25 +1226,7 @@ export default function GoodsReturns() {
                       <div className="text-sm text-gray-400 italic">No stock available to return / परत करण्यासाठी साठा उपलब्ध नाही</div>
                     ) : (
                       <>
-                        <div>
-                          <label className="text-xs text-gray-500 flex flex-col leading-tight mb-1">
-                            <span>Add Product</span>
-                            <span className="text-orange-700">उत्पादन जोडा</span>
-                          </label>
-                          <select
-                            className="border rounded px-2 py-1.5 text-sm w-full md:w-96"
-                            value={pickerValue}
-                            onChange={(e) => addItem(e.target.value)}
-                          >
-                            <option value="">Select product to add... / जोडण्यासाठी उत्पादन निवडा...</option>
-                            {pickerOptions.map((row) => (
-                              <option key={row.key} value={row.key}>
-                                {row.product?.name}{productDetails(row.product) ? ` — ${productDetails(row.product)}` : ''}
-                                {row.batchName ? ` (Batch: ${row.batchName})` : ''} · Qty {row.quantity}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
+                        {renderAddProductSection()}
 
                         {items.length === 0 ? (
                           <div className="text-sm text-gray-400 italic">No products added yet — pick one above to start building the return / अद्याप कोणतेही उत्पादन जोडलेले नाही — परत तयार करण्यासाठी वरील निवडा</div>
@@ -1125,29 +1335,7 @@ export default function GoodsReturns() {
                     <div className="text-sm text-gray-400 italic">Loading... / लोड होत आहे...</div>
                   ) : (
                     <>
-                      <div>
-                        <label className="text-xs text-gray-500 flex flex-col leading-tight mb-1">
-                          <span>Add Product</span>
-                          <span className="text-orange-700">उत्पादन जोडा</span>
-                        </label>
-                        {pickerOptions.length === 0 ? (
-                          <div className="text-sm text-gray-400 italic">No matching stock available to return / जुळणारा साठा उपलब्ध नाही</div>
-                        ) : (
-                          <select
-                            className="border rounded px-2 py-1.5 text-sm w-full md:w-96"
-                            value={pickerValue}
-                            onChange={(e) => addItem(e.target.value)}
-                          >
-                            <option value="">Select product to add... / जोडण्यासाठी उत्पादन निवडा...</option>
-                            {pickerOptions.map((row) => (
-                              <option key={row.key} value={row.key}>
-                                {row.product?.name}{productDetails(row.product) ? ` — ${productDetails(row.product)}` : ''}
-                                {row.batchName ? ` (Batch: ${row.batchName})` : ''} · Qty {row.quantity}
-                              </option>
-                            ))}
-                          </select>
-                        )}
-                      </div>
+                      {renderAddProductSection()}
 
                       {items.length === 0 ? (
                         <div className="text-sm text-gray-400 italic">No products added yet — pick one above to start building the return / अद्याप कोणतेही उत्पादन जोडलेले नाही — परत तयार करण्यासाठी वरील निवडा</div>
@@ -1371,6 +1559,7 @@ export default function GoodsReturns() {
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 }
