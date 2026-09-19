@@ -496,9 +496,15 @@ export default function Purchases() {
       : (currentStatus === 'IN_TRANSIT' ? 'RECEIVED' : 'ORDERED');
     const { data } = await api.patch(`/purchases/${purchaseId}/status`, { status: nextStatus });
     setPurchases((prev) => prev.map((p) => (p.id === data.id ? data : p)));
-    // Only a dealer's own CONFIRMED purchase is a stock-inwards event worth
-    // labeling — a retailer receiving stock doesn't print product barcodes.
-    if (user.role === 'DEALER' && nextStatus === 'CONFIRMED') {
+    // A stock-inwards event is worth labeling for either role: a dealer's
+    // own CONFIRMED purchase (from a supplier), or a retailer's own
+    // RECEIVED purchase (from their dealer) — by RECEIVED time the
+    // retailer's PurchaseItem rows have already been backfilled with
+    // mrp/retailerSellingPrice/batchName at dispatch (see sales.js PATCH
+    // /:id/dispatch), the same fields a dealer's own items carry, so
+    // openPrintPrompt/submitPrintPrompt below need no role branching.
+    if ((user.role === 'DEALER' && nextStatus === 'CONFIRMED') ||
+        (user.role === 'RETAILER' && nextStatus === 'RECEIVED')) {
       openPrintPrompt(data);
     }
   }
@@ -625,7 +631,8 @@ export default function Purchases() {
             : status === 'MODIFIED' ? 'Modified / सुधारित'
             : 'Received / प्राप्त झाले'}
         </span>
-        {user.role === 'DEALER' && (status === 'CONFIRMED' || status === 'MODIFIED') && (
+        {((user.role === 'DEALER' && (status === 'CONFIRMED' || status === 'MODIFIED')) ||
+          (user.role === 'RETAILER' && status === 'RECEIVED')) && (
           <button type="button" onClick={() => openPrintPrompt(p)}
             className="text-xs bg-white border border-gray-400 text-gray-700 px-3 py-1.5 rounded hover:bg-gray-50">
             Print Labels<span className="block">लेबल छापा</span>
