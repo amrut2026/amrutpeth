@@ -58,25 +58,53 @@ function toMonthInputValue(date) {
   return `${d.getUTCFullYear()}-${mm}`;
 }
 
-// Sell Price = Cost Price + (Dealer Commission % * Cost Price) / 100, rounded
-// to 1 digit. Computed fresh from the item's own rate/commission every time,
-// rather than stored, so it can never go stale.
+// Sell Price = Cost Price + (Dealer Commission % * Cost Price) / 100,
+// rounded to the nearest whole rupee (no paise) — always shown as "X.00"
+// rather than a decimal amount, since a commission/discount percentage
+// entered as e.g. 12.5% would otherwise leave sellingPrice/
+// retailerSellingPrice sitting on an odd paise value. Computed fresh from
+// the item's own rate/commission every time, rather than stored, so it can
+// never go stale.
 function computeSellingPrice(it) {
   const costPrice = parseFloat(it.rate);
   const commission = parseFloat(it.dealerCommission);
   return (!isNaN(costPrice) && !isNaN(commission))
-    ? (costPrice + (commission * costPrice) / 100).toFixed(1)
+    ? Math.round(costPrice + (commission * costPrice) / 100).toFixed(2)
     : '';
 }
 
-// Retailer Selling Price = MRP - (Product Discount % * MRP) / 100, rounded to
-// 2 digits. Computed fresh from the item's own mrp/discount every time.
+// Retailer Selling Price = MRP - (Product Discount % * MRP) / 100, rounded
+// to the nearest whole rupee — same "always .00" reasoning as
+// computeSellingPrice above.
 function computeRetailerPrice(it) {
   const mrp = parseFloat(it.mrp);
   const discountPct = parseFloat(it.discount);
   return (!isNaN(mrp) && !isNaN(discountPct))
-    ? (mrp - (discountPct * mrp) / 100).toFixed(2)
+    ? Math.round(mrp - (discountPct * mrp) / 100).toFixed(2)
     : '';
+}
+
+// Reverse of computeSellingPrice: Cost Price stays the anchor (it's what
+// the supplier actually charged), so typing a target Sell Price instead
+// backs out the Dealer Commission % that would forward-compute to it —
+// stored on dealerCommission like any other field, so computeSellingPrice
+// above then reproduces the same (rounded) figure the user typed, no
+// matter whether they edited Commission % or Sell Price directly.
+function sellingPriceToCommission(rate, sellingPrice) {
+  const costPrice = parseFloat(rate);
+  const target = parseFloat(sellingPrice);
+  if (isNaN(costPrice) || costPrice === 0 || isNaN(target)) return null;
+  return (((target - costPrice) / costPrice) * 100).toFixed(2);
+}
+
+// Reverse of computeRetailerPrice: MRP stays the anchor (it's printed on
+// the product), so typing a target Retailer Selling Price instead backs
+// out the Discount % that would forward-compute to it.
+function retailerPriceToDiscount(mrp, retailerSellingPrice) {
+  const mrpNum = parseFloat(mrp);
+  const target = parseFloat(retailerSellingPrice);
+  if (isNaN(mrpNum) || mrpNum === 0 || isNaN(target)) return null;
+  return (((mrpNum - target) / mrpNum) * 100).toFixed(2);
 }
 
 // Summary for a recorded purchase's item table: item count, total quantity,
@@ -227,6 +255,24 @@ export default function Purchases() {
 
   function updatePriceEdit(itemId, key, val) {
     setPriceEdits((prev) => ({ ...prev, [itemId]: { ...prev[itemId], [key]: val } }));
+  }
+
+  // Same reverse-calculation idea as updateSellingPrice/updateRetailerPrice
+  // on the entry form above, but operating on priceEdits instead of items.
+  function updatePriceEditSellingPrice(itemId, val) {
+    setPriceEdits((prev) => {
+      const edit = prev[itemId];
+      const commission = edit ? sellingPriceToCommission(edit.rate, val) : null;
+      return commission === null ? prev : { ...prev, [itemId]: { ...edit, dealerCommission: commission } };
+    });
+  }
+
+  function updatePriceEditRetailerPrice(itemId, val) {
+    setPriceEdits((prev) => {
+      const edit = prev[itemId];
+      const discount = edit ? retailerPriceToDiscount(edit.mrp, val) : null;
+      return discount === null ? prev : { ...prev, [itemId]: { ...edit, discount } };
+    });
   }
 
   function cancelEditPrices() {
@@ -384,6 +430,31 @@ export default function Purchases() {
 
   function updateItem(i, key, val) {
     setItems(items.map((it, idx) => (idx === i ? { ...it, [key]: val } : it)));
+  }
+
+  // Sell Price is shown as an editable field, but rate/dealerCommission
+  // (not sellingPrice itself) are what's actually stored on the item —
+  // see computeSellingPrice above — so editing it here back-calculates
+  // dealerCommission instead. A target that can't be resolved yet (Cost
+  // Price not entered, or the field momentarily cleared while typing) is a
+  // no-op: the field just falls back to showing whatever Commission %
+  // already forward-computes to.
+  function updateSellingPrice(i, val) {
+    setItems((prev) => prev.map((it, idx) => {
+      if (idx !== i) return it;
+      const commission = sellingPriceToCommission(it.rate, val);
+      return commission === null ? it : { ...it, dealerCommission: commission };
+    }));
+  }
+
+  // Same idea as updateSellingPrice, but for Retailer Selling Price ->
+  // Discount % (MRP is the anchor).
+  function updateRetailerPrice(i, val) {
+    setItems((prev) => prev.map((it, idx) => {
+      if (idx !== i) return it;
+      const discount = retailerPriceToDiscount(it.mrp, val);
+      return discount === null ? it : { ...it, discount };
+    }));
   }
 
   function removeItemRow(i) {
@@ -1004,7 +1075,13 @@ export default function Purchases() {
                                     onChange={(e) => updatePriceEdit(it.id, 'dealerCommission', e.target.value)} />
                                 ) : `${it.dealerCommission}%`}
                               </td>
-                              <td className="p-1">₹{editingPrices ? (liveSellingPrice || '—') : it.sellingPrice}</td>
+                              <td className="p-1">
+                                {editingPrices ? (
+                                  <input type="number" step="0.01" min="0" className="border rounded px-1 py-0.5 w-20"
+                                    value={liveSellingPrice ?? ''}
+                                    onChange={(e) => updatePriceEditSellingPrice(it.id, e.target.value)} />
+                                ) : `₹${it.sellingPrice}`}
+                              </td>
                               <td className="p-1">
                                 {editingPrices ? (
                                   <input type="number" step="0.01" min="0" className="border rounded px-1 py-0.5 w-20"
@@ -1019,7 +1096,13 @@ export default function Purchases() {
                                     onChange={(e) => updatePriceEdit(it.id, 'discount', e.target.value)} />
                                 ) : `${it.discount}%`}
                               </td>
-                              <td className="p-1">₹{editingPrices ? (liveRetailerPrice || '—') : (it.retailerSellingPrice ?? computeRetailerPrice(it))}</td>
+                              <td className="p-1">
+                                {editingPrices ? (
+                                  <input type="number" step="0.01" min="0" className="border rounded px-1 py-0.5 w-20"
+                                    value={liveRetailerPrice ?? ''}
+                                    onChange={(e) => updatePriceEditRetailerPrice(it.id, e.target.value)} />
+                                ) : `₹${it.retailerSellingPrice ?? computeRetailerPrice(it)}`}
+                              </td>
                               <td className="p-1">{formatMMYYYY(it.manufacturingDate)}</td>
                               <td className="p-1">
                                 {editingPrices ? (
@@ -1223,8 +1306,8 @@ export default function Purchases() {
                     </div>
                     <div className="flex flex-col gap-1">
                       <FieldLabel en="Sell Price" mr="विक्री किंमत" />
-                      <input type="number" placeholder="Sell Price" className="border rounded px-2 py-1 w-full bg-gray-100 text-gray-700" disabled required
-                        value={computeSellingPrice(it)} />
+                      <input type="number" step="1" placeholder="Sell Price" className="border rounded px-2 py-1 w-full" required
+                        value={computeSellingPrice(it)} onChange={(e) => updateSellingPrice(i, e.target.value)} />
                     </div>
                     <div className="flex flex-col gap-1">
                       <FieldLabel en="MRP" mr="एमआरपी" />
@@ -1238,8 +1321,8 @@ export default function Purchases() {
                     </div>
                     <div className="flex flex-col gap-1">
                       <FieldLabel en="Retailer Selling Price" mr="किरकोळ विक्री किंमत" />
-                      <input type="number" placeholder="Retailer Selling Price" className="border rounded px-2 py-1 w-full bg-gray-100 text-gray-700" disabled required
-                        value={computeRetailerPrice(it)} />
+                      <input type="number" step="1" placeholder="Retailer Selling Price" className="border rounded px-2 py-1 w-full" required
+                        value={computeRetailerPrice(it)} onChange={(e) => updateRetailerPrice(i, e.target.value)} />
                     </div>
                   </div>
                 </>
@@ -1338,7 +1421,10 @@ export default function Purchases() {
                           <input type="number" step="0.01" min="0" className="border rounded px-1 py-0.5 w-20"
                             value={it.dealerCommission} onChange={(e) => updateItem(i, 'dealerCommission', e.target.value)} />
                         </td>
-                        <td className="p-1 bg-gray-50 text-gray-700">{computeSellingPrice(it) ? `₹${computeSellingPrice(it)}` : '—'}</td>
+                        <td className="p-1">
+                          <input type="number" step="1" min="0" className="border rounded px-1 py-0.5 w-20"
+                            value={computeSellingPrice(it)} onChange={(e) => updateSellingPrice(i, e.target.value)} />
+                        </td>
                         <td className="p-1">
                           <input type="number" step="0.01" min="0" className="border rounded px-1 py-0.5 w-24"
                             value={it.mrp} onChange={(e) => updateItem(i, 'mrp', e.target.value)} />
@@ -1347,7 +1433,10 @@ export default function Purchases() {
                           <input type="number" step="0.01" min="0" max="100" className="border rounded px-1 py-0.5 w-20"
                             value={it.discount} onChange={(e) => updateItem(i, 'discount', e.target.value)} />
                         </td>
-                        <td className="p-1 bg-gray-50 text-gray-700">{computeRetailerPrice(it) ? `₹${computeRetailerPrice(it)}` : '—'}</td>
+                        <td className="p-1">
+                          <input type="number" step="1" min="0" className="border rounded px-1 py-0.5 w-20"
+                            value={computeRetailerPrice(it)} onChange={(e) => updateRetailerPrice(i, e.target.value)} />
+                        </td>
                         <td className="p-1">
                           <input type="month" className="border rounded px-1 py-0.5 w-32"
                             value={it.manufacturingDate} onChange={(e) => updateItem(i, 'manufacturingDate', e.target.value)} />
