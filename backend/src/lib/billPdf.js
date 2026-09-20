@@ -20,9 +20,9 @@ const FONT_BOLD = path.join(__dirname, '../fonts/NotoSansDevanagari-Bold.ttf');
 // below instead makes two passes over the same layout: a "measure" pass
 // that uses PDFKit's heightOfString() to add up how tall the bill actually
 // is, then a "draw" pass that creates a single page sized to that height
-// plus a bottom feed allowance for the auto-cutter/tear bar. That also
-// means the old "28 rows per page, carry the total forward" pagination is
-// gone entirely — a receipt printer doesn't have pages to break across.
+// plus a small top/bottom margin (see TOP_MARGIN/BOTTOM_MARGIN below). That
+// also means the old "28 rows per page, carry the total forward" pagination
+// is gone entirely — a receipt printer doesn't have pages to break across.
 //
 // To target the 58mm-paper variant instead, the only change needed is
 // PAPER_WIDTH_MM / PRINTABLE_WIDTH_MM below (58mm paper on this class of
@@ -31,10 +31,22 @@ const MM = 2.834645669; // PDF points per mm
 const PAPER_WIDTH_MM = 80;
 const PRINTABLE_WIDTH_MM = 72;
 const PAGE_WIDTH = PAPER_WIDTH_MM * MM;
-const PAGE_MARGIN = ((PAPER_WIDTH_MM - PRINTABLE_WIDTH_MM) / 2) * MM; // ~11.3pt (4mm) each side
+const PAGE_MARGIN = ((PAPER_WIDTH_MM - PRINTABLE_WIDTH_MM) / 2) * MM; // ~11.3pt (4mm) each side, LEFT/RIGHT only — see TOP_MARGIN/BOTTOM_MARGIN below for vertical spacing
 const CONTENT_WIDTH = PRINTABLE_WIDTH_MM * MM; // ~204pt (72mm)
 const RIGHT_EDGE = PAGE_MARGIN + CONTENT_WIDTH;
-const BOTTOM_FEED = 15 * MM; // clearance before the cutter/tear bar so the last line isn't trimmed
+// Vertical spacing, kept small and equal on both edges (~3mm is the
+// standard feed used on 80mm POS/ESC-POS thermal templates) rather than
+// reusing the printable-width dead zone above or feeding extra paper
+// "for safety". On a continuous roll, whatever gets left blank at the
+// bottom of one bill (past the auto-cutter's clearance) stacks visually
+// with the next bill's own top margin, since the cut line becomes that
+// next bill's top edge — so an oversized bottom margin here doesn't read
+// as "more space at the bottom of this bill", it reads as "a big gap
+// before the next one starts", while the bottom of THIS bill still looks
+// tight against the cut. Keeping both margins equal and industry-standard
+// avoids that mismatch.
+const TOP_MARGIN = 3 * MM;
+const BOTTOM_MARGIN = 3 * MM; // still enough clearance for the auto-cutter not to trim the last line
 
 // English / Marathi label pairs, combined as "English / मराठी" wherever
 // printed on the bill.
@@ -234,7 +246,7 @@ export async function generateSaleBillPdf(sale, party) {
   const measureCursor = new Cursor(measureDoc, { draw: false });
   renderBill(measureCursor, sale, party, isB2B);
   const contentHeight = measureCursor.y;
-  const pageHeight = Math.ceil(PAGE_MARGIN + contentHeight + BOTTOM_FEED);
+  const pageHeight = Math.ceil(TOP_MARGIN + contentHeight + BOTTOM_MARGIN);
 
   // Pass 2 — draw, onto a single continuous page sized exactly to the content.
   return new Promise((resolve, reject) => {
@@ -246,7 +258,7 @@ export async function generateSaleBillPdf(sale, party) {
     doc.on('error', reject);
 
     const cursor = new Cursor(doc, { draw: true });
-    cursor.y = PAGE_MARGIN;
+    cursor.y = TOP_MARGIN;
     renderBill(cursor, sale, party, isB2B);
 
     doc.end();

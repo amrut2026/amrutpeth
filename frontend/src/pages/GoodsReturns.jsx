@@ -174,6 +174,77 @@ function printReturnDetail(gr) {
   setTimeout(() => win.print(), 300);
 }
 
+// Prints whatever the "Expiring Soon" tab currently has on screen — no
+// row selection needed, this is a plain reference sheet (not barcode
+// labels), sized for a regular A4 printout via the browser's print
+// dialog, same mechanism as printReturnDetail above. `rows` is exactly
+// expiringPickerOptions as rendered, so the printout always matches what
+// the user is looking at (same expiry window / category filter applied).
+function printExpiringSoonList(rows, { supplierName, categoryName, windowText } = {}) {
+  const tableRows = rows.map((row) => {
+    const details = productDetails(row.product);
+    return `
+      <tr>
+        <td>${row.product?.name || '—'}${details ? `<div class="muted">${details}</div>` : ''}</td>
+        <td>${row.batchName || '—'}</td>
+        <td class="right">${row.quantity}${row.rows && row.rows.length > 1 ? '*' : ''}</td>
+        <td class="right">₹${Number(row.rate || 0).toFixed(2)}</td>
+        <td>${row.expiryDate ? new Date(row.expiryDate).toLocaleDateString() : '—'}</td>
+      </tr>`;
+  }).join('');
+
+  const hasCombined = rows.some((row) => row.rows && row.rows.length > 1);
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>Stock Expiring Soon</title>
+        <meta charset="utf-8" />
+        <style>
+          @page { size: A4; margin: 16mm; }
+          body { font-family: Arial, sans-serif; padding: 0; color: #111; }
+          h1 { font-size: 18px; margin: 0 0 4px; }
+          .muted { color: #666; font-size: 11px; }
+          .meta { margin-bottom: 16px; font-size: 13px; color: #444; }
+          table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 12px; }
+          th, td { padding: 6px 8px; border-bottom: 1px solid #ddd; text-align: left; vertical-align: top; }
+          .right { text-align: right; }
+          .footnote { font-size: 11px; color: #666; margin-top: 8px; }
+        </style>
+      </head>
+      <body>
+        <h1>Stock Expiring Soon</h1>
+        <div class="meta">
+          ${supplierName ? `<div><span class="muted">Supplier:</span> <strong>${supplierName}</strong></div>` : ''}
+          ${categoryName ? `<div><span class="muted">Category:</span> <strong>${categoryName}</strong></div>` : ''}
+          <div><span class="muted">Expiring within:</span> <strong>${windowText}</strong></div>
+          <div class="muted">Generated ${new Date().toLocaleString()}</div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Product</th>
+              <th>Batch</th>
+              <th class="right">Inventory Qty</th>
+              <th class="right">Cost Price</th>
+              <th>Expiry Date</th>
+            </tr>
+          </thead>
+          <tbody>${tableRows}</tbody>
+        </table>
+        ${hasCombined ? '<div class="footnote">* combined quantity across more than one purchase, same product and batch</div>' : ''}
+      </body>
+    </html>`;
+
+  const win = window.open('', '_blank', 'width=800,height=900');
+  if (!win) return;
+  win.document.write(html);
+  win.document.close();
+  win.focus();
+  setTimeout(() => win.print(), 300);
+}
+
 // The selected return's detail — counterparty, status/action, and item
 // table. Also doubles as the row content shown once something is picked
 // from the sidebar. editableApproval/approvals/notes only apply to a
@@ -787,10 +858,23 @@ export default function GoodsReturns() {
   function renderExpiringSoonTab() {
     return (
       <div className="bg-white p-4 rounded shadow space-y-4">
-        <h2 className="text-lg font-semibold">
-          Expiring Soon
-          <span className="text-sm font-normal text-gray-500 ml-2">(लवकर एक्सपायर होणारे)</span>
-        </h2>
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <h2 className="text-lg font-semibold">
+            Expiring Soon
+            <span className="text-sm font-normal text-gray-500 ml-2">(लवकर एक्सपायर होणारे)</span>
+          </h2>
+          {expiringPickerOptions.length > 0 && (
+            <button type="button"
+              onClick={() => printExpiringSoonList(expiringPickerOptions, {
+                supplierName: isDealer ? suppliers.find((s) => String(s.id) === String(supplierId))?.name : undefined,
+                categoryName: !isDealer ? categoryOptions.find((c) => String(c.id) === String(categoryFilter))?.name : undefined,
+                windowText: `${expiryFilterValue} ${expiryFilterUnit}`,
+              })}
+              className="text-xs bg-emerald-700 text-white px-3 py-1.5 rounded hover:bg-emerald-800">
+              Print<span className="block text-[10px] font-normal">प्रिंट करा</span>
+            </button>
+          )}
+        </div>
 
         {isDealer && (
           <div>

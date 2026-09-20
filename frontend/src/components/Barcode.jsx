@@ -59,14 +59,26 @@ function renderLabelGroup({ name, sizeWeight, flavour, brand, barcode, quantity 
 // columns (1.44 + 0.12 + 1.44 = 3in), 1in tall. No inter-row gap is printed
 // (assumes the physical labels are already die-cut/gapped on the roll) — if
 // the roll needs a printed gap between rows too, this is where to add it.
-function openLabelPrintWindow(title, labelsHtml) {
+//
+// `labelCount` is the TOTAL number of individual labels in labelsHtml
+// (summed across every entry/quantity) — used to set an exact @page height
+// below rather than "auto". Label-roll printer drivers are unreliable at
+// honoring an auto/content-based page length from CSS: they tend to fall
+// back to their own default page length and silently cut the job off
+// there, which — since text wrapping shifts row heights slightly per
+// product — lands at a different row each time and looks like a random
+// number of labels printed. An exact height removes that guesswork.
+function openLabelPrintWindow(title, labelsHtml, labelCount = 1) {
+  const rows = Math.max(1, Math.ceil(Math.max(1, labelCount) / 2));
+  const pageHeightIn = rows; // 1in per row, no inter-row gap (see above)
   const win = window.open('', '_blank', 'width=340,height=600');
+  if (!win) return; // popup blocked — nothing to write into
   win.document.write(`
     <html>
       <head>
         <title>${title}</title>
         <style>
-          @page { size: 3in auto; margin: 0; }
+          @page { size: 3in ${pageHeightIn}in; margin: 0; }
           * { box-sizing: border-box; }
           body { margin: 0; font-family: sans-serif; }
           .labels { display: grid; grid-template-columns: 1.44in 1.44in; column-gap: 0.12in; width: 3in; }
@@ -108,5 +120,6 @@ export function printBarcodeLabelsBatch(entries, title = 'Print Barcodes') {
     quantity: entry.quantity,
     priceInfo: { mrp: entry.mrp, retailerSellingPrice: entry.retailerSellingPrice },
   })).join('');
-  openLabelPrintWindow(title, labels);
+  const totalLabels = entries.reduce((sum, entry) => sum + Math.max(1, Number(entry.quantity) || 1), 0);
+  openLabelPrintWindow(title, labels, totalLabels);
 }
