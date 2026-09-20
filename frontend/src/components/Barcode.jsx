@@ -30,6 +30,17 @@ export default function Barcode({ value, width = 1.4, height = 40, name, flavour
   );
 }
 
+// How many labels to print for one entry.
+// - undefined  -> 1 (callers that don't pass a quantity keep the old behaviour)
+// - null, '', 0, negative, NaN -> 0 (entry is skipped, e.g. only reprinting
+//   the missing or torn labels)
+// - otherwise  -> whole number (decimals are floored)
+function toLabelCount(quantity) {
+  if (quantity === undefined) return 1;
+  const n = Math.floor(Number(quantity));
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
 // Renders the label markup for one product repeated `quantity` times.
 // `priceInfo` (optional) is `{ mrp, retailerSellingPrice }` — when given, a
 // price line is added below the barcode. Printed as "You Pay" rather than
@@ -37,7 +48,7 @@ export default function Barcode({ value, width = 1.4, height = 40, name, flavour
 // not a description of who they are.
 // Sized to fit a 1.44in x 1in label (see openLabelPrintWindow) — smaller
 // barcode/font than the on-screen <Barcode> component uses.
-function renderLabelGroup({ name, sizeWeight, flavour, brand, barcode, quantity = 1, priceInfo }) {
+function renderLabelGroup({ name, sizeWeight, flavour, brand, barcode, quantity, priceInfo }) {
   const line1 = [name, flavour, brand].filter(Boolean).join(' &middot; ');
   const line2 = sizeWeight ? `<div class="sub">${sizeWeight}</div>` : '';
   const priceLine = priceInfo
@@ -45,7 +56,7 @@ function renderLabelGroup({ name, sizeWeight, flavour, brand, barcode, quantity 
         priceInfo.mrp != null && priceInfo.retailerSellingPrice != null ? ' &nbsp;|&nbsp; ' : ''
       }${priceInfo.retailerSellingPrice != null ? `You Pay: ₹${priceInfo.retailerSellingPrice}` : ''}</div>`
     : '';
-  return Array.from({ length: Math.max(1, Number(quantity) || 1) }).map(() => `
+  return Array.from({ length: toLabelCount(quantity) }).map(() => `
     <div class="label">
       <div class="name">${line1}</div>
       ${line2}
@@ -111,6 +122,9 @@ function openLabelPrintWindow(title, labelsHtml, labelCount = 1) {
 // exists per purchase batch — see PurchaseItem), so a label printed from the
 // catalog could never show real pricing anyway.
 export function printBarcodeLabelsBatch(entries, title = 'Print Barcodes') {
+  const totalLabels = entries.reduce((sum, entry) => sum + toLabelCount(entry.quantity), 0);
+  if (totalLabels === 0) return; // nothing to print — don't open an empty window
+
   const labels = entries.map((entry) => renderLabelGroup({
     name: entry.name,
     sizeWeight: entry.sizeWeight,
@@ -120,6 +134,6 @@ export function printBarcodeLabelsBatch(entries, title = 'Print Barcodes') {
     quantity: entry.quantity,
     priceInfo: { mrp: entry.mrp, retailerSellingPrice: entry.retailerSellingPrice },
   })).join('');
-  const totalLabels = entries.reduce((sum, entry) => sum + Math.max(1, Number(entry.quantity) || 1), 0);
+
   openLabelPrintWindow(title, labels, totalLabels);
 }
