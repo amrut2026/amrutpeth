@@ -612,7 +612,17 @@ export default function Purchases() {
     setPrintPrompt((pp) => (pp ? { ...pp, quantities: { ...pp.quantities, [itemId]: val } } : pp));
   }
 
+  // Label count for one item in the print prompt. Empty / 0 / invalid means
+  // "print none of this one" (e.g. reprinting only the torn or missing
+  // labels), so it must NOT fall back to 1.
+  function printQtyFor(itemId) {
+    const n = Math.floor(Number(printPrompt?.quantities?.[itemId]));
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+
   function submitPrintPrompt() {
+    const total = printPrompt.purchase.items.reduce((sum, it) => sum + printQtyFor(it.id), 0);
+    if (total === 0) return; // nothing to print — keep the prompt open
     printBarcodeLabelsBatch(
       printPrompt.purchase.items.map((it) => ({
         name: it.product?.name,
@@ -620,7 +630,7 @@ export default function Purchases() {
         flavour: it.product?.flavour,
         brand: it.product?.brand,
         barcode: it.product?.barcode,
-        quantity: Number(printPrompt.quantities[it.id]) || 1,
+        quantity: printQtyFor(it.id),
         mrp: it.mrp,
         retailerSellingPrice: it.retailerSellingPrice,
       })),
@@ -897,17 +907,25 @@ export default function Purchases() {
                 </div>
                 <div className="flex flex-col items-end gap-1">
                   <FieldLabel en="Labels to print" mr="छापायची लेबल्स" />
-                  <input type="number" min="1" className="border rounded w-20 px-2 py-1"
+                  <input type="number" min="0" className="border rounded w-20 px-2 py-1"
                     value={printPrompt.quantities[it.id]}
                     onChange={(e) => updatePrintQty(it.id, e.target.value)} />
                 </div>
               </div>
             ))}
           </div>
-          <button type="button" onClick={submitPrintPrompt}
-            className="mt-3 bg-emerald-700 text-white text-sm px-4 py-2 rounded hover:bg-emerald-800">
-            Print Labels / लेबल छापा
-          </button>
+          {(() => {
+            const totalToPrint = printPrompt.purchase.items.reduce((sum, it) => sum + printQtyFor(it.id), 0);
+            return (
+              <div className="mt-3 flex items-center gap-3">
+                <button type="button" onClick={submitPrintPrompt} disabled={totalToPrint === 0}
+                  className="bg-emerald-700 text-white text-sm px-4 py-2 rounded hover:bg-emerald-800 disabled:opacity-50 disabled:cursor-not-allowed">
+                  Print Labels / लेबल छापा
+                </button>
+                <span className="text-xs text-gray-500">Total labels / एकूण लेबल्स: {totalToPrint}</span>
+              </div>
+            );
+          })()}
         </div>
       )}
 
