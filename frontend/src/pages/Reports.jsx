@@ -339,6 +339,158 @@ function formatMoney(value) {
   return value != null ? `₹${Number(value).toFixed(2)}` : '-';
 }
 
+// DEALER/RETAILER-own "Product Inventory" tab (tab === 'inventory' below) -
+// which Inventory field holds "cost price" vs "selling price" depends on
+// context, same split as DEALER_INVENTORY_PRICE_COLUMNS /
+// RETAILER_INVENTORY_PRICE_COLUMNS above: a dealer's own cost is `rate` and
+// selling price is `sellingPrice` (what they charge a retailer); a
+// retailer's own cost is `sellingPrice` (what they paid their dealer) and
+// selling price is `retailerSellingPrice` (what they charge the end
+// customer). Admin/Organisation never hit this - they use
+// inventory-dealer/inventory-retailer (DealerInventoryPanel /
+// RetailerInventoryPanel) instead, which already group + summarize per
+// dealer/retailer.
+const SELF_INVENTORY_PRICE_COLUMNS = {
+  DEALER: [
+    { key: 'costPrice', label: 'Cost Price', labelMr: 'खरेदी किंमत', render: (r) => formatMoney(r.rate) },
+    { key: 'sellingPrice', label: 'Selling Price', labelMr: 'विक्री किंमत', render: (r) => formatMoney(r.sellingPrice) },
+  ],
+  RETAILER: [
+    { key: 'costPrice', label: 'Cost Price', labelMr: 'खरेदी किंमत', render: (r) => formatMoney(r.sellingPrice) },
+    { key: 'sellingPrice', label: 'Selling Price', labelMr: 'विक्री किंमत', render: (r) => formatMoney(r.retailerSellingPrice) },
+  ],
+};
+
+// Distinct product count / total quantity / total cost value / total
+// selling value across ALL of the logged-in dealer's or retailer's own
+// inventory rows (i.e. always computed pre-filter, so hiding 0-quantity
+// rows in the table below never changes the summary strip above it).
+function summarizeSelfInventory(rows, context) {
+  const costOf = context === 'RETAILER' ? (r) => r.sellingPrice : (r) => r.rate;
+  const sellOf = context === 'RETAILER' ? (r) => r.retailerSellingPrice : (r) => r.sellingPrice;
+  const productIds = new Set();
+  let quantity = 0;
+  let costValue = 0;
+  let sellingValue = 0;
+  for (const r of rows) {
+    if (r.product?.id != null) productIds.add(r.product.id);
+    const qty = Number(r.quantity || 0);
+    quantity += qty;
+    costValue += qty * Number(costOf(r) || 0);
+    sellingValue += qty * Number(sellOf(r) || 0);
+  }
+  return { productCount: productIds.size, quantity, costValue, sellingValue };
+}
+
+// Builds a standalone printable HTML document for the DEALER/RETAILER
+// "Product Inventory" tab - same summary numbers plus the same rows, in
+// the same sorted/filtered order, as whatever SelfInventoryPanel currently
+// has on screen (so "Print" always matches what the user is looking at,
+// same approach as buildDownloadPrintHtml / buildVoucherPrintHtml above).
+function buildSelfInventoryPrintHtml({ title, subtitle, rows, priceColumns, summary }) {
+  const bodyRows = rows.map((r) => `<tr>
+      <td>${escapeHtml(r.product?.name || '--')}${productDetails(r.product) ? `<div class="muted">${escapeHtml(productDetails(r.product))}</div>` : ''}</td>
+      ${priceColumns.map((c) => `<td>${escapeHtml(c.render(r))}</td>`).join('')}
+      <td>${escapeHtml(r.product?.barcode || '--')}</td>
+      <td>${escapeHtml(r.batchName || '-')}</td>
+      <td>${r.expiryDate ? escapeHtml(new Date(r.expiryDate).toLocaleDateString()) : '-'}</td>
+      <td>${r.mrp != null ? escapeHtml(formatMoney(r.mrp)) : '-'}</td>
+      <td>${escapeHtml(r.quantity)}</td>
+      <td>${escapeHtml(r.reorderLevel)}</td>
+      <td>${r.lowStock ? 'Reorder now' : 'OK'}</td>
+    </tr>`).join('');
+  const priceHeaders = priceColumns.map((c) => `<th>${escapeHtml(c.label)}</th>`).join('');
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>${escapeHtml(title)}</title>
+<style>
+  body { font-family: Arial, sans-serif; padding: 24px; color: #111; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .subtitle { font-size: 12px; color: #555; margin-bottom: 12px; }
+  .summary { display: flex; gap: 20px; font-size: 12px; margin-bottom: 16px; }
+  .summary b { display: block; font-size: 14px; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 8px; font-size: 12px; }
+  th, td { border: 1px solid #ddd; padding: 4px 6px; text-align: left; }
+  th { background: #f3f3f3; }
+  .muted { color: #999; font-size: 11px; }
+  @media print { body { padding: 0; } }
+</style>
+</head>
+<body>
+  <h1>${escapeHtml(title)}</h1>
+  <div class="subtitle">${escapeHtml(subtitle)} &middot; Printed ${escapeHtml(new Date().toLocaleString())}</div>
+  <div class="summary">
+    <span>Products<b>${escapeHtml(summary.productCount)}</b></span>
+    <span>Total Quantity<b>${escapeHtml(summary.quantity)}</b></span>
+    <span>Total Cost Price<b>${escapeHtml(formatMoney(summary.costValue))}</b></span>
+    <span>Total Selling Price<b>${escapeHtml(formatMoney(summary.sellingValue))}</b></span>
+  </div>
+  <table>
+    <thead><tr><th>Product</th>${priceHeaders}<th>Barcode</th><th>Batch</th><th>Expiry</th><th>MRP</th><th>Quantity</th><th>Reorder Level</th><th>Status</th></tr></thead>
+    <tbody>${bodyRows || `<tr><td colspan="${8 + priceColumns.length}" class="muted">No inventory.</td></tr>`}</tbody>
+  </table>
+</body>
+</html>`;
+}
+
+
+// The DEALER/RETAILER "Product Inventory" tab itself: summary strip, a
+// toggle to hide out-of-stock rows, a Print button (prints exactly the
+// sorted/filtered rows currently on screen, via buildSelfInventoryPrintHtml
+// above), and the item table sorted by quantity (ascending, so 0/low stock
+// - the stuff that needs attention - surfaces first).
+function SelfInventoryPanel({ rows, context }) {
+  const [hideZero, setHideZero] = useState(false);
+  const summary = summarizeSelfInventory(rows, context);
+  const priceColumns = SELF_INVENTORY_PRICE_COLUMNS[context] || [];
+  const visibleRows = hideZero ? rows.filter((r) => Number(r.quantity || 0) > 0) : rows;
+  const sortedRows = [...visibleRows].sort((a, b) => Number(a.quantity || 0) - Number(b.quantity || 0));
+
+  function handlePrint() {
+    const html = buildSelfInventoryPrintHtml({
+      title: 'Product Inventory',
+      subtitle: hideZero ? 'Excluding 0 quantity stock' : 'All stock',
+      rows: sortedRows,
+      priceColumns,
+      summary,
+    });
+    const printWindow = window.open('', '_blank', 'width=900,height=700');
+    if (!printWindow) return; // popup blocked - nothing else to fall back to here
+    printWindow.document.write(html);
+    printWindow.document.close();
+    printWindow.focus();
+    printWindow.onload = () => printWindow.print();
+  }
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-center justify-between gap-3 bg-orange-50 border border-orange-100 rounded px-3 py-2 mb-3">
+        <div className="text-xs text-gray-600 flex flex-wrap gap-4">
+          <span>Products <span className="text-gray-400">/ उत्पादने</span>: <b>{summary.productCount}</b></span>
+          <span>Total Quantity <span className="text-gray-400">/ एकूण प्रमाण</span>: <b>{summary.quantity}</b></span>
+          <span>Total Cost Price <span className="text-gray-400">/ एकूण खरेदी किंमत</span>: <b>{formatMoney(summary.costValue)}</b></span>
+          <span>Total Selling Price <span className="text-gray-400">/ एकूण विक्री किंमत</span>: <b>{formatMoney(summary.sellingValue)}</b></span>
+        </div>
+        <div className="flex items-center gap-3">
+          <label className="flex items-center gap-1.5 text-sm whitespace-nowrap">
+            <input type="checkbox" checked={hideZero} onChange={(e) => setHideZero(e.target.checked)} />
+            Hide 0 quantity stock <span className="text-gray-400">/ ० प्रमाण साठा लपवा</span>
+          </label>
+          <button
+            onClick={handlePrint}
+            className="px-3 py-1.5 rounded text-sm bg-emerald-700 text-white whitespace-nowrap"
+          >
+            🖨 Print / छापा
+          </button>
+        </div>
+      </div>
+      <InventoryTable rows={sortedRows} extraColumns={priceColumns} />
+    </div>
+  );
+}
+
 // Fixed left-to-right state order for the pivoted sold-products table below
 // - every row shows all three, in this order, regardless of which ones
 // actually occurred for that dealer/retailer.
@@ -2047,7 +2199,7 @@ export default function Reports() {
         {tab === 'inventory' && (
           inventory === null
             ? <p className="text-gray-400 text-sm">Loading... / लोड होत आहे...</p>
-            : <InventoryTable rows={inventory} />
+            : <SelfInventoryPanel rows={inventory} context={roleContext} />
         )}
 
         {tab === 'inventory-dealer' && (
