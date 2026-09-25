@@ -864,6 +864,194 @@ function purchaseTotal(purchase, context) {
   return purchase.items.reduce((sum, i) => sum + Number(i.quantity || 0) * Number(i[priceKey] || 0), 0);
 }
 
+// One row of the per-status summary above the tabs (RETAILER "Products
+// Received from Dealer" / DEALER "Products Received from Supplier"):
+// order count, distinct-product count, total quantity, and total amount
+// for a single status group. Distinct products are counted by productId
+// so the same product across several orders in one status only counts
+// once, matching how "Items / वस्तू" already displays one row per
+// product below.
+function summarizeStatusGroup(items, context) {
+  const productIds = new Set();
+  let quantity = 0;
+  for (const p of items) {
+    for (const i of p.items) {
+      productIds.add(i.productId ?? i.product?.id ?? i.id);
+      quantity += Number(i.quantity || 0);
+    }
+  }
+  const amount = items.reduce((sum, p) => sum + purchaseTotal(p, context), 0);
+  return { orders: items.length, products: productIds.size, quantity, amount };
+}
+
+// RETAILER's "Products Received from Dealer" and DEALER's "Products
+// Received from Supplier" reports: statuses shown as tabs (one status
+// visible at a time) instead of a stacked section per status, with a
+// status dropdown that would just duplicate the tabs removed. A summary
+// table above the tabs gives the across-all-statuses overview that used
+// to come from scanning every section at once. Not used for the
+// ADMIN/ORGANISATION "ALL" report, which can mix several dealers' and
+// suppliers' purchases at once and keeps the older status-dropdown
+// layout (see PurchasesPanel below).
+function TabbedPurchasesPanel({ data, selectedCounterparty, onSelectCounterparty }) {
+  const context = data.context;
+  const dropdownLabel = context === 'DEALER' ? 'Supplier / पुरवठादार' : 'Dealer / वितरक';
+  const priceLabel = context === 'DEALER' ? 'Cost Price / खरेदी किंमत' : 'Selling Price / विक्री किंमत';
+  const counterparties = data.counterparties || [];
+  const statusOptions = purchaseStatusOrder(context);
+  // RETAILER only ever has the one primary dealer (see /reports/purchases
+  // comments), so there's nothing for an "All" option to add there. DEALER
+  // can have several suppliers, so offer it there.
+  const showAllOption = context === 'DEALER';
+  const [activeStatus, setActiveStatus] = useState(statusOptions[0]);
+
+  const filtered = selectedCounterparty === 'ALL'
+    ? data.purchases
+    : data.purchases.filter((p) => String(p.counterpartyId) === String(selectedCounterparty));
+  const groups = groupPurchasesByStatus(filtered, context);
+  const activeGroup = groups.find((g) => g.status === activeStatus) || groups[0];
+  const overall = summarizeStatusGroup(filtered, context);
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-center gap-4 mb-4">
+        <div className="flex items-center gap-2">
+          <label className="text-sm font-medium">{dropdownLabel}:</label>
+          <select
+            className="border rounded px-2 py-1 text-sm bg-white"
+            value={selectedCounterparty != null ? String(selectedCounterparty) : ''}
+            disabled={!showAllOption && counterparties.length <= 1}
+            onChange={(e) => onSelectCounterparty(e.target.value)}
+          >
+            {showAllOption && <option value="ALL">All / सर्व</option>}
+            {counterparties.length === 0 && !showAllOption && <option value="">-</option>}
+            {counterparties.map((c) => (
+              <option key={c.id} value={String(c.id)}>{c.name}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {counterparties.length === 0 ? (
+        <div className="bg-white rounded shadow p-3 text-gray-400 text-sm">
+          {context === 'DEALER'
+            ? 'No suppliers purchased from yet. / अद्याप कोणत्याही पुरवठादाराकडून खरेदी नाही.'
+            : 'No purchases from your dealer yet. / वितरकाकडून अद्याप कोणतीही खरेदी नाही.'}
+        </div>
+      ) : (
+        <>
+          <div className="bg-white rounded shadow overflow-x-auto mb-4">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-100">
+                <tr>
+                  <th className="text-left p-2">Status / स्थिती</th>
+                  <th className="text-left p-2">Orders / ऑर्डर्स</th>
+                  <th className="text-left p-2">Products / उत्पादने</th>
+                  <th className="text-left p-2">Quantity / प्रमाण</th>
+                  <th className="text-left p-2">Amount / रक्कम</th>
+                </tr>
+              </thead>
+              <tbody>
+                {groups.map((g) => {
+                  const s = summarizeStatusGroup(g.items, context);
+                  return (
+                    <tr key={g.status} className="border-t">
+                      <td className="p-2">{STATUS_LABELS[g.status] || g.status}</td>
+                      <td className="p-2">{s.orders}</td>
+                      <td className="p-2">{s.products}</td>
+                      <td className="p-2">{s.quantity}</td>
+                      <td className="p-2">{formatMoney(s.amount)}</td>
+                    </tr>
+                  );
+                })}
+                <tr className="border-t font-medium bg-gray-50">
+                  <td className="p-2">Total / एकूण</td>
+                  <td className="p-2">{overall.orders}</td>
+                  <td className="p-2">{overall.products}</td>
+                  <td className="p-2">{overall.quantity}</td>
+                  <td className="p-2">{formatMoney(overall.amount)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div className="flex gap-2 mb-4 flex-wrap">
+            {groups.map((g) => (
+              <button key={g.status} type="button" onClick={() => setActiveStatus(g.status)}
+                className={`px-3 py-1.5 rounded text-sm ${activeStatus === g.status ? 'bg-emerald-700 text-white' : 'bg-white border'}`}>
+                {STATUS_LABELS[g.status] || g.status} ({g.items.length})
+              </button>
+            ))}
+          </div>
+
+          {!activeGroup || activeGroup.items.length === 0 ? (
+            <div className="bg-white rounded shadow p-3 text-gray-400 text-sm">
+              None yet. / अद्याप काहीही नाही.
+            </div>
+          ) : (
+            <div className="bg-white rounded shadow overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-100">
+                  <tr>
+                    <th className="text-left p-2">Order # / ऑर्डर क्र.</th>
+                    <th className="text-left p-2">{dropdownLabel}</th>
+                    <th className="text-left p-2">Date / दिनांक</th>
+                    <th className="text-left p-2">Items / वस्तू</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {activeGroup.items.map((p) => (
+                    <tr key={p.id} className="border-t align-top">
+                      <td className="p-2">
+                        <div className="flex items-center gap-1.5">
+                          <span>{p.id}</span>
+                          {p.status === 'MODIFIED' && (
+                            <span
+                              title="Pricing corrected after confirmation / पुष्टीनंतर किंमत दुरुस्त केली"
+                              className="text-[10px] font-semibold uppercase tracking-wide text-amber-700 bg-amber-100 border border-amber-200 rounded px-1.5 py-0.5"
+                            >
+                              Modified / सुधारित
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-xs text-gray-500 font-medium">{formatMoney(purchaseTotal(p, context))}</div>
+                      </td>
+                      <td className="p-2">{p.counterpartyName || '-'}</td>
+                      <td className="p-2">{new Date(p.date).toLocaleDateString()}</td>
+                      <td className="p-2">
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="text-gray-500">
+                              <th className="text-left pr-2 py-1">Product / उत्पादन</th>
+                              <th className="text-left pr-2 py-1">Batch / बॅच</th>
+                              <th className="text-left pr-2 py-1">Qty / प्रमाण</th>
+                              <th className="text-left pr-2 py-1">{priceLabel}</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {p.items.map((i) => (
+                              <tr key={i.id} className="border-t">
+                                <td className="pr-2 py-1"><ProductCell product={i.product} /></td>
+                                <td className="pr-2 py-1">{i.batchName || '-'}</td>
+                                <td className="pr-2 py-1">{i.quantity}</td>
+                                <td className="pr-2 py-1">{formatMoney(context === 'DEALER' ? i.rate : i.sellingPrice)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function PurchasesPanel({ data, selectedCounterparty, onSelectCounterparty }) {
   // Own local selection state, same pattern as DealerInventoryPanel's
   // selectedDealer - so switching away from and back to this tab resets
@@ -872,15 +1060,28 @@ function PurchasesPanel({ data, selectedCounterparty, onSelectCounterparty }) {
 
   if (!data) return null;
   const context = data.context;
+  // RETAILER and DEALER both get the tabbed layout (tabs + summary table,
+  // no status dropdown) — see TabbedPurchasesPanel above. Only the
+  // ADMIN/ORGANISATION "ALL" report, which can mix several dealers' and
+  // suppliers' purchases at once, keeps the older status-dropdown layout
+  // below.
+  if (context === 'RETAILER' || context === 'DEALER') {
+    return (
+      <TabbedPurchasesPanel
+        data={data}
+        selectedCounterparty={selectedCounterparty}
+        onSelectCounterparty={onSelectCounterparty}
+      />
+    );
+  }
   const dropdownLabel = context === 'DEALER' ? 'Supplier / पुरवठादार' : 'Dealer / वितरक';
   const priceLabel = context === 'DEALER' ? 'Cost Price / खरेदी किंमत' : 'Selling Price / विक्री किंमत';
   const counterparties = data.counterparties || [];
   const statusOptions = purchaseStatusOrder(context);
-  // RETAILER only ever has the one primary dealer (see /reports/purchases
-  // comments), so there's nothing for an "All" option to add there - keep
-  // it DEALER/ADMIN-ORGANISATION only, where there can be several
-  // suppliers (or, for ALL, several dealers/suppliers combined).
-  const showAllOption = context !== 'RETAILER';
+  // Only the ADMIN/ORGANISATION "ALL" context ever reaches here now (see
+  // the RETAILER/DEALER branch above), and it can have several
+  // suppliers/dealers, so "All" is always offered.
+  const showAllOption = true;
   // <select> values are always strings, so compare/select on the string
   // form of the id to avoid a number/string mismatch once the user changes
   // the dropdown themselves.
@@ -928,7 +1129,7 @@ function PurchasesPanel({ data, selectedCounterparty, onSelectCounterparty }) {
         <div className="bg-white rounded shadow p-3 text-gray-400 text-sm">
           {context === 'DEALER'
             ? 'No suppliers purchased from yet. / अद्याप कोणत्याही पुरवठादाराकडून खरेदी नाही.'
-            : 'No purchases from your dealer yet. / वितरकाकडून अद्याप कोणतीही खरेदी नाही.'}
+            : 'No purchases yet. / अद्याप कोणतीही खरेदी नाही.'}
         </div>
       )}
 
@@ -1009,7 +1210,7 @@ function escapeHtml(value) {
 // currently filtered vouchers/payments (same grouping and totals as shown
 // on screen), so "Print" reflects whatever the counterparty/state
 // dropdowns are set to at the moment it's clicked.
-function buildVoucherPrintHtml({ title, subtitle, counterpartyLabel, showDealerColumn, voucherGroups, paymentGroups, openVoucherTotal, paidPaymentTotal }) {
+function buildVoucherPrintHtml({ title, subtitle, counterpartyLabel, showDealerColumn, voucherGroups, paymentGroups, voucherGrandTotal, paymentGrandTotal }) {
   const renderGroups = (groups, columns, rowFn) => groups.map((g) => `
     <h3>${escapeHtml(STATUS_LABELS[g.status] || g.status)} (${g.items.length})</h3>
     ${g.items.length === 0
@@ -1065,11 +1266,11 @@ function buildVoucherPrintHtml({ title, subtitle, counterpartyLabel, showDealerC
   <div class="subtitle">${escapeHtml(subtitle)}${subtitle ? ' &middot; ' : ''}Printed ${escapeHtml(new Date().toLocaleString())}</div>
 
   <h2>Vouchers</h2>
-  <div class="totals">Grand Total (Open): ${escapeHtml(formatMoney(openVoucherTotal))}</div>
+  <div class="totals">Grand Total: ${escapeHtml(formatMoney(voucherGrandTotal))}</div>
   ${voucherHtml}
 
   <h2>Payments</h2>
-  <div class="totals">Grand Total (Paid): ${escapeHtml(formatMoney(paidPaymentTotal))}</div>
+  <div class="totals">Grand Total: ${escapeHtml(formatMoney(paymentGrandTotal))}</div>
   ${paymentHtml}
 </body>
 </html>`;
@@ -1133,12 +1334,12 @@ function VoucherSection({
   const voucherGroups = groupByVoucherStatus(vouchers, (v) => v.status);
   const paymentGroups = groupByVoucherStatus(payments, (p) => p.voucherStatus || 'PAID');
 
-  const openVoucherTotal = vouchers
-    .filter((v) => v.status === 'OPEN')
-    .reduce((sum, v) => sum + Number(v.amount || 0), 0);
-  const paidPaymentTotal = payments
-    .filter((p) => (p.voucherStatus || 'PAID') === 'PAID')
-    .reduce((sum, p) => sum + Number(p.amount || 0), 0);
+  // Sum across every status group currently listed (Open + Partially Paid
+  // + Paid) - not just OPEN vouchers / PAID payments - so the grand total
+  // always matches what's actually shown on screen across all the status
+  // groups above, whatever the counterparty/state filters are set to.
+  const voucherGrandTotal = vouchers.reduce((sum, v) => sum + Number(v.amount || 0), 0);
+  const paymentGrandTotal = payments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
 
   // Prints exactly what's currently on screen for this section - the
   // vouchers/payments as narrowed by whichever counterparty/state
@@ -1161,8 +1362,8 @@ function VoucherSection({
       showDealerColumn,
       voucherGroups,
       paymentGroups,
-      openVoucherTotal,
-      paidPaymentTotal,
+      voucherGrandTotal,
+      paymentGrandTotal,
     });
 
     const printWindow = window.open('', '_blank', 'width=900,height=700');
@@ -1242,7 +1443,7 @@ function VoucherSection({
           <div className="flex items-center justify-between mb-2">
             <div className="text-sm font-medium text-gray-600">Vouchers / व्हाउचर</div>
             <div className="text-sm font-bold text-red-600">
-              Grand Total (Open) / एकूण (खुले): {formatMoney(openVoucherTotal)}
+              Grand Total / एकूण: {formatMoney(voucherGrandTotal)}
             </div>
           </div>
           {voucherGroups.map((g) => (
@@ -1279,7 +1480,7 @@ function VoucherSection({
           <div className="flex items-center justify-between mb-2">
             <div className="text-sm font-medium text-gray-600">Payments / देयके</div>
             <div className="text-sm font-bold text-red-600">
-              Grand Total (Paid) / एकूण (दिले): {formatMoney(paidPaymentTotal)}
+              Grand Total / एकूण: {formatMoney(paymentGrandTotal)}
             </div>
           </div>
           {paymentGroups.map((g) => (
