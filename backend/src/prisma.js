@@ -22,4 +22,13 @@ export const prisma = new PrismaClient({
     maxWait: 10000, // was: default 2000ms
     timeout: 30000, // was: default 5000ms
   },
+  // Role-restricted product fields (see schema.prisma Product.imageKey /
+  // Product.description). Omitted from EVERY query on Product — including
+  // nested `include: { product: true }` in inventory, sales, purchases etc. —
+  // unless a query explicitly opts in with `omit: { description: false,
+  // imageKey: false }`. Only products.js does that, and it filters the result
+  // by role (serializeProduct) before responding. New routes are safe by default.
+  omit: {
+    product: { description: true, imageKey: true },
+  },
 });

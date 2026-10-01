@@ -1,11 +1,28 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import api from '../api.js';
 import Barcode from '../components/Barcode.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // keep in sync with r2.js
+
 const empty = {
-  categoryId: '', supplierId: '', name: '', sizeWeight: '', flavour: '', brand: '', cgst: '', sgst: '', fssaiCode: '',
+  categoryId: '', supplierId: '', name: '', sizeWeight: '', flavour: '', brand: '', cgst: '', sgst: '', fssaiCode: '', description: '',
 };
+
+// One form row with the label on the LEFT and the control on the right.
+// Stacks (label above) on narrow screens. The control column is capped at
+// control fills the rest of the row, so its right edge lines up with the end
+// of the SGST box below.
+function FormRow({ label, required, children }) {
+  return (
+    <div className="md:col-span-2 flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-3">
+      <label className="sm:w-48 shrink-0 text-sm text-gray-700">
+        {label}{required && <span className="text-red-600"> *</span>}
+      </label>
+      <div className="w-full flex-1 min-w-0">{children}</div>
+    </div>
+  );
+}
 
 // A dropdown backed by a shared vocabulary (ProductName/Unit/Flavour/Brand —
 // see schema.prisma and products.js), with inline "+" (add a value not yet
@@ -94,6 +111,33 @@ export default function Products() {
   // half-finished "rename" across products.
   const [formKey, setFormKey] = useState(0);
 
+  // Product image (DEALER only). `imageFile` is a newly picked file; when
+  // editing, `removeImage` asks the server to revert to the generic image.
+  const [imageFile, setImageFile] = useState(null);
+  const [imagePreview, setImagePreview] = useState('');
+  const [removeImage, setRemoveImage] = useState(false);
+  const fileInputRef = useRef(null);
+  useEffect(() => {
+    if (!imageFile) { setImagePreview(''); return; }
+    const url = URL.createObjectURL(imageFile);
+    setImagePreview(url);
+    return () => URL.revokeObjectURL(url);
+  }, [imageFile]);
+  function resetImage() {
+    setImageFile(null);
+    setRemoveImage(false);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }
+  function pickImage(e) {
+    const file = e.target.files?.[0];
+    if (!file) { setImageFile(null); return; }
+    if (!/\.jfif$/i.test(file.name)) { setError('Image must be a .jfif file / प्रतिमा .jfif फाइल असावी'); e.target.value = ''; return; }
+    if (file.size > MAX_IMAGE_BYTES) { setError('Image must be 5 MB or smaller / प्रतिमा 5 MB किंवा त्यापेक्षा लहान असावी'); e.target.value = ''; return; }
+    setError('');
+    setImageFile(file);
+    setRemoveImage(false);
+  }
+
   async function load() {
     const [p, c, s, u, b] = await Promise.all([
       api.get('/products'), api.get('/categories'), api.get('/suppliers'),
@@ -162,6 +206,7 @@ export default function Products() {
     setSelectedId(p.id);
     setCloneSource(null);
     setError('');
+    resetImage();
     setFormKey((k) => k + 1);
     setForm({
       categoryId: p.categoryId,
@@ -173,6 +218,7 @@ export default function Products() {
       cgst: String(p.cgst),
       sgst: String(p.sgst),
       fssaiCode: p.fssaiCode,
+      description: p.description || '',
     });
   }
 
@@ -184,6 +230,7 @@ export default function Products() {
     setSelectedId(null);
     setCloneSource(p);
     setError('');
+    resetImage(); // a clone starts with the generic image unless a new one is picked
     setFormKey((k) => k + 1);
     setForm({
       categoryId: p.categoryId,
@@ -195,6 +242,7 @@ export default function Products() {
       cgst: String(p.cgst),
       sgst: String(p.sgst),
       fssaiCode: p.fssaiCode,
+      description: p.description || '',
     });
   }
 
@@ -203,6 +251,7 @@ export default function Products() {
     setCloneSource(null);
     setForm(empty);
     setError('');
+    resetImage();
     setFormKey((k) => k + 1);
   }
 
@@ -211,13 +260,21 @@ export default function Products() {
     setSaving(true);
     setError('');
     try {
+      // Multipart so the optional image travels with the product fields.
+      const body = new FormData();
+      Object.entries(form).forEach(([k, v]) => body.append(k, v ?? ''));
+      if (imageFile) body.append('image', imageFile);
+      if (isEditing && removeImage && !imageFile) body.append('removeImage', 'true');
+      // Explicit header: if the shared axios instance defaults to JSON, axios
+      // would otherwise serialise this FormData as JSON and drop the file.
+      const config = { headers: { 'Content-Type': 'multipart/form-data' } };
       if (isEditing) {
-        await api.put(`/products/${selectedId}`, form);
+        await api.put(`/products/${selectedId}`, body, config);
       } else {
-        await api.post('/products', form);
+        await api.post('/products', body, config);
       }
       await load();
-      if (!isEditing) startNew();
+      if (!isEditing) startNew(); else resetImage();
     } catch (err) {
       setError(err.response?.data?.error || 'Could not save product');
     } finally {
@@ -267,79 +324,88 @@ export default function Products() {
           )}
 
           <form onSubmit={submit} className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <select className="border rounded px-2 py-1 md:col-span-2" required
-              value={form.supplierId} onChange={(e) => setForm({ ...form, supplierId: e.target.value })}>
-              <option value="">Supplier... / पुरवठादार...</option>
-              {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-            </select>
-            <select className="border rounded px-2 py-1 md:col-span-2" required
-              value={form.categoryId}
-              onChange={(e) => {
-                const categoryId = e.target.value;
-                const cat = categories.find((c) => String(c.id) === String(categoryId));
-                // CGST/SGST default to the newly selected category's own
-                // rate — editable below if that default isn't right for
-                // this particular product. Name and Flavour are both
-                // category-scoped vocabularies, so a value picked under the
-                // old category doesn't carry over.
-                setForm({
-                  ...form, categoryId, name: '', flavour: '',
-                  cgst: cat ? String(cat.cgst) : '',
-                  sgst: cat ? String(cat.sgst) : '',
-                });
-              }}>
-              <option value="">Category... / श्रेणी...</option>
-              {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-
-            {!form.categoryId ? (
-              <select className="border rounded px-2 py-1 w-full text-gray-400 md:col-span-2" disabled>
-                <option>Select a category first / प्रथम श्रेणी निवडा</option>
+            <FormRow label="Supplier / पुरवठादार" required>
+              <select className="border rounded px-2 py-1 w-full" required
+                value={form.supplierId} onChange={(e) => setForm({ ...form, supplierId: e.target.value })}>
+                <option value="">Select... / निवडा...</option>
+                {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
-            ) : (
-              <div className="md:col-span-2">
+            </FormRow>
+
+            <FormRow label="Category / श्रेणी" required>
+              <select className="border rounded px-2 py-1 w-full" required
+                value={form.categoryId}
+                onChange={(e) => {
+                  const categoryId = e.target.value;
+                  const cat = categories.find((c) => String(c.id) === String(categoryId));
+                  // CGST/SGST default to the newly selected category's own
+                  // rate — editable below if that default isn't right for
+                  // this particular product. Name and Flavour are both
+                  // category-scoped vocabularies, so a value picked under the
+                  // old category doesn't carry over.
+                  setForm({
+                    ...form, categoryId, name: '', flavour: '',
+                    cgst: cat ? String(cat.cgst) : '',
+                    sgst: cat ? String(cat.sgst) : '',
+                  });
+                }}>
+                <option value="">Select... / निवडा...</option>
+                {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </FormRow>
+
+            <FormRow label="Product Name / उत्पादनाचे नाव" required>
+              {!form.categoryId ? (
+                <select className="border rounded px-2 py-1 w-full text-gray-400" disabled
+                  title="Select a category first / प्रथम श्रेणी निवडा">
+                  <option>Select... / निवडा...</option>
+                </select>
+              ) : (
                 <LookupField key={`name-${formKey}-${form.categoryId}`}
                   options={nameOptions} valueField="name" value={form.name}
                   onChange={(v) => setForm({ ...form, name: v })}
                   onAdd={nameHandlers.add} onEdit={nameHandlers.edit}
-                  selectPlaceholder="Product Name... / उत्पादनाचे नाव..." addPlaceholder="New product name / नवीन उत्पादनाचे नाव"
+                  selectPlaceholder="Select... / निवडा..." addPlaceholder="New product name / नवीन उत्पादनाचे नाव"
                   required />
-              </div>
-            )}
+              )}
+            </FormRow>
 
-            {!form.categoryId ? (
-              <select className="border rounded px-2 py-1 w-full text-gray-400 md:col-span-2" disabled>
-                <option>Select a category first / प्रथम श्रेणी निवडा</option>
-              </select>
-            ) : (
-              <div className="md:col-span-2">
+            <FormRow label="Flavour (optional) / फ्लेवर (ऐच्छिक)">
+              {!form.categoryId ? (
+                <select className="border rounded px-2 py-1 w-full text-gray-400" disabled
+                  title="Select a category first / प्रथम श्रेणी निवडा">
+                  <option>Select... / निवडा...</option>
+                </select>
+              ) : (
                 <LookupField key={`flavour-${formKey}-${form.categoryId}`}
                   options={flavourOptions} valueField="value" value={form.flavour}
                   onChange={(v) => setForm({ ...form, flavour: v })}
                   onAdd={flavourHandlers.add} onEdit={flavourHandlers.edit}
-                  selectPlaceholder="Flavour (optional) / फ्लेवर (ऐच्छिक)" addPlaceholder="New flavour / नवीन फ्लेवर" />
-              </div>
-            )}
+                  selectPlaceholder="Select... / निवडा..." addPlaceholder="New flavour / नवीन फ्लेवर" />
+              )}
+            </FormRow>
 
-            <div className="md:col-span-2">
+            <FormRow label="Size / Weight / आकार / वजन" required>
               <LookupField key={`unit-${formKey}`}
                 options={unitOptions} valueField="value" value={form.sizeWeight}
                 onChange={(v) => setForm({ ...form, sizeWeight: v })}
                 onAdd={unitHandlers.add} onEdit={unitHandlers.edit}
-                selectPlaceholder="Size / Weight... / आकार / वजन..." addPlaceholder="New size/weight (e.g. 200g)"
+                selectPlaceholder="Select... / निवडा..." addPlaceholder="New size/weight (e.g. 200g)"
                 required />
-            </div>
+            </FormRow>
 
-            <div className="md:col-span-2">
+            <FormRow label="Brand (optional) / ब्रँड (ऐच्छिक)">
               <LookupField key={`brand-${formKey}`}
                 options={brandOptions} valueField="value" value={form.brand}
                 onChange={(v) => setForm({ ...form, brand: v })}
                 onAdd={brandHandlers.add} onEdit={brandHandlers.edit}
-                selectPlaceholder="Brand (optional) / ब्रँड (ऐच्छिक)" addPlaceholder="New brand / नवीन ब्रँड" />
-            </div>
+                selectPlaceholder="Select... / निवडा..." addPlaceholder="New brand / नवीन ब्रँड" />
+            </FormRow>
 
-            <input placeholder="FSSAI Code / एफएसएसएआय कोड" className="border rounded px-2 py-1 md:col-span-2" required
-              value={form.fssaiCode} onChange={(e) => setForm({ ...form, fssaiCode: e.target.value })} />
+            <FormRow label="FSSAI Code / एफएसएसएआय कोड" required>
+              <input className="border rounded px-2 py-1 w-full" required
+                value={form.fssaiCode} onChange={(e) => setForm({ ...form, fssaiCode: e.target.value })} />
+            </FormRow>
 
             <div>
               <label className="text-xs text-gray-500 block mb-1">CGST % (from category, editable) / सीजीएसटी %</label>
@@ -350,6 +416,38 @@ export default function Products() {
               <label className="text-xs text-gray-500 block mb-1">SGST % (from category, editable) / एसजीएसटी %</label>
               <input type="number" step="0.01" min="0" className="border rounded px-2 py-1 w-full" required
                 value={form.sgst} onChange={(e) => setForm({ ...form, sgst: e.target.value })} />
+            </div>
+
+            {/* Description (left) and Image (right) side by side; stacked on small screens */}
+            <div className="md:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="text-sm text-gray-700 block mb-1">Description (optional, multiple lines) / वर्णन (ऐच्छिक)</label>
+                <textarea rows={6} maxLength={2000} className="border rounded px-2 py-1 w-full"
+                  placeholder="Describe the product... / उत्पादनाचे वर्णन..."
+                  value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
+                <p className="text-xs text-gray-400 text-right">{form.description.length}/2000</p>
+              </div>
+
+              <div>
+                <label className="text-sm text-gray-700 block mb-1">
+                  Product image (optional) / उत्पादन प्रतिमा (ऐच्छिक)
+                </label>
+                <p className="text-xs text-gray-500 mb-2">.jfif, max 5 MB — a generic image is used if none is added.</p>
+                <div className="flex items-center gap-3">
+                  {(imagePreview || (isEditing && !removeImage && selectedProduct?.imageUrl)) && (
+                    <img src={imagePreview || selectedProduct.imageUrl} alt="Product"
+                      className="h-24 w-24 object-cover rounded border shrink-0" />
+                  )}
+                  <input ref={fileInputRef} key={`img-${formKey}`} type="file" accept=".jfif,image/jpeg"
+                    onChange={pickImage} className="text-sm min-w-0" />
+                </div>
+                {isEditing && !imageFile && (
+                  <label className="text-xs text-gray-600 flex items-center gap-1 mt-2">
+                    <input type="checkbox" checked={removeImage} onChange={(e) => setRemoveImage(e.target.checked)} />
+                    Remove image (use generic) / प्रतिमा काढा
+                  </label>
+                )}
+              </div>
             </div>
 
             <p className="md:col-span-2 text-xs text-gray-500">
@@ -417,7 +515,10 @@ export default function Products() {
                 className={`w-full text-left bg-white p-3 rounded shadow flex items-center justify-between gap-3 border-2 ${
                   isDealer ? 'cursor-pointer' : ''
                 } ${selectedId === p.id ? 'border-emerald-600' : 'border-transparent hover:border-gray-200'}`}>
-                <div>
+                {isDealer && p.imageUrl && (
+                  <img src={p.imageUrl} alt={p.name} loading="lazy" className="h-14 w-14 object-cover rounded border shrink-0" />
+                )}
+                <div className="flex-1">
                   <div className="font-semibold">
                     {p.name} <span className="text-xs text-gray-400">({p.sizeWeight})</span>
                     {p.brand && <span className="text-xs text-gray-400"> · {p.brand}</span>}

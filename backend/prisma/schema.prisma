@@ -425,6 +425,16 @@ model Product {
   sgst       Decimal         @default(2.5) @db.Decimal(5, 2)
   fssaiCode  String
   barcode    String          @unique // encoded value for barcode/QR - stable, never regenerated
+  // Object KEY (not a URL) of this product's image in the private Cloudflare
+  // R2 bucket "amrutpeth" — see r2.js. Defaults to the shared placeholder
+  // "generic.jfif" when the dealer doesn't upload one. Visible only to the
+  // owning DEALER and to AGGREGATOR (via presigned URL); stripped from every
+  // other role's response (see products.js serializeProduct).
+  imageKey   String          @default("generic.jfif")
+  // Free-text, multi-line product description (line breaks preserved). Set by
+  // the owning DEALER; returned ONLY to that dealer (for editing) and to
+  // AGGREGATOR via GET /products/:id — see products.js serializeProduct.
+  description String?        @db.Text
 
   createdAt     DateTime       @default(now())
   inventory     Inventory[]

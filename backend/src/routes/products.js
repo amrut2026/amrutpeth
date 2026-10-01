@@ -1,8 +1,69 @@
 import { Router } from 'express';
+import multer from 'multer';
 import { prisma } from '../prisma.js';
 import { authRequired, ownerScope, requireRole } from '../middleware/auth.js';
+import {
+  GENERIC_IMAGE_KEY, MAX_IMAGE_BYTES, validateJfif,
+  uploadProductImage, deleteProductImage, signedImageUrl,
+} from '../r2.js';
 
 const router = Router();
+
+// prisma.js omits these Product fields from every query by default; this file
+// opts back in because it filters them per role in serializeProduct().
+const PRIVATE_FIELDS = { description: false, imageKey: false };
+
+// ---- Product images (Cloudflare R2, private bucket) ------------------------
+// WHO CAN DO WHAT:
+//   upload / replace / remove  -> DEALER only (POST / and PUT /:id are already
+//                                 requireRole('DEALER'); the multipart body is
+//                                 parsed only AFTER that check passes)
+//   see the image (imageUrl)   -> the owning DEALER, and AGGREGATOR (via
+//                                 GET /:id, the product-details API)
+//   every other role           -> imageUrl is never returned, and the raw
+//                                 imageKey column is stripped too.
+// The multi-line `description` follows the same idea: owning DEALER (to edit)
+// and AGGREGATOR on GET /:id only — never in lists, never for other roles.
+// AGGREGATOR's image URLs are signed with the amrutpeth_aggregator token.
+// Images are served as short-lived presigned URLs; the bucket itself is private.
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_IMAGE_BYTES, files: 1 } });
+function imageUpload(req, res, next) {
+  upload.single('image')(req, res, (err) => {
+    if (!err) return next();
+    const msg = err.code === 'LIMIT_FILE_SIZE' ? `Image must be ${MAX_IMAGE_BYTES / 1024 / 1024} MB or smaller` : 'Invalid image upload';
+    res.status(400).json({ error: msg });
+  });
+}
+
+const MAX_DESCRIPTION_LENGTH = 2000;
+// '' / whitespace -> null; line breaks inside the text are kept as-is.
+function cleanDescription(value) {
+  const trimmed = String(value ?? '').trim();
+  return trimmed || null;
+}
+
+// Strips imageKey and description from the payload, then adds back only what
+// the caller's role may see. Use this for every product returned by this file.
+//   owning DEALER      -> imageUrl + description (needs both to edit)
+//   AGGREGATOR         -> imageUrl always; description ONLY when `detail` is
+//                         true, i.e. from the product-detail route GET /:id
+//   everyone else      -> neither
+async function serializeProduct(product, user, { detail = false } = {}) {
+  if (!product) return product;
+  const { imageKey, description, ...rest } = product;
+  const isOwnerDealer = user.role === 'DEALER' && product.dealerId === user.dealerId;
+  const isAggregator = user.role === 'AGGREGATOR';
+  if (isOwnerDealer || (isAggregator && detail)) rest.description = description;
+  if (isOwnerDealer || isAggregator) {
+    try {
+      rest.imageUrl = await signedImageUrl(imageKey, user.role);
+    } catch (err) {
+      console.error('Could not sign image URL for product', product.id, err.message);
+      rest.imageUrl = null; // never break the product payload because of storage
+    }
+  }
+  return rest;
+}
 
 function generateBarcode() {
   // 12-digit numeric code, EAN-13/Code128 friendly
@@ -33,8 +94,8 @@ router.get('/', authRequired, async (req, res) => {
     // details included) by GET /inventory/retailer/:retailerId.
     where = { id: -1 };
   }
-  const products = await prisma.product.findMany({ where, include: { category: true, supplier: true, dealer: true }, orderBy: { id: 'desc' } });
-  res.json(products);
+  const products = await prisma.product.findMany({ where, omit: PRIVATE_FIELDS, include: { category: true, supplier: true, dealer: true }, orderBy: { id: 'desc' } });
+  res.json(await Promise.all(products.map((p) => serializeProduct(p, req.user))));
 });
 
 // GET /api/products/names?categoryId=X, POST, and PUT /:id — the shared
@@ -210,8 +271,9 @@ flatLookupRoutes('units', prisma.unit, 'value');
 flatLookupRoutes('brands', prisma.brand, 'value');
 
 router.get('/:id', authRequired, async (req, res) => {
-  const product = await prisma.product.findUnique({ where: { id: Number(req.params.id) }, include: { category: true, supplier: true, dealer: true } });
-  res.json(product);
+  const product = await prisma.product.findUnique({ where: { id: Number(req.params.id) }, omit: PRIVATE_FIELDS, include: { category: true, supplier: true, dealer: true } });
+  if (!product) return res.status(404).json({ error: 'Product not found' });
+  res.json(await serializeProduct(product, req.user, { detail: true }));
 });
 
 // Create product - DEALER only. Every product is automatically tagged with
@@ -227,10 +289,18 @@ router.get('/:id', authRequired, async (req, res) => {
 // first for a clean error message; the schema constraint (caught below as
 // P2002) is the real guarantee against a race between two
 // near-simultaneous creates.
-router.post('/', authRequired, requireRole('DEALER'), async (req, res) => {
+router.post('/', authRequired, requireRole('DEALER'), imageUpload, async (req, res) => {
   const { categoryId, supplierId, name, sizeWeight, flavour, brand, cgst, sgst, fssaiCode } = req.body;
+  const description = cleanDescription(req.body.description);
 
   if (!supplierId) return res.status(400).json({ error: 'Supplier is required' });
+  if (description && description.length > MAX_DESCRIPTION_LENGTH) {
+    return res.status(400).json({ error: `Description must be ${MAX_DESCRIPTION_LENGTH} characters or fewer` });
+  }
+  if (req.file) {
+    const imageError = validateJfif(req.file);
+    if (imageError) return res.status(400).json({ error: imageError });
+  }
 
   const duplicate = await prisma.product.findFirst({
     where: {
@@ -251,6 +321,10 @@ router.post('/', authRequired, requireRole('DEALER'), async (req, res) => {
 
   const barcode = generateBarcode();
 
+  // No image supplied -> the shared placeholder "generic.jfif" in the bucket.
+  let imageKey = GENERIC_IMAGE_KEY;
+  if (req.file) imageKey = await uploadProductImage(req.user.dealerId, req.file.buffer);
+
   try {
     const product = await prisma.product.create({
       data: {
@@ -258,12 +332,14 @@ router.post('/', authRequired, requireRole('DEALER'), async (req, res) => {
         flavour: flavour || null, brand: brand || null,
         cgst: cgst !== undefined && cgst !== '' ? Number(cgst) : category.cgst,
         sgst: sgst !== undefined && sgst !== '' ? Number(sgst) : category.sgst,
-        fssaiCode, barcode,
+        fssaiCode, barcode, imageKey, description,
       },
+      omit: PRIVATE_FIELDS,
       include: { category: true, supplier: true, dealer: true }
     });
-    res.json(product);
+    res.json(await serializeProduct(product, req.user));
   } catch (err) {
+    await deleteProductImage(imageKey); // don't leave an orphaned upload behind
     if (err.code === 'P2002') {
       return res.status(409).json({ error: 'A product with this supplier, category, name, size/weight, flavour, and brand already exists' });
     }
@@ -271,11 +347,19 @@ router.post('/', authRequired, requireRole('DEALER'), async (req, res) => {
   }
 });
 
-router.put('/:id', authRequired, requireRole('DEALER'), async (req, res) => {
+router.put('/:id', authRequired, requireRole('DEALER'), imageUpload, async (req, res) => {
   const id = Number(req.params.id);
-  const existing = await prisma.product.findUnique({ where: { id } });
+  const existing = await prisma.product.findUnique({ where: { id }, omit: PRIVATE_FIELDS });
   if (!existing || existing.dealerId !== req.user.dealerId) return res.status(403).json({ error: 'You can only edit your own products' });
   const { categoryId, supplierId, name, sizeWeight, flavour, brand, cgst, sgst, fssaiCode } = req.body;
+  const nextDescription = req.body.description !== undefined ? cleanDescription(req.body.description) : undefined;
+  if (nextDescription && nextDescription.length > MAX_DESCRIPTION_LENGTH) {
+    return res.status(400).json({ error: `Description must be ${MAX_DESCRIPTION_LENGTH} characters or fewer` });
+  }
+  if (req.file) {
+    const imageError = validateJfif(req.file);
+    if (imageError) return res.status(400).json({ error: imageError });
+  }
 
   // Same duplicate check as POST, against the combination this edit would
   // leave the product with (falling back to its current values for
@@ -296,6 +380,12 @@ router.put('/:id', authRequired, requireRole('DEALER'), async (req, res) => {
     return res.status(409).json({ error: 'A product with this supplier, category, name, size/weight, flavour, and brand already exists' });
   }
 
+  // New file replaces the image; removeImage=true reverts to the generic one;
+  // otherwise the current image is left untouched.
+  let imageKey; // undefined = don't change
+  if (req.file) imageKey = await uploadProductImage(req.user.dealerId, req.file.buffer);
+  else if (req.body.removeImage === 'true') imageKey = GENERIC_IMAGE_KEY;
+
   try {
     const product = await prisma.product.update({
       where: { id },
@@ -307,12 +397,17 @@ router.put('/:id', authRequired, requireRole('DEALER'), async (req, res) => {
         brand: brand !== undefined ? (brand || null) : undefined,
         cgst: cgst !== undefined && cgst !== '' ? Number(cgst) : undefined,
         sgst: sgst !== undefined && sgst !== '' ? Number(sgst) : undefined,
-        fssaiCode
+        fssaiCode,
+        imageKey,
+        description: nextDescription,
       },
+      omit: PRIVATE_FIELDS,
       include: { category: true, supplier: true, dealer: true }
     });
-    res.json(product);
+    if (imageKey && imageKey !== existing.imageKey) await deleteProductImage(existing.imageKey);
+    res.json(await serializeProduct(product, req.user));
   } catch (err) {
+    if (req.file && imageKey) await deleteProductImage(imageKey);
     if (err.code === 'P2002') {
       return res.status(409).json({ error: 'A product with this supplier, category, name, size/weight, flavour, and brand already exists' });
     }
@@ -348,8 +443,9 @@ router.get('/lookup/:barcode', authRequired, async (req, res) => {
     return res.status(404).json({ error: 'No purchased stock found for this product yet — record a purchase before selling it' });
   }
 
+  const { imageKey, description, ...productPublic } = product; // belt and braces: prisma.js already omits these; never exposed on the POS lookup
   res.json({
-    ...product,
+    ...productPublic,
     sellingPrice: latestItem.sellingPrice,
     retailerSellingPrice: latestItem.retailerSellingPrice,
     mrp: latestItem.mrp,
@@ -359,9 +455,10 @@ router.get('/lookup/:barcode', authRequired, async (req, res) => {
 
 router.delete('/:id', authRequired, requireRole('DEALER'), async (req, res) => {
   const id = Number(req.params.id);
-  const existing = await prisma.product.findUnique({ where: { id } });
+  const existing = await prisma.product.findUnique({ where: { id }, omit: PRIVATE_FIELDS });
   if (!existing || existing.dealerId !== req.user.dealerId) return res.status(403).json({ error: 'You can only delete your own products' });
   await prisma.product.delete({ where: { id } });
+  await deleteProductImage(existing.imageKey);
   res.json({ ok: true });
 });
 
