@@ -67,9 +67,34 @@ router.get('/retailer/:retailerId', authRequired, requireRole('AGGREGATOR'), asy
 });
 
 router.put('/:id/reorder-level', authRequired, async (req, res) => {
-  const { reorderLevel } = req.body;
-  const row = await prisma.inventory.update({ where: { id: Number(req.params.id) }, data: { reorderLevel: Number(reorderLevel) } });
-  res.json(row);
+  // An aggregator login has no business changing a retailer's stock settings.
+  if (req.user.role === 'AGGREGATOR') {
+    return res.status(403).json({ error: 'Not allowed for this role' });
+  }
+
+  const id = Number(req.params.id);
+  const reorderLevel = Number(req.body?.reorderLevel);
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ error: 'Invalid inventory id' });
+  }
+  if (req.body?.reorderLevel === '' || req.body?.reorderLevel == null || !Number.isInteger(reorderLevel) || reorderLevel < 0) {
+    return res.status(400).json({ error: 'reorderLevel must be a whole number, 0 or more' });
+  }
+
+  // A dealer/retailer can only change their own stock rows - same scoping
+  // GET / uses. ADMIN/ORGANISATION have no owner scope, so aren't restricted.
+  const scope = ownerScope(req);
+  const row = await prisma.inventory.findUnique({ where: { id } });
+  if (!row) return res.status(404).json({ error: 'Inventory item not found' });
+  if (scope.ownerType === 'DEALER' && !(row.ownerType === 'DEALER' && row.dealerId === scope.dealerId)) {
+    return res.status(403).json({ error: 'Not your inventory item' });
+  }
+  if (scope.ownerType === 'RETAILER' && !(row.ownerType === 'RETAILER' && row.retailerId === scope.retailerId)) {
+    return res.status(403).json({ error: 'Not your inventory item' });
+  }
+
+  const updated = await prisma.inventory.update({ where: { id }, data: { reorderLevel } });
+  res.json(updated);
 });
 
 export default router;

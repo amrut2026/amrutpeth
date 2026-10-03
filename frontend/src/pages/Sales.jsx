@@ -324,6 +324,10 @@ export default function Sales() {
   const nonCashSales = sales.filter((s) =>
     s.customerType !== 'CASH' && (!saleRetailerFilter || String(s.customerRetailerId) === saleRetailerFilter)
   );
+  // The list the Recent Sales section is showing right now (follows the
+  // Cash / Retailer tab and the retailer filter) - its length is the count
+  // shown in the section heading.
+  const visibleSales = recentSalesTab === 'CASH' ? cashSales : nonCashSales;
 
   // Shared table body for both Recent Sales sections below — identical
   // row rendering, just given a different (pre-filtered) slice of `sales`
@@ -932,7 +936,7 @@ export default function Sales() {
         </div>
 
         <div className="mt-4">
-          <h2 className="text-lg font-semibold mb-2">Recent Sales <span className="text-gray-400 font-normal">/ अलीकडील विक्री</span></h2>
+          <h2 className="text-lg font-semibold mb-2">Recent Sales <span className="text-gray-400 font-normal">/ अलीकडील विक्री</span> <span className="text-gray-500 font-normal text-base">({visibleSales.length})</span></h2>
 
           {user.role === 'DEALER' && (
             <div className="flex gap-1 mb-2 border-b">

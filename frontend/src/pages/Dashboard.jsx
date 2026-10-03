@@ -30,6 +30,11 @@ function SummaryCards({ totals }) {
 }
 
 function DealerTable({ dealers }) {
+  // Every dealer is listed. A dealer that holds no stock right now shows
+  // "-" in the stock columns (the API only ever counts in-stock rows, so
+  // those columns are 0 for them) - only Retailers is always shown.
+  const hasStock = (d) => Number(d.inventoryCount || 0) > 0;
+  const stockCell = (d, value) => (hasStock(d) ? value : '-');
   // Grand total across the dealers listed (current stock only - the
   // backend already excludes quantity 0 rows from every figure here).
   const sum = (key) => dealers.reduce((acc, d) => acc + Number(d[key] || 0), 0);
@@ -41,13 +46,14 @@ function DealerTable({ dealers }) {
             <th className="text-left p-2">Dealer <span className="text-gray-400 font-normal">/ डीलर</span></th>
             <th className="text-right p-2">Retailers <span className="text-gray-400 font-normal">/ किरकोळ विक्रेते</span></th>
             <th className="text-right p-2">Inventory items <span className="text-gray-400 font-normal">/ साठा वस्तू</span></th>
+            <th className="text-right p-2">Total quantity <span className="text-gray-400 font-normal">/ एकूण प्रमाण</span></th>
             {/* Own (rate-priced) stock plus every retailer under this
                 dealer's own (sellingPrice-priced) stock — see
                 reports.js GET /org-summary for the exact split. */}
             <th className="text-right p-2">Cost value <span className="text-gray-400 font-normal">/ खरेदी मूल्य</span></th>
+            <th className="text-right p-2">Total selling price (to retailer) <span className="text-gray-400 font-normal">/ एकूण विक्री किंमत (किरकोळ विक्रेत्याला)</span></th>
             <th className="text-right p-2">Retailer selling value <span className="text-gray-400 font-normal">/ किरकोळ विक्री मूल्य</span></th>
             <th className="text-right p-2">Total MRP <span className="text-gray-400 font-normal">/ एकूण एमआरपी</span></th>
-            <th className="text-right p-2">Total selling price (to retailer) <span className="text-gray-400 font-normal">/ एकूण विक्री किंमत (किरकोळ विक्रेत्याला)</span></th>
           </tr>
         </thead>
         <tbody>
@@ -55,15 +61,16 @@ function DealerTable({ dealers }) {
             <tr key={d.dealerId} className="border-t">
               <td className="p-2">{d.dealerName}</td>
               <td className="p-2 text-right">{d.retailerCount}</td>
-              <td className="p-2 text-right">{d.inventoryCount}</td>
-              <td className="p-2 text-right">₹{Number(d.costValue).toFixed(2)}</td>
-              <td className="p-2 text-right">₹{Number(d.retailerSellingValue).toFixed(2)}</td>
-              <td className="p-2 text-right">₹{Number(d.mrpValue ?? 0).toFixed(2)}</td>
-              <td className="p-2 text-right">₹{Number(d.sellingValue ?? 0).toFixed(2)}</td>
+              <td className="p-2 text-right">{stockCell(d, d.inventoryCount)}</td>
+              <td className="p-2 text-right">{stockCell(d, d.quantityTotal ?? '-')}</td>
+              <td className="p-2 text-right">{stockCell(d, formatMoney(d.costValue))}</td>
+              <td className="p-2 text-right">{stockCell(d, d.sellingValue == null ? '-' : formatMoney(d.sellingValue))}</td>
+              <td className="p-2 text-right">{stockCell(d, formatMoney(d.retailerSellingValue))}</td>
+              <td className="p-2 text-right">{stockCell(d, d.mrpValue == null ? '-' : formatMoney(d.mrpValue))}</td>
             </tr>
           ))}
           {dealers.length === 0 && (
-            <tr><td colSpan={7} className="p-4 text-center text-gray-400 italic">No dealers yet / अजून कोणतेही डीलर नाहीत</td></tr>
+            <tr><td colSpan={8} className="p-4 text-center text-gray-400 italic">No dealers yet / अजून कोणतेही डीलर नाहीत</td></tr>
           )}
         </tbody>
         {dealers.length > 0 && (
@@ -72,10 +79,11 @@ function DealerTable({ dealers }) {
               <td className="p-2">Grand total <span className="font-normal text-gray-500">/ एकूण</span></td>
               <td className="p-2 text-right">{sum('retailerCount')}</td>
               <td className="p-2 text-right">{sum('inventoryCount')}</td>
+              <td className="p-2 text-right">{sum('quantityTotal')}</td>
               <td className="p-2 text-right">{formatMoney(sum('costValue'))}</td>
+              <td className="p-2 text-right">{formatMoney(sum('sellingValue'))}</td>
               <td className="p-2 text-right">{formatMoney(sum('retailerSellingValue'))}</td>
               <td className="p-2 text-right">{formatMoney(sum('mrpValue'))}</td>
-              <td className="p-2 text-right">{formatMoney(sum('sellingValue'))}</td>
             </tr>
           </tfoot>
         )}
@@ -94,7 +102,11 @@ function formatMoney(n) {
 // actually paid their dealer, same convention DealerTable's cost column
 // uses for retailer-owned stock).
 function RetailerInventoryTable({ dealers }) {
-  const rows = dealers.flatMap((d) => d.retailers.map((r) => ({ ...r, dealerName: d.dealerName })));
+  // Only retailers that currently hold stock (the API already excludes
+  // quantity 0 rows from inventoryCount and the values below).
+  const rows = dealers
+    .flatMap((d) => d.retailers.map((r) => ({ ...r, dealerName: d.dealerName })))
+    .filter((r) => Number(r.inventoryCount || 0) > 0);
   return (
     <div className="bg-white rounded shadow overflow-x-auto">
       <table className="w-full text-sm">
@@ -103,8 +115,10 @@ function RetailerInventoryTable({ dealers }) {
             <th className="text-left p-2">Dealer <span className="text-gray-400 font-normal">/ डीलर</span></th>
             <th className="text-left p-2">Retailer <span className="text-gray-400 font-normal">/ किरकोळ विक्रेता</span></th>
             <th className="text-right p-2">Inventory items <span className="text-gray-400 font-normal">/ साठा वस्तू</span></th>
+            <th className="text-right p-2">Total quantity <span className="text-gray-400 font-normal">/ एकूण प्रमाण</span></th>
             <th className="text-right p-2">Cost value <span className="text-gray-400 font-normal">/ खरेदी मूल्य</span></th>
             <th className="text-right p-2">Retailer selling value <span className="text-gray-400 font-normal">/ किरकोळ विक्री मूल्य</span></th>
+            <th className="text-right p-2">Total MRP <span className="text-gray-400 font-normal">/ एकूण एमआरपी</span></th>
           </tr>
         </thead>
         <tbody>
@@ -113,12 +127,14 @@ function RetailerInventoryTable({ dealers }) {
               <td className="p-2">{r.dealerName}</td>
               <td className="p-2">{r.retailerName}</td>
               <td className="p-2 text-right">{r.inventoryCount}</td>
+              <td className="p-2 text-right">{r.quantityTotal ?? '-'}</td>
               <td className="p-2 text-right">{formatMoney(r.costValue)}</td>
               <td className="p-2 text-right">{formatMoney(r.retailerSellingValue)}</td>
+              <td className="p-2 text-right">{r.mrpValue == null ? '-' : formatMoney(r.mrpValue)}</td>
             </tr>
           ))}
           {rows.length === 0 && (
-            <tr><td colSpan={5} className="p-4 text-center text-gray-400 italic">No retailers yet / अजून कोणतेही किरकोळ विक्रेते नाहीत</td></tr>
+            <tr><td colSpan={7} className="p-4 text-center text-gray-400 italic">No retailers with stock / साठा असलेले किरकोळ विक्रेते नाहीत</td></tr>
           )}
         </tbody>
       </table>
@@ -145,9 +161,24 @@ function ActivityCell({ activity }) {
       <div>{formatMoney(activity.amount)}</div>
       {activity.byStatus.length > 0 && (
         <div className="text-xs text-gray-400">
-          {activity.byStatus.map((b) => `${statusLabel(b.status)} ${formatMoney(b.amount)} (${b.count})`).join(' · ')}
+          {activity.byStatus.map((b) => (
+            <div key={b.status} className="whitespace-nowrap">{statusLabel(b.status)} {formatMoney(b.amount)} ({b.count})</div>
+          ))}
         </div>
       )}
+    </td>
+  );
+}
+
+// Balance inventory cell — current stock value at the owner's own cost
+// price, with total quantity underneath (from reports.js GET
+// /reports/activity-summary balanceInventory).
+function BalanceInventoryCell({ inventory }) {
+  if (!inventory || inventory.count === 0) return <td className="p-2 text-right text-gray-300">-</td>;
+  return (
+    <td className="p-2 text-right">
+      <div>{formatMoney(inventory.amount)}</div>
+      <div className="text-xs text-gray-400 whitespace-nowrap">Qty / प्रमाण {inventory.quantity}</div>
     </td>
   );
 }
@@ -164,11 +195,40 @@ function SalesCell({ sales }) {
     <td className="p-2 text-right">
       <div>{formatMoney(sales.amount)}</div>
       <div className="text-xs text-gray-400">
-        Cash / रोख {formatMoney(sales.cash.amount)} ({sales.cash.count}) · Retailer / किरकोळ {formatMoney(sales.retailer.amount)} ({sales.retailer.count})
+        <div className="whitespace-nowrap">Cash / रोख {formatMoney(sales.cash.amount)} ({sales.cash.count})</div>
+        <div className="whitespace-nowrap">Retailer / किरकोळ {formatMoney(sales.retailer.amount)} ({sales.retailer.count})</div>
       </div>
       {sales.byStatus.length > 0 && (
-        <div className="text-xs text-gray-400">
-          {sales.byStatus.map((b) => `${statusLabel(b.status)} ${formatMoney(b.amount)} (${b.count})`).join(' · ')}
+        <div className="text-xs text-gray-400 mt-1">
+          {sales.byStatus.map((b) => (
+            <div key={b.status} className="whitespace-nowrap">{statusLabel(b.status)} {formatMoney(b.amount)} ({b.count})</div>
+          ))}
+        </div>
+      )}
+    </td>
+  );
+}
+
+// A dealer's Sold products cell — the overall total, then the dealer's own
+// cash sold products and the products sold to retailers on separate lines
+// (from reports.js GET /reports/activity-summary). The retailer line shows
+// both the number of sales (distinct sale ids) and the number of sold
+// product rows (sale line items) in those sales.
+function SoldProductsCell({ soldProducts }) {
+  if (!soldProducts) return <td className="p-2 text-right text-gray-300">-</td>;
+  const { cash, retailer } = soldProducts;
+  return (
+    <td className="p-2 text-right">
+      <div>{formatMoney(soldProducts.amount)}</div>
+      <div className="text-xs text-gray-400">
+        <div className="whitespace-nowrap">Cash / रोख {formatMoney(cash.amount)} ({cash.count})</div>
+        <div className="whitespace-nowrap">Retailer / किरकोळ {formatMoney(retailer.amount)} ({retailer.count})</div>
+      </div>
+      {soldProducts.byStatus.length > 0 && (
+        <div className="text-xs text-gray-400 mt-1">
+          {soldProducts.byStatus.map((b) => (
+            <div key={b.status} className="whitespace-nowrap">{statusLabel(b.status)} {formatMoney(b.amount)} ({b.count})</div>
+          ))}
         </div>
       )}
     </td>
@@ -186,6 +246,7 @@ function DealerActivityTable({ rows }) {
             <th className="text-left p-2">Dealer <span className="text-gray-400 font-normal">/ डीलर</span></th>
             <th className="text-right p-2">Purchases <span className="text-gray-400 font-normal">/ खरेदी</span></th>
             <th className="text-right p-2">Sales <span className="text-gray-400 font-normal">/ विक्री</span></th>
+            <th className="text-right p-2">Balance inventory <span className="text-gray-400 font-normal">/ शिल्लक साठा</span></th>
             <th className="text-right p-2">Sold products <span className="text-gray-400 font-normal">/ विकलेली उत्पादने</span></th>
             <th className="text-right p-2">Goods returns <span className="text-gray-400 font-normal">/ माल परत</span></th>
             <th className="text-right p-2">Payments (to supplier) <span className="text-gray-400 font-normal">/ देयके</span></th>
@@ -200,7 +261,8 @@ function DealerActivityTable({ rows }) {
               <td className="p-2">{d.dealerName}</td>
               <ActivityCell activity={d.purchases} />
               <SalesCell sales={d.sales} />
-              <ActivityCell activity={d.soldProducts} />
+              <BalanceInventoryCell inventory={d.balanceInventory} />
+              <SoldProductsCell soldProducts={d.soldProducts} />
               <ActivityCell activity={d.goodsReturns} />
               <ActivityCell activity={d.payments} />
               <ActivityCell activity={d.receipts} />
@@ -209,7 +271,7 @@ function DealerActivityTable({ rows }) {
             </tr>
           ))}
           {rows.length === 0 && (
-            <tr><td colSpan={9} className="p-4 text-center text-gray-400 italic">No dealers yet / अजून कोणतेही डीलर नाहीत</td></tr>
+            <tr><td colSpan={10} className="p-4 text-center text-gray-400 italic">No dealers yet / अजून कोणतेही डीलर नाहीत</td></tr>
           )}
         </tbody>
       </table>
@@ -232,6 +294,7 @@ function RetailerActivityTable({ rows }) {
             <th className="text-left p-2">Retailer <span className="text-gray-400 font-normal">/ किरकोळ विक्रेता</span></th>
             <th className="text-right p-2">Purchases <span className="text-gray-400 font-normal">/ खरेदी</span></th>
             <th className="text-right p-2">Sales <span className="text-gray-400 font-normal">/ विक्री</span></th>
+            <th className="text-right p-2">Balance inventory <span className="text-gray-400 font-normal">/ शिल्लक साठा</span></th>
             <th className="text-right p-2">Sold products <span className="text-gray-400 font-normal">/ विकलेली उत्पादने</span></th>
             <th className="text-right p-2">Goods returns <span className="text-gray-400 font-normal">/ माल परत</span></th>
             <th className="text-right p-2">Payments <span className="text-gray-400 font-normal">/ देयके</span></th>
@@ -245,6 +308,7 @@ function RetailerActivityTable({ rows }) {
               <td className="p-2">{r.retailerName}</td>
               <ActivityCell activity={r.purchases} />
               <ActivityCell activity={r.sales} />
+              <BalanceInventoryCell inventory={r.balanceInventory} />
               <ActivityCell activity={r.soldProducts} />
               <ActivityCell activity={r.goodsReturns} />
               <ActivityCell activity={r.payments} />
@@ -252,7 +316,7 @@ function RetailerActivityTable({ rows }) {
             </tr>
           ))}
           {rows.length === 0 && (
-            <tr><td colSpan={8} className="p-4 text-center text-gray-400 italic">No retailers yet / अजून कोणतेही किरकोळ विक्रेते नाहीत</td></tr>
+            <tr><td colSpan={9} className="p-4 text-center text-gray-400 italic">No retailers yet / अजून कोणतेही किरकोळ विक्रेते नाहीत</td></tr>
           )}
         </tbody>
       </table>

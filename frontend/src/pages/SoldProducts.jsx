@@ -22,6 +22,13 @@ function escapeHtml(str) {
 // list. A retailer's own view still ends up as a single header-less
 // section/group, same as it already renders as a single "Total" group on
 // screen (see groupBySupplier).
+// Same sizeWeight/flavour/brand line ProductCell shows under the product
+// name on screen, as small grey text in the printout.
+function printProductDetails(item) {
+  const details = [item.productSizeWeight, item.productFlavour, item.productBrand].filter(Boolean).join(' · ');
+  return details ? `<div class="details">${escapeHtml(details)}</div>` : '';
+}
+
 function printItems(title, sections) {
   const allItems = sections.flatMap((s) => s.groups.flatMap((g) => g.items));
   const { quantity, amount } = sumItems(allItems);
@@ -29,11 +36,39 @@ function printItems(title, sections) {
   const sectionsHtml = sections.map((section) => {
     const groupsHtml = section.groups.map((g) => {
       const { quantity: gQty, amount: gAmount } = sumItems(g.items);
+      if (section.aggregated) {
+        // Aggregated view (one line per product + batch + rate, across every
+        // sale behind it) - different columns from the per-sale view below.
+        const aggRows = g.items.map((r) => `
+        <tr>
+          <td>${escapeHtml(r.productName)}${printProductDetails(r)}</td>
+          <td>${escapeHtml(r.batchName) || '-'}</td>
+          <td>${r.quantity}</td>
+          <td>${r.price != null ? formatMoney(r.price) : '-'}</td>
+          <td>${formatMoney(r.amount)}</td>
+          <td>${r.saleCount}</td>
+        </tr>
+      `).join('');
+        return `
+        <div class="group">
+          <div class="group-header">
+            <span>${escapeHtml(g.label)} (${g.items.length})</span>
+            <span>${gQty} qty &middot; ${formatMoney(gAmount)}</span>
+          </div>
+          <table>
+            <thead>
+              <tr><th>Product</th><th>Batch</th><th>Qty</th><th>Rate owed</th><th>Amount</th><th>Sales</th></tr>
+            </thead>
+            <tbody>${aggRows}</tbody>
+          </table>
+        </div>
+      `;
+      }
       const rows = g.items.map((i) => `
         <tr>
           <td>${i.saleId}</td>
           <td>${new Date(i.date).toLocaleDateString()}</td>
-          <td>${escapeHtml(i.productName)}${i.remark ? `<div class="remark">${escapeHtml(i.remark)}</div>` : ''}</td>
+          <td>${escapeHtml(i.productName)}${printProductDetails(i)}${i.remark ? `<div class="remark">${escapeHtml(i.remark)}</div>` : ''}</td>
           <td>${escapeHtml(i.batchName) || '-'}</td>
           <td>${i.quantity}</td>
           <td>${i.price != null ? formatMoney(i.price) : '-'}</td>
@@ -81,6 +116,7 @@ function printItems(title, sections) {
           table { width: 100%; border-collapse: collapse; margin-bottom: 4px; }
           th, td { border: 1px solid #ddd; padding: 6px 8px; font-size: 12px; text-align: left; }
           th { background: #f3f4f6; }
+          .details { font-size: 10px; color: #9ca3af; margin-top: 2px; }
           .remark { font-size: 10px; color: #b45309; margin-top: 2px; }
         </style>
       </head>
@@ -96,6 +132,13 @@ function printItems(title, sections) {
   win.document.close();
   win.focus();
   win.print();
+}
+
+// Number of distinct products in a list of sold-product rows - what the
+// sub-tab titles show, rather than the number of rows/sales (the same
+// product usually appears in many sales).
+function countProducts(items) {
+  return new Set(items.map((i) => i.productId)).size;
 }
 
 // Sum of quantity + amount across a list of sold-product rows — used for
@@ -128,10 +171,12 @@ export default function SoldProducts() {
   const [pendingItems, setPendingItems] = useState([]); // TO_BE_CONFIRMED
   const [paidItems, setPaidItems] = useState([]);
   const [tab, setTab] = useState('open');
-  // DEALER only — which of the three Open-tab sections is showing. Shown
-  // as tabs (rather than the sections stacked one after another) so only
-  // one table is on screen at a time.
-  const [openSubTab, setOpenSubTab] = useState('soldByRetailer');
+  // DEALER only — which of the Open-tab sections is showing. Shown as tabs
+  // (rather than the sections stacked one after another) so only one table
+  // is on screen at a time. Starts on "Owed to you by retailers" since
+  // that's the first step of the flow: retailer sells -> retailer pays the
+  // dealer -> dealer pays the supplier (on the aggregate tab).
+  const [openSubTab, setOpenSubTab] = useState('retailerOwed');
   // DEALER only — same idea, for the Paid tab's three sections.
   const [paidSubTab, setPaidSubTab] = useState('soldByRetailer');
   // DEALER only — "Filter by Retailer" on the two Open-tab sections that
@@ -269,6 +314,64 @@ export default function SoldProducts() {
       .sort((a, b) => (a.label || '').localeCompare(b.label || ''));
   }
 
+  // Aggregate view for the "Pay supplier" tab: every OPEN row this dealer
+  // owes a supplier - their own cash sales AND units a retailer resold once
+  // that retailer has paid the dealer (GET /sold-products already hides a
+  // retailer-sold row until then, and POST /pay re-checks it) - combined
+  // into one line per product + batch + rate, grouped by supplier,
+  // regardless of who made the sale. `ids` are the underlying SoldProduct
+  // rows a line stands for, which is what Pay Selected actually sends.
+  function aggregateBySupplier(items) {
+    const bySupplier = new Map();
+    for (const i of items) {
+      const sKey = i.supplierId ?? 'none';
+      if (!bySupplier.has(sKey)) {
+        bySupplier.set(sKey, {
+          key: sKey,
+          supplierId: i.supplierId,
+          label: i.supplierName || 'Unknown supplier / अज्ञात पुरवठादार',
+          rows: new Map(),
+          rawItems: [],
+        });
+      }
+      const g = bySupplier.get(sKey);
+      g.rawItems.push(i);
+      const rKey = `${i.productId}|${i.batchName || ''}|${i.price}`;
+      if (!g.rows.has(rKey)) {
+        g.rows.set(rKey, {
+          key: rKey,
+          supplierId: i.supplierId,
+          productId: i.productId,
+          productName: i.productName,
+          productSizeWeight: i.productSizeWeight,
+          productFlavour: i.productFlavour,
+          productBrand: i.productBrand,
+          batchName: i.batchName,
+          price: i.price,
+          quantity: 0,
+          amount: 0,
+          ownQuantity: 0,
+          retailerQuantity: 0,
+          saleCount: 0,
+          ids: [],
+        });
+      }
+      const r = g.rows.get(rKey);
+      const qty = Number(i.quantity || 0);
+      r.quantity += qty;
+      r.amount += Number(i.amount || 0);
+      if (i.soldByRetailer) r.retailerQuantity += qty; else r.ownQuantity += qty;
+      r.saleCount += 1;
+      r.ids.push(i.id);
+    }
+    return [...bySupplier.values()]
+      .map((g) => ({
+        ...g,
+        items: [...g.rows.values()].sort((a, b) => (a.productName || '').localeCompare(b.productName || '')),
+      }))
+      .sort((a, b) => (a.label || '').localeCompare(b.label || ''));
+  }
+
   // Same idea as groupBySupplier, for the retailer-owed lists (Owed to
   // you.../Retailer → Dealer.../Paid by retailers sections) — grouped by
   // the payment that settled them where one exists, or by retailer
@@ -335,6 +438,25 @@ export default function SoldProducts() {
       return allSelected ? new Set() : new Set(groupIds);
     });
     if (user.role === 'DEALER' && group.supplierId != null) setSupplierId(String(group.supplierId));
+  }
+
+  // Select/deselect every underlying SoldProduct row behind one aggregated
+  // line. Same one-supplier-per-payment rule as toggle() above.
+  function toggleAggregate(row) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (row.ids.every((id) => next.has(id))) {
+        row.ids.forEach((id) => next.delete(id));
+        return next;
+      }
+      if (next.size > 0) {
+        const firstSelected = openItems.find((x) => next.has(x.id));
+        if (firstSelected && firstSelected.supplierId !== row.supplierId) next.clear();
+      }
+      row.ids.forEach((id) => next.add(id));
+      return next;
+    });
+    if (row.supplierId != null) setSupplierId(String(row.supplierId));
   }
 
   // Changing the supplier by hand drops any selected item that no longer
@@ -501,6 +623,77 @@ export default function SoldProducts() {
     );
   }
 
+  // The "Pay supplier — all sales combined" table: one line per product +
+  // batch + rate under each supplier, summed across every sale behind it
+  // (see aggregateBySupplier). This is the only place a DEALER selects rows
+  // to pay a supplier.
+  function AggregatedTable({ items }) {
+    const groups = aggregateBySupplier(items);
+    return (
+      <div className="space-y-4 max-h-[70vh] lg:max-h-[calc(100vh-22rem)] overflow-y-auto">
+        {groups.map((g) => {
+          const allIds = g.rawItems.map((i) => i.id);
+          const selectedCount = allIds.filter((id) => selected.has(id)).length;
+          const { quantity: groupQty, amount: groupTotal } = sumItems(g.items);
+          return (
+            <div key={g.key} className="bg-white rounded shadow overflow-x-auto">
+              <div className="flex items-center justify-between px-3 py-2 bg-gray-50 border-b">
+                <span className="text-sm font-medium">
+                  {g.label} <span className="text-gray-400 font-normal">({g.items.length})</span>
+                </span>
+                <span className="text-sm text-gray-600">
+                  {groupQty} qty <span className="text-gray-400">/ प्रमाण</span> · {formatMoney(groupTotal)}
+                </span>
+              </div>
+              <table className="w-full text-sm">
+                <thead className="bg-gray-100 sticky top-0 z-10">
+                  <tr>
+                    <th className="p-2">
+                      <input type="checkbox"
+                        checked={allIds.length > 0 && selectedCount === allIds.length}
+                        onChange={() => toggleGroup({ items: g.rawItems, supplierId: g.supplierId })} />
+                    </th>
+                    <th className="text-left p-2">Product / उत्पादन</th>
+                    <th className="text-left p-2">Batch / बॅच</th>
+                    <th className="text-left p-2">Qty / प्रमाण</th>
+                    <th className="text-left p-2">Rate owed / देय दर</th>
+                    <th className="text-left p-2">Amount / रक्कम</th>
+                    <th className="text-left p-2">Sales / विक्री</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {g.items.map((r) => (
+                    <tr key={r.key} className="border-t">
+                      <td className="p-2">
+                        <input type="checkbox" checked={r.ids.every((id) => selected.has(id))} onChange={() => toggleAggregate(r)} />
+                      </td>
+                      <td className="p-2"><ProductCell item={r} /></td>
+                      <td className="p-2">{r.batchName || '-'}</td>
+                      <td className="p-2">
+                        <div>{r.quantity}</div>
+                        <div className="text-xs text-gray-400 whitespace-nowrap">
+                          Own / स्वतः {r.ownQuantity} · Retailers / किरकोळ {r.retailerQuantity}
+                        </div>
+                      </td>
+                      <td className="p-2">{r.price != null ? formatMoney(r.price) : '-'}</td>
+                      <td className="p-2">{formatMoney(r.amount)}</td>
+                      <td className="p-2">{r.saleCount}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          );
+        })}
+        {items.length === 0 && (
+          <div className="bg-white rounded shadow p-3 text-gray-400">
+            Nothing to pay yet. Retailer-sold items appear here once the retailer has paid you. / अद्याप भरण्यासाठी काही नाही. किरकोळ विक्रेत्याने तुम्हाला भरल्यावर त्याने विकलेल्या वस्तू येथे दिसतील.
+          </div>
+        )}
+      </div>
+    );
+  }
+
   // Retailer-owed rows shown to a DEALER (what their retailers owe THEM),
   // across OPEN/TO_BE_CONFIRMED/PAID — see soldProducts.js GET / and
   // payableByMe. Grouped by the payment that settled them where one
@@ -600,6 +793,9 @@ export default function SoldProducts() {
   // — see remark) vs cash this dealer took at their own counter.
   const soldByRetailerOpenItems = ownOpenItems.filter((i) => i.soldByRetailer);
   const directOpenItems = ownOpenItems.filter((i) => !i.soldByRetailer);
+  // Distinct products on the Pay supplier tab - computed from ownOpenItems,
+  // i.e. every OPEN row the dealer owes a supplier.
+  const aggregateRowCount = user.role === 'DEALER' ? countProducts(ownOpenItems) : 0;
   const soldByRetailerPaidItems = ownPaidItems.filter((i) => i.soldByRetailer);
   const directPaidItems = ownPaidItems.filter((i) => !i.soldByRetailer);
 
@@ -650,8 +846,16 @@ export default function SoldProducts() {
     // print only the one currently on screen, with the same retailer
     // filter applied, rather than all three stacked as before.
     if (tab === 'open') {
+      if (openSubTab === 'aggregate') {
+        return [{
+          heading: 'Payable to supplier — all sales combined',
+          note: 'Own cash sales plus retailer-sold items the retailer has already paid you for.',
+          aggregated: true,
+          groups: aggregateBySupplier(ownOpenItems),
+        }];
+      }
       if (openSubTab === 'direct') {
-        return [{ heading: 'Your own cash sales — payable to supplier', groups: groupBySupplier(directOpenItems) }];
+        return [{ heading: 'Your own cash sales', groups: groupBySupplier(directOpenItems) }];
       }
       if (openSubTab === 'retailerOwed') {
         return [{
@@ -660,7 +864,7 @@ export default function SoldProducts() {
           groups: groupRetailerOwed(retailerOpenItemsFiltered),
         }];
       }
-      return [{ heading: 'Sold by your retailers — payable to supplier', groups: groupBySupplier(soldByRetailerOpenItemsFiltered) }];
+      return [{ heading: 'Sold by your retailers (retailer has paid you)', groups: groupBySupplier(soldByRetailerOpenItemsFiltered) }];
     }
     if (tab === 'pending') {
       return [{ heading: 'Retailer → Dealer — to be confirmed', groups: groupRetailerOwed(pendingItemsFiltered) }];
@@ -715,9 +919,10 @@ export default function SoldProducts() {
               <>
                 <div className="flex gap-1 mb-3 border-b overflow-x-auto">
                   {[
-                    ['soldByRetailer', 'Sold by your retailers — payable to supplier', 'किरकोळ विक्रेत्यांनी विकलेले — पुरवठादाराला देय', soldByRetailerOpenItems.length],
-                    ['direct', 'Your own cash sales — payable to supplier', 'स्वतःची रोख विक्री — पुरवठादाराला देय', directOpenItems.length],
-                    ['retailerOwed', 'Owed to you by retailers — not yet paid', 'किरकोळ विक्रेत्यांकडून येणे — अद्याप न भरलेले', retailerOpenItems.length],
+                    ['retailerOwed', 'Owed to you by retailers — not yet paid', 'किरकोळ विक्रेत्यांकडून येणे — अद्याप न भरलेले', countProducts(retailerOpenItems)],
+                    ['soldByRetailer', 'Sold by your retailers (retailer has paid you)', 'किरकोळ विक्रेत्यांनी विकलेले (त्यांनी तुम्हाला भरले)', countProducts(soldByRetailerOpenItems)],
+                    ['direct', 'Your own cash sales', 'स्वतःची रोख विक्री', countProducts(directOpenItems)],
+                    ['aggregate', 'Pay supplier — all sales combined', 'पुरवठादाराला भरा — सर्व विक्री एकत्र', aggregateRowCount],
                   ].map(([key, label, labelMr, count]) => (
                     <button key={key} type="button" onClick={() => setOpenSubTab(key)}
                       className={`text-sm px-3 py-2 border-b-2 -mb-px whitespace-nowrap ${
@@ -725,7 +930,7 @@ export default function SoldProducts() {
                           ? 'border-emerald-700 text-emerald-700 font-medium'
                           : 'border-transparent text-gray-500 hover:text-gray-700'
                       }`}>
-                      {label} ({count})<span className="block text-xs font-normal">{labelMr}</span>
+                      {label}<span className="block text-xs font-normal">{labelMr}</span><span className="block text-xs font-normal">({count})</span>
                     </button>
                   ))}
                 </div>
@@ -746,12 +951,21 @@ export default function SoldProducts() {
                         </select>
                       </label>
                     </div>
-                    <ItemsTable items={soldByRetailerOpenItemsFiltered} selectable />
+                    <ItemsTable items={soldByRetailerOpenItemsFiltered} selectable={false} />
                   </>
                 )}
 
                 {openSubTab === 'direct' && (
-                  <ItemsTable items={directOpenItems} selectable />
+                  <ItemsTable items={directOpenItems} selectable={false} />
+                )}
+
+                {openSubTab === 'aggregate' && (
+                  <>
+                    <p className="text-xs text-gray-400 mb-2">
+                      Your own cash sales plus retailer-sold items the retailer has already paid you for, combined by product and batch. Select lines here to pay your supplier. / तुमची स्वतःची रोख विक्री आणि किरकोळ विक्रेत्याने तुम्हाला आधीच भरलेल्या वस्तू, उत्पादन आणि बॅचनुसार एकत्र. पुरवठादाराला भरण्यासाठी येथे निवडा.
+                    </p>
+                    <AggregatedTable items={ownOpenItems} />
+                  </>
                 )}
 
                 {openSubTab === 'retailerOwed' && (
@@ -815,9 +1029,9 @@ export default function SoldProducts() {
               <>
                 <div className="flex gap-1 mb-3 border-b overflow-x-auto">
                   {[
-                    ['soldByRetailer', 'Sold by your retailers — paid to supplier', 'किरकोळ विक्रेत्यांनी विकलेले — पुरवठादाराला भरले', soldByRetailerPaidItems.length],
-                    ['direct', 'Your own cash sales — paid to supplier', 'स्वतःची रोख विक्री — पुरवठादाराला भरले', directPaidItems.length],
-                    ['retailerPaid', 'Paid by retailers', 'किरकोळ विक्रेत्यांनी भरलेले', retailerPaidItems.length],
+                    ['soldByRetailer', 'Sold by your retailers — paid to supplier', 'किरकोळ विक्रेत्यांनी विकलेले — पुरवठादाराला भरले', countProducts(soldByRetailerPaidItems)],
+                    ['direct', 'Your own cash sales — paid to supplier', 'स्वतःची रोख विक्री — पुरवठादाराला भरले', countProducts(directPaidItems)],
+                    ['retailerPaid', 'Paid by retailers', 'किरकोळ विक्रेत्यांनी भरलेले', countProducts(retailerPaidItems)],
                   ].map(([key, label, labelMr, count]) => (
                     <button key={key} type="button" onClick={() => setPaidSubTab(key)}
                       className={`text-sm px-3 py-2 border-b-2 -mb-px whitespace-nowrap ${
@@ -825,7 +1039,7 @@ export default function SoldProducts() {
                           ? 'border-emerald-700 text-emerald-700 font-medium'
                           : 'border-transparent text-gray-500 hover:text-gray-700'
                       }`}>
-                      {label} ({count})<span className="block text-xs font-normal">{labelMr}</span>
+                      {label}<span className="block text-xs font-normal">{labelMr}</span><span className="block text-xs font-normal">({count})</span>
                     </button>
                   ))}
                 </div>

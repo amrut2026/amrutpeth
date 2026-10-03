@@ -116,6 +116,9 @@ const DEALER_INVENTORY_PRICE_COLUMNS = [
   { key: 'costPrice', label: 'Cost Price', labelMr: 'खरेदी किंमत', render: (r) => formatMoney(r.rate) },
   { key: 'sellingPrice', label: 'Selling Price (Retailer Cost Price)', labelMr: 'विक्री किंमत (किरकोळ विक्रेता खरेदी किंमत)', render: (r) => formatMoney(r.sellingPrice) },
   { key: 'retailerSellingPrice', label: 'Retailer Selling Price', labelMr: 'किरकोळ विक्रेता विक्री किंमत', render: (r) => formatMoney(r.retailerSellingPrice) },
+  // Line totals (unit price x quantity) for the rows currently in stock.
+  { key: 'totalMrp', label: 'Total MRP', labelMr: 'एकूण एमआरपी', render: (r) => formatMoney(Number(r.mrp || 0) * Number(r.quantity || 0)) },
+  { key: 'totalSellingPrice', label: 'Total Selling Price (to Retailer)', labelMr: 'एकूण विक्री किंमत (किरकोळ विक्रेत्याला)', render: (r) => formatMoney(Number(r.sellingPrice || 0) * Number(r.quantity || 0)) },
 ];
 
 // Extra price columns for the admin/organisation Retailer Inventory tab -
@@ -214,7 +217,7 @@ function summarizeRows(rows, priceKey) {
 
 // One group's summary strip (product count / total quantity / total value)
 // followed by its full item-level inventory table.
-function GroupedInventorySection({ name, rows, priceKey, priceLabel, priceLabelMr, extraColumns = [] }) {
+function GroupedInventorySection({ name, rows, priceKey, priceLabel, priceLabelMr, extraColumns = [], extraSummaries = [] }) {
   const summary = summarizeRows(rows, priceKey);
   return (
     <div className="mb-6">
@@ -224,6 +227,9 @@ function GroupedInventorySection({ name, rows, priceKey, priceLabel, priceLabelM
           <span>Products / उत्पादने: <b>{summary.productCount}</b></span>
           <span>Total Quantity / एकूण प्रमाण: <b>{summary.quantity}</b></span>
           <span>{priceLabel} / {priceLabelMr}: <b>{formatMoney(summary.value)}</b></span>
+          {extraSummaries.map((s) => (
+            <span key={s.label}>{s.label} / {s.labelMr}: <b>{formatMoney(s.value)}</b></span>
+          ))}
         </div>
       </div>
       <InventoryTable rows={rows} extraColumns={extraColumns} />
@@ -236,11 +242,22 @@ function GroupedInventorySection({ name, rows, priceKey, priceLabel, priceLabelM
 // with that dealer's full item-level inventory underneath it. Dealer
 // filter above defaults to All. Own local selection state so switching
 // away from and back to this tab resets the filter to All.
-function DealerInventoryPanel({ rows }) {
+function DealerInventoryPanel({ rows: allRows }) {
   const [selectedDealer, setSelectedDealer] = useState('ALL');
+  // Current inventory only - out-of-stock (quantity 0) rows are hidden.
+  const rows = allRows.filter((r) => Number(r.quantity || 0) > 0);
   const dealers = uniqueDealers(rows);
   const filtered = selectedDealer === 'ALL' ? rows : rows.filter((r) => String(r.dealerId) === String(selectedDealer));
   const groups = groupRows(filtered, { idKey: 'dealerId', nameKey: 'dealerName' });
+
+  // Total MRP / total selling price (to retailer) = sum of unit price x quantity.
+  const totalMrpOf = (rs) => rs.reduce((s, r) => s + Number(r.mrp || 0) * Number(r.quantity || 0), 0);
+  const totalSellingOf = (rs) => rs.reduce((s, r) => s + Number(r.sellingPrice || 0) * Number(r.quantity || 0), 0);
+  const totalsFor = (rs) => [
+    { label: 'Total MRP', labelMr: 'एकूण एमआरपी', value: totalMrpOf(rs) },
+    { label: 'Total Selling Price (to Retailer)', labelMr: 'एकूण विक्री किंमत (किरकोळ विक्रेत्याला)', value: totalSellingOf(rs) },
+  ];
+  const grand = summarizeRows(filtered, 'rate');
 
   return (
     <div>
@@ -263,17 +280,31 @@ function DealerInventoryPanel({ rows }) {
           No dealer inventory yet. / अद्याप वितरक साठा नाही.
         </div>
       ) : (
-        groups.map((g) => (
-          <GroupedInventorySection
-            key={g.id}
-            name={g.name}
-            rows={g.rows}
-            priceKey="rate"
-            priceLabel="Total Cost Price"
-            priceLabelMr="एकूण खरेदी किंमत"
-            extraColumns={DEALER_INVENTORY_PRICE_COLUMNS}
-          />
-        ))
+        <>
+          <div className="flex flex-wrap items-center justify-between gap-2 bg-emerald-50 border border-emerald-200 rounded px-3 py-2 mb-4">
+            <div className="font-semibold text-sm text-emerald-900">Grand Total / एकूण</div>
+            <div className="text-xs text-gray-600 flex flex-wrap gap-4">
+              <span>Products / उत्पादने: <b>{grand.productCount}</b></span>
+              <span>Total Quantity / एकूण प्रमाण: <b>{grand.quantity}</b></span>
+              <span>Total Cost Price / एकूण खरेदी किंमत: <b>{formatMoney(grand.value)}</b></span>
+              {totalsFor(filtered).map((s) => (
+                <span key={s.label}>{s.label} / {s.labelMr}: <b>{formatMoney(s.value)}</b></span>
+              ))}
+            </div>
+          </div>
+          {groups.map((g) => (
+            <GroupedInventorySection
+              key={g.id}
+              name={g.name}
+              rows={g.rows}
+              priceKey="rate"
+              priceLabel="Total Cost Price"
+              priceLabelMr="एकूण खरेदी किंमत"
+              extraColumns={DEALER_INVENTORY_PRICE_COLUMNS}
+              extraSummaries={totalsFor(g.rows)}
+            />
+          ))}
+        </>
       )}
     </div>
   );
@@ -1795,11 +1826,15 @@ function VouchersPanel({ data }) {
   );
 }
 
-// The six report types the Downloads tab can print, backed by
+// The report types the Downloads tab can print, backed by
 // GET /reports/downloads?type=...&from=...&to=... (see reports.js). Order
 // here is also the sub-tab order. RECEIPTS is filtered out for RETAILER
 // scope below - a retailer has no downstream to receive payments from in
 // this schema, so that endpoint always returns an empty list for them.
+// PROFIT_LOSS is offered to every scope, but shows one dealer's or retailer's
+// figures at a time - which ones you may pick is decided server-side (a
+// retailer: themselves; a dealer: themselves + their retailers; an
+// organisation: its dealers + their retailers; admin: all).
 const DOWNLOAD_REPORTS = [
   ['PURCHASES', 'Purchases / खरेदी'],
   ['GOODS_RETURN', 'Goods Return / माल परत'],
@@ -1807,6 +1842,7 @@ const DOWNLOAD_REPORTS = [
   ['PAYMENTS', 'Payments / देयके'],
   ['RECEIPTS', 'Receipts / पावत्या'],
   ['VOUCHERS', 'Vouchers / व्हाउचर'],
+  ['PROFIT_LOSS', 'Profit & Loss / नफा-तोटा'],
 ];
 
 // Where each download type's ID links out to - the screen in the rest of
@@ -1851,8 +1887,14 @@ function canLinkToEntity(context) {
 // one builder covers all six instead of one per type. The ID is a real
 // link (absolute, since the print-out is a separate window/document) back
 // to that record's own screen, same target as the on-screen table.
-function buildDownloadPrintHtml({ type, context, title, subtitle, rows }) {
-  const total = rows.reduce((sum, r) => sum + Number(r.amount || 0), 0);
+// Cancelled purchase orders and cancelled goods returns stay listed but
+// don't count toward the total.
+function countsTowardTotal(type, r) {
+  return !((type === 'PURCHASES' || type === 'GOODS_RETURN') && r.status === 'CANCELLED');
+}
+
+function buildDownloadPrintHtml({ type, context, title, subtitle, rows, counterpartyLabel = 'Counterparty' }) {
+  const total = rows.reduce((sum, r) => sum + (countsTowardTotal(type, r) ? Number(r.amount || 0) : 0), 0);
   const linkable = canLinkToEntity(context);
   const bodyRows = rows.map((r) => {
     const idCell = linkable
@@ -1888,10 +1930,169 @@ function buildDownloadPrintHtml({ type, context, title, subtitle, rows }) {
   <h1>${escapeHtml(title)}</h1>
   <div class="subtitle">${escapeHtml(subtitle)} &middot; Printed ${escapeHtml(new Date().toLocaleString())}</div>
   <table>
-    <thead><tr><th>ID</th><th>Date</th><th>Counterparty</th><th>Status</th><th>Amount</th></tr></thead>
+    <thead><tr><th>ID</th><th>Date</th><th>${escapeHtml(counterpartyLabel)}</th><th>Status</th><th>Amount</th></tr></thead>
     <tbody>${bodyRows || '<tr><td colspan="5" class="muted">No records in this date range.</td></tr>'}</tbody>
     ${rows.length ? `<tfoot><tr><td colspan="4">Total</td><td>${escapeHtml(formatMoney(total))}</td></tr></tfoot>` : ''}
   </table>
+</body>
+</html>`;
+}
+
+// ---- Profit & Loss (Downloads sub-tab) --------------------------------
+// GET /reports/downloads?type=PROFIT_LOSS[&entityType=&entityId=] answers
+// with `profitLoss`:
+// { entityType: 'DEALER' | 'RETAILER', entityId, entityName,
+//   lines: [{ key, kind: 'ADD' | 'LESS', count, amount, quantity? }], total }
+// and `entities` (the dealers / retailers the caller may pick between).
+// Labels follow the SELECTED account's type, not the viewer's role.
+// where total = sales + balance inventory - (goods returns + purchases),
+// all valued at the caller's own purchase price (see reports.js). A
+// retailer gets one SALES line; a dealer gets SALES_CASH and
+// SALES_RETAILER, and their purchases / goods returns are with suppliers.
+// Text of one entry in the P&L account picker. A retailer shows its dealer
+// in brackets unless the viewer IS that dealer (they'd all say the same);
+// a dealer viewing their own account is marked as such.
+function profitLossEntityLabel(e, viewerContext) {
+  if (e.type === 'RETAILER') return e.dealerName && viewerContext !== 'DEALER' ? `${e.name} (${e.dealerName})` : e.name;
+  return viewerContext === 'DEALER' ? `${e.name} (You / स्वतः)` : e.name;
+}
+
+const PROFIT_LOSS_LABELS = {
+  SALES: ['Sales', 'विक्री'],
+  SALES_CASH: ['Cash Sales', 'रोख विक्री'],
+  SALES_RETAILER: ['Retailer Sales', 'किरकोळ विक्रेत्याला विक्री'],
+  BALANCE_INVENTORY: ['Balance Inventory (at retailer purchase price)', 'शिल्लक माल (किरकोळ विक्रेता खरेदी किंमत)'],
+  GOODS_RETURN: ['Goods Returns', 'माल परत'],
+  PURCHASES: ['Purchases', 'खरेदी'],
+};
+// Same keys, worded for a dealer (their suppliers, their own cost price).
+const DEALER_PROFIT_LOSS_LABELS = {
+  ...PROFIT_LOSS_LABELS,
+  BALANCE_INVENTORY: ['Balance Inventory (at dealer purchase price)', 'शिल्लक माल (वितरक खरेदी किंमत)'],
+  GOODS_RETURN: ['Goods Returns to Supplier', 'पुरवठादाराला माल परत'],
+  PURCHASES: ['Purchases from Supplier', 'पुरवठादाराकडून खरेदी'],
+};
+
+function profitLossLabel(key, context) {
+  const labels = context === 'DEALER' ? DEALER_PROFIT_LOSS_LABELS : PROFIT_LOSS_LABELS;
+  return labels[key] || [key, ''];
+}
+
+function formatSignedMoney(value) {
+  const n = Number(value || 0);
+  return `${n < 0 ? '-' : ''}₹${Math.abs(n).toFixed(2)}`;
+}
+
+function profitLossDetail(line, context) {
+  if (line.key === 'BALANCE_INVENTORY') return `${line.quantity} ${line.quantity === 1 ? 'unit' : 'units'} in stock`;
+  const purchaseWord = context === 'DEALER' ? 'confirmed/modified purchase' : 'received purchase';
+  const noun = {
+    SALES: 'sale', SALES_CASH: 'sale', SALES_RETAILER: 'sale',
+    GOODS_RETURN: 'confirmed return', PURCHASES: purchaseWord,
+  }[line.key] || 'record';
+  return `${line.count} ${noun}${line.count === 1 ? '' : 's'}`;
+}
+
+function profitLossNote(context, hasDateRange) {
+  const purchaseWord = context === 'DEALER' ? 'confirmed/modified' : 'received';
+  return `Counts completed/dispatched sales, ${purchaseWord} purchases and confirmed goods returns. Balance inventory is current stock.`
+    + (hasDateRange ? ' The date range applies to sales, purchases and goods returns only - balance inventory is not limited to it.' : '');
+}
+
+function ProfitLossTable({ pnl, loading, hasDateRange }) {
+  if (!pnl) {
+    return loading
+      ? <div className="p-3 text-gray-400 text-sm">Loading... <span className="text-gray-400">/ लोड होत आहे...</span></div>
+      : <div className="p-3 text-gray-400 text-sm">No dealers or retailers to show. <span className="text-gray-400">/ दाखवण्यासाठी वितरक किंवा किरकोळ विक्रेते नाहीत.</span></div>;
+  }
+  const kind = pnl.entityType;
+  const isLoss = pnl.total < 0;
+  return (
+    <div>
+      <div className="mb-3 text-sm">
+        <span className="text-gray-500">{kind === 'DEALER' ? 'Dealer / वितरक' : 'Retailer / किरकोळ विक्रेता'}:</span>{' '}
+        <span className="font-semibold">{pnl.entityName}</span>
+      </div>
+      <table className="w-full text-sm">
+        <thead className="bg-gray-100">
+          <tr>
+            <th className="text-left p-2 w-10"></th>
+            <th className="text-left p-2 border-l">Particulars <span className="text-gray-400 font-normal">/ तपशील</span></th>
+            <th className="text-left p-2 border-l">Details <span className="text-gray-400 font-normal">/ माहिती</span></th>
+            <th className="text-right p-2 border-l">Amount <span className="text-gray-400 font-normal">/ रक्कम</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          {pnl.lines.map((line) => {
+            const [label, labelMr] = profitLossLabel(line.key, kind);
+            return (
+              <tr key={line.key} className="border-t">
+                <td className="p-2 font-semibold text-gray-500">{line.kind === 'ADD' ? '+' : '−'}</td>
+                <td className="p-2 border-l">{label} <span className="text-gray-400">/ {labelMr}</span></td>
+                <td className="p-2 border-l text-gray-500">{profitLossDetail(line, kind)}</td>
+                <td className="p-2 border-l text-right">{formatMoney(line.amount)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+        <tfoot>
+          <tr className="border-t-2 font-semibold bg-gray-50">
+            <td className="p-2" colSpan={3}>
+              {isLoss ? 'Loss' : 'Profit'} <span className="text-gray-400 font-normal">/ {isLoss ? 'तोटा' : 'नफा'}</span>
+              <span className="text-gray-400 font-normal text-xs ml-2">Sales + Balance Inventory − (Goods Returns + Purchases)</span>
+            </td>
+            <td className={`p-2 text-right ${isLoss ? 'text-red-600' : 'text-emerald-700'}`}>{formatSignedMoney(pnl.total)}</td>
+          </tr>
+        </tfoot>
+      </table>
+      <p className="text-xs text-gray-500 mt-3">
+        {profitLossNote(kind, hasDateRange)}
+      </p>
+    </div>
+  );
+}
+
+function buildProfitLossPrintHtml({ title, subtitle, pnl, hasDateRange }) {
+  const kind = pnl.entityType;
+  const isLoss = pnl.total < 0;
+  const bodyRows = pnl.lines.map((line) => {
+    const [label] = profitLossLabel(line.key, kind);
+    return `<tr>
+      <td class="sign">${line.kind === 'ADD' ? '+' : '&minus;'}</td>
+      <td>${escapeHtml(label)}</td>
+      <td>${escapeHtml(profitLossDetail(line, kind))}</td>
+      <td class="num">${escapeHtml(formatMoney(line.amount))}</td>
+    </tr>`;
+  }).join('');
+  const note = profitLossNote(kind, hasDateRange);
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>${escapeHtml(title)}</title>
+<style>
+  body { font-family: Arial, sans-serif; padding: 24px; color: #111; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .subtitle { font-size: 12px; color: #555; margin-bottom: 20px; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 8px; font-size: 12px; }
+  th, td { border: 1px solid #ddd; padding: 4px 6px; text-align: left; }
+  th { background: #f3f3f3; }
+  td.sign { width: 24px; text-align: center; font-weight: bold; }
+  td.num, th.num { text-align: right; }
+  tfoot td { font-weight: bold; background: #f9f9f9; }
+  .muted { color: #666; font-size: 11px; margin: 8px 0; }
+  @media print { body { padding: 0; } }
+</style>
+</head>
+<body>
+  <h1>${escapeHtml(title)}</h1>
+  <div class="subtitle">${escapeHtml(kind === 'DEALER' ? 'Dealer' : 'Retailer')}: ${escapeHtml(pnl.entityName)} &middot; ${escapeHtml(subtitle)} &middot; Printed ${escapeHtml(new Date().toLocaleString())}</div>
+  <table>
+    <thead><tr><th></th><th>Particulars</th><th>Details</th><th class="num">Amount</th></tr></thead>
+    <tbody>${bodyRows}</tbody>
+    <tfoot><tr><td colspan="3">${isLoss ? 'Loss' : 'Profit'} (Sales + Balance Inventory &minus; (Goods Returns + Purchases))</td><td class="num">${escapeHtml(formatSignedMoney(pnl.total))}</td></tr></tfoot>
+  </table>
+  <div class="muted">${escapeHtml(note)}</div>
 </body>
 </html>`;
 }
@@ -1906,28 +2107,83 @@ function buildDownloadPrintHtml({ type, context, title, subtitle, rows }) {
 function DownloadsPanel({ context }) {
   const types = DOWNLOAD_REPORTS.filter(([key]) => !(key === 'RECEIPTS' && context === 'RETAILER'));
   const [subTab, setSubTab] = useState(types[0][0]);
+  const isProfitLoss = subTab === 'PROFIT_LOSS';
+  // Only P&L fills this in - it's a summary, not a list of rows.
+  const [pnl, setPnl] = useState(null);
+  // Which account the P&L is for, as 'DEALER:5' / 'RETAILER:12' ('' = the
+  // server's default), and the accounts this login may pick between.
+  const [pnlEntity, setPnlEntity] = useState('');
+  const [pnlEntities, setPnlEntities] = useState([]);
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
   const [rows, setRows] = useState(null);
+  // Vouchers split into PAYABLE (to supplier) / RECEIVABLE (from retailer);
+  // Sales split into CASH / RETAILER. Retailer logins only ever have one
+  // side of each (RECEIVABLE vouchers, CASH sales), so no split there.
+  const SPLITS = {
+    VOUCHERS: {
+      field: 'voucherType', initial: 'PAYABLE',
+      tabs: [
+        ['PAYABLE', 'Payable — to Supplier', 'देय — पुरवठादाराला', 'Supplier'],
+        ['RECEIVABLE', 'Receivable — from Retailer', 'प्राप्य — किरकोळ विक्रेत्याकडून', 'Retailer'],
+      ],
+    },
+    SALES: {
+      field: 'saleType', initial: 'CASH',
+      tabs: [
+        ['CASH', 'Cash Sale', 'रोख विक्री', 'Customer'],
+        ['RETAILER', 'Retailer Sale', 'किरकोळ विक्रेत्याला विक्री', 'Retailer'],
+      ],
+    },
+  };
+  SPLITS.GOODS_RETURN = {
+    field: 'returnType', initial: 'TO_SUPPLIER',
+    tabs: [
+      ['TO_SUPPLIER', 'Returned to Supplier', 'पुरवठादाराला परत', 'Supplier'],
+      ['FROM_RETAILER', 'Returned from Retailer', 'किरकोळ विक्रेत्याकडून परत', 'Retailer'],
+    ],
+  };
+  const [splitSel, setSplitSel] = useState({ VOUCHERS: 'PAYABLE', SALES: 'CASH', GOODS_RETURN: 'TO_SUPPLIER' });
+  const split = context !== 'RETAILER' ? SPLITS[subTab] : null;
+  const showVoucherTypeTabs = !!split;
+  const voucherTabs = split ? split.tabs : [];
+  const voucherType = split ? splitSel[subTab] : null;
+  const setVoucherType = (key) => setSplitSel((prev) => ({ ...prev, [subTab]: key }));
+  const visibleRows = rows && split ? rows.filter((r) => r[split.field] === voucherType) : rows;
+  const activeVoucherTab = split ? voucherTabs.find(([k]) => k === voucherType) : null;
+  const counterpartyLabel = activeVoucherTab ? activeVoucherTab[3] : 'Counterparty';
 
   useEffect(() => {
     setRows(null);
+    setPnl(null);
     const params = new URLSearchParams({ type: subTab });
     if (fromDate) params.set('from', fromDate);
     if (toDate) params.set('to', toDate);
+    if (subTab === 'PROFIT_LOSS' && pnlEntity) {
+      const [entityType, entityId] = pnlEntity.split(':');
+      params.set('entityType', entityType);
+      params.set('entityId', entityId);
+    }
     let ignore = false;
     api.get(`/reports/downloads?${params.toString()}`).then((r) => {
-      if (!ignore) setRows(r.data.rows);
+      if (!ignore) {
+        setRows(r.data.rows);
+        setPnl(r.data.profitLoss ?? null);
+        if (r.data.entities) setPnlEntities(r.data.entities);
+      }
     });
     return () => { ignore = true; };
-  }, [subTab, fromDate, toDate]);
+  }, [subTab, fromDate, toDate, pnlEntity]);
 
   function handlePrint() {
-    const label = types.find(([key]) => key === subTab)?.[1] || subTab;
+    const baseLabel = types.find(([key]) => key === subTab)?.[1] || subTab;
+    const label = activeVoucherTab ? `${baseLabel} — ${activeVoucherTab[1]}` : baseLabel;
     const rangeLabel = (fromDate || toDate)
       ? `${fromDate ? new Date(fromDate).toLocaleDateString() : 'Start'} - ${toDate ? new Date(toDate).toLocaleDateString() : 'Today'}`
       : 'All dates';
-    const html = buildDownloadPrintHtml({ type: subTab, context, title: label, subtitle: rangeLabel, rows: rows || [] });
+    const html = isProfitLoss
+      ? buildProfitLossPrintHtml({ title: label, subtitle: rangeLabel, pnl, hasDateRange: !!(fromDate || toDate) })
+      : buildDownloadPrintHtml({ type: subTab, context, title: label, subtitle: rangeLabel, rows: visibleRows || [], counterpartyLabel });
     const printWindow = window.open('', '_blank', 'width=900,height=700');
     if (!printWindow) return; // popup blocked - nothing else to fall back to here
     printWindow.document.write(html);
@@ -1936,7 +2192,7 @@ function DownloadsPanel({ context }) {
     printWindow.onload = () => printWindow.print();
   }
 
-  const total = (rows || []).reduce((sum, r) => sum + Number(r.amount || 0), 0);
+  const total = (visibleRows || []).reduce((sum, r) => sum + (countsTowardTotal(subTab, r) ? Number(r.amount || 0) : 0), 0);
 
   return (
     <div>
@@ -1951,10 +2207,44 @@ function DownloadsPanel({ context }) {
           <input type="date" value={toDate} min={fromDate || undefined}
             onChange={(e) => setToDate(e.target.value)} className="border rounded px-2 py-1 text-sm" />
         </div>
-        <button onClick={handlePrint} disabled={!rows}
+        {isProfitLoss && pnlEntities.length > 1 && (
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Account <span className="text-gray-400">/ खाते</span></label>
+            <select value={pnlEntity || (pnl ? `${pnl.entityType}:${pnl.entityId}` : '')}
+              onChange={(e) => setPnlEntity(e.target.value)} className="border rounded px-2 py-1 text-sm max-w-xs">
+              {[['DEALER', 'Dealers / वितरक'], ['RETAILER', 'Retailers / किरकोळ विक्रेते']].map(([t, groupLabel]) => {
+                const group = pnlEntities.filter((e) => e.type === t);
+                if (!group.length) return null;
+                return (
+                  <optgroup key={t} label={groupLabel}>
+                    {group.map((e) => (
+                      <option key={`${e.type}:${e.id}`} value={`${e.type}:${e.id}`}>
+                        {profitLossEntityLabel(e, context)}
+                      </option>
+                    ))}
+                  </optgroup>
+                );
+              })}
+            </select>
+          </div>
+        )}
+        <button onClick={handlePrint} disabled={isProfitLoss ? !pnl : !rows}
           className="px-4 py-2 rounded text-sm bg-emerald-700 text-white disabled:opacity-50">
           Print <span className="font-normal">/ प्रिंट</span>
         </button>
+        {!showVoucherTypeTabs && (isProfitLoss ? (
+          <div className="ml-auto text-right">
+            <div className="text-xs text-gray-500">
+              {pnl && pnl.total < 0 ? 'Loss' : 'Profit'} <span className="text-gray-400">/ {pnl && pnl.total < 0 ? 'तोटा' : 'नफा'}</span>
+            </div>
+            <div className={`text-lg font-semibold ${pnl && pnl.total < 0 ? 'text-red-600' : 'text-emerald-700'}`}>{pnl ? formatSignedMoney(pnl.total) : '--'}</div>
+          </div>
+        ) : (
+          <div className="ml-auto text-right">
+            <div className="text-xs text-gray-500">Grand total <span className="text-gray-400">/ एकूण</span></div>
+            <div className="text-lg font-semibold text-emerald-700">{visibleRows ? formatMoney(total) : '--'}</div>
+          </div>
+        ))}
       </div>
 
       <div className="flex gap-2 mb-4 border-b overflow-x-auto">
@@ -1966,12 +2256,35 @@ function DownloadsPanel({ context }) {
         ))}
       </div>
 
+      {showVoucherTypeTabs && (
+        <div className="flex gap-2 mb-4 border-b overflow-x-auto">
+          {voucherTabs.map(([key, label, labelMr]) => {
+            const tabRows = rows ? rows.filter((r) => r[split.field] === key) : null;
+            const count = tabRows ? tabRows.length : null;
+            const tabTotal = tabRows ? tabRows.reduce((sum, r) => sum + (countsTowardTotal(subTab, r) ? Number(r.amount || 0) : 0), 0) : null;
+            return (
+              <button key={key} onClick={() => setVoucherType(key)}
+                className={`px-3 py-2 text-sm whitespace-nowrap -mb-px border-b-2 text-left ${voucherType === key ? 'border-emerald-700 text-emerald-700 font-semibold' : 'border-transparent text-gray-500'}`}>
+                {label}
+                <span className="block text-xs font-normal">{labelMr}</span>
+                {count !== null && <span className="block text-xs font-normal">({count})</span>}
+                {tabTotal !== null && <span className="block text-xs font-semibold text-emerald-700">Total: {formatMoney(tabTotal)}</span>}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {isProfitLoss ? (
+        <ProfitLossTable pnl={pnl} loading={rows === null} hasDateRange={!!(fromDate || toDate)} />
+      ) : (
+      <div className="overflow-y-auto max-h-[calc(100vh-22rem)] min-h-[12rem]">
       <table className="w-full text-sm">
         <thead className="bg-gray-100 sticky top-0 z-10">
           <tr>
             <th className="text-left p-2">ID</th>
             <th className="text-left p-2 border-l">Date <span className="text-gray-400 font-normal">/ तारीख</span></th>
-            <th className="text-left p-2 border-l">Counterparty <span className="text-gray-400 font-normal">/ व्यापारी</span></th>
+            <th className="text-left p-2 border-l">{counterpartyLabel} <span className="text-gray-400 font-normal">/ व्यापारी</span></th>
             <th className="text-left p-2 border-l">Status <span className="text-gray-400 font-normal">/ स्थिती</span></th>
             <th className="text-left p-2 border-l">Amount <span className="text-gray-400 font-normal">/ रक्कम</span></th>
           </tr>
@@ -1980,10 +2293,10 @@ function DownloadsPanel({ context }) {
           {rows === null && (
             <tr><td className="p-3 text-gray-400" colSpan={5}>Loading... <span className="text-gray-400">/ लोड होत आहे...</span></td></tr>
           )}
-          {rows?.length === 0 && (
+          {visibleRows?.length === 0 && (
             <tr><td className="p-3 text-gray-400" colSpan={5}>No records in this date range. <span className="text-gray-400">/ या कालावधीत नोंदी नाहीत.</span></td></tr>
           )}
-          {rows?.map((r) => (
+          {visibleRows?.map((r) => (
             <tr key={r.id} className="border-t">
               <td className="p-2">
                 {/* Opens that record's own screen in a new tab - see the
@@ -2007,15 +2320,9 @@ function DownloadsPanel({ context }) {
             </tr>
           ))}
         </tbody>
-        {rows?.length > 0 && (
-          <tfoot>
-            <tr className="border-t font-semibold bg-gray-50">
-              <td className="p-2" colSpan={4}>Total <span className="font-normal text-gray-500">/ एकूण</span></td>
-              <td className="p-2 border-l">{formatMoney(total)}</td>
-            </tr>
-          </tfoot>
-        )}
       </table>
+      </div>
+      )}
     </div>
   );
 }

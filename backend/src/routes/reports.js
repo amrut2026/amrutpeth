@@ -402,7 +402,7 @@ router.get('/org-summary', authRequired, async (req, res) => {
           // inherently ownerType DEALER, priced at `rate` (see Inventory
           // in schema.prisma).
           // Current stock only (quantity > 0).
-          inventory: { where: { quantity: { gt: 0 } }, select: { quantity: true, rate: true, mrp: true, sellingPrice: true, retailerSellingPrice: true } },
+          inventory: { where: { quantity: { gt: 0 } }, select: { productId: true, quantity: true, rate: true, mrp: true, sellingPrice: true, retailerSellingPrice: true } },
         },
       },
     },
@@ -422,6 +422,7 @@ router.get('/org-summary', authRequired, async (req, res) => {
     ? await prisma.inventory.findMany({
         where: { ownerType: 'RETAILER', quantity: { gt: 0 }, retailer: { primaryDealerId: { in: allDealerIds } } },
         select: {
+          productId: true,
           quantity: true,
           mrp: true,
           sellingPrice: true,
@@ -438,15 +439,19 @@ router.get('/org-summary', authRequired, async (req, res) => {
     retailerInventoryByDealer.get(dealerId).push(row);
   }
 
-  const emptyTotals = () => ({ dealerCount: 0, retailerCount: 0, inventoryCount: 0, costValue: 0, retailerSellingValue: 0, mrpValue: 0, sellingValue: 0 });
+  const emptyTotals = () => ({ dealerCount: 0, retailerCount: 0, inventoryCount: 0, quantityTotal: 0, costValue: 0, retailerSellingValue: 0, mrpValue: 0, sellingValue: 0 });
   const grandTotals = { organisationCount: organisations.length, ...emptyTotals() };
 
   const orgRows = organisations.map((org) => {
     const orgTotals = emptyTotals();
 
     const dealerRows = org.dealers.map((d) => {
-      const ownInventory = d.inventory;
-      const retInventory = retailerInventoryByDealer.get(d.id) || [];
+      // Current stock only. Also enforced here (not just in the queries
+      // above) so inventoryCount and every value below can never include
+      // a quantity 0 row.
+      const inStock = (r) => Number(r.quantity || 0) > 0;
+      const ownInventory = d.inventory.filter(inStock);
+      const retInventory = (retailerInventoryByDealer.get(d.id) || []).filter(inStock);
 
       // Per-retailer inventory breakdown — every one of this dealer's
       // retailers gets a row here even with zero stock, same as every
@@ -460,6 +465,8 @@ router.get('/org-summary', authRequired, async (req, res) => {
           retailerId: r.id,
           retailerName: r.name,
           inventoryCount: 0,
+          productIds: new Set(),
+          quantityTotal: 0,
           costValue: 0,
           retailerSellingValue: 0,
           mrpValue: 0,
@@ -469,56 +476,75 @@ router.get('/org-summary', authRequired, async (req, res) => {
       for (const row of retInventory) {
         const entry = byRetailer.get(row.retailerId);
         if (!entry) continue; // defensive — every row's retailer belongs to this dealer
-        entry.inventoryCount += 1;
+        entry.productIds.add(row.productId);
+        entry.inventoryCount = entry.productIds.size;
+        entry.quantityTotal += row.quantity;
         entry.costValue += Number(row.sellingPrice) * row.quantity;
         entry.retailerSellingValue += Number(row.retailerSellingPrice) * row.quantity;
         entry.mrpValue += Number(row.mrp ?? 0) * row.quantity;
         entry.sellingValue += Number(row.sellingPrice ?? 0) * row.quantity;
       }
 
-      // Own (rate-priced) stock plus every one of this dealer's retailers'
-      // (sellingPrice-priced) stock, rolled up together — from an
-      // org/admin oversight view a retailer's stock is still that dealer's
-      // stock in the field. Both totals are quantity-weighted (unit price
-      // × quantity, summed), the number that actually represents money
-      // tied up in stock, not a sum of unit prices.
-      const costValue = ownInventory.reduce((sum, r) => sum + Number(r.rate) * r.quantity, 0)
-        + retInventory.reduce((sum, r) => sum + Number(r.sellingPrice) * r.quantity, 0);
-      const retailerSellingValue = ownInventory.reduce((sum, r) => sum + Number(r.retailerSellingPrice) * r.quantity, 0)
-        + retInventory.reduce((sum, r) => sum + Number(r.retailerSellingPrice) * r.quantity, 0);
+      // Quantity-weighted (unit price x quantity, summed) values for a set of
+      // in-stock rows. Cost is `rate` on a dealer's own stock but
+      // `sellingPrice` (what the retailer paid) on a retailer's stock.
+      const sumOf = (rows, fn) => rows.reduce((sum, r) => sum + fn(r) * r.quantity, 0);
+      const valuesFor = (rows, costKey) => ({
+        costValue: sumOf(rows, (r) => Number(r[costKey] ?? 0)),
+        retailerSellingValue: sumOf(rows, (r) => Number(r.retailerSellingPrice ?? 0)),
+        mrpValue: sumOf(rows, (r) => Number(r.mrp ?? 0)),
+        sellingValue: sumOf(rows, (r) => Number(r.sellingPrice ?? 0)),
+      });
 
-      // Total MRP and total selling price (dealer -> retailer price) across
-      // the same current-stock rows, own + retailers' (unit price x quantity).
-      const mrpValue = ownInventory.reduce((sum, r) => sum + Number(r.mrp ?? 0) * r.quantity, 0)
-        + retInventory.reduce((sum, r) => sum + Number(r.mrp ?? 0) * r.quantity, 0);
-      const sellingValue = ownInventory.reduce((sum, r) => sum + Number(r.sellingPrice ?? 0) * r.quantity, 0)
-        + retInventory.reduce((sum, r) => sum + Number(r.sellingPrice ?? 0) * r.quantity, 0);
+      // The dealer's own row shows ONLY the dealer's own stock - products
+      // held by its retailers are listed in the retailer table instead.
+      const own = valuesFor(ownInventory, 'rate');
+      const ownProductCount = new Set(ownInventory.map((r) => r.productId)).size;
+      // Total units in stock (sum of quantity across in-stock rows).
+      const ownQuantity = ownInventory.reduce((sum, r) => sum + r.quantity, 0);
+      const retQuantity = retInventory.reduce((sum, r) => sum + r.quantity, 0);
+
+      // Org/admin summary cards still count everything in the field, so a
+      // dealer's retailers' stock is rolled up separately for the totals
+      // only (not returned on the dealer row).
+      const ret = valuesFor(retInventory, 'sellingPrice');
+      const allProductCount = new Set([...ownInventory, ...retInventory].map((r) => r.productId)).size;
 
       return {
         dealerId: d.id,
         dealerName: d.name,
         retailerCount: d.retailers.length,
-        inventoryCount: ownInventory.length + retInventory.length,
-        costValue,
-        retailerSellingValue,
-        mrpValue,
-        sellingValue,
-        retailers: [...byRetailer.values()].sort((a, b) => a.retailerName.localeCompare(b.retailerName)),
+        // Distinct products with stock (not batch rows), dealer's own only.
+        inventoryCount: ownProductCount,
+        quantityTotal: ownQuantity,
+        ...own,
+        retailers: [...byRetailer.values()].map(({ productIds, ...rest }) => rest).sort((a, b) => a.retailerName.localeCompare(b.retailerName)),
+        // Used only to build the totals below; stripped before responding.
+        _all: {
+          inventoryCount: allProductCount,
+          quantityTotal: ownQuantity + retQuantity,
+          costValue: own.costValue + ret.costValue,
+          retailerSellingValue: own.retailerSellingValue + ret.retailerSellingValue,
+          mrpValue: own.mrpValue + ret.mrpValue,
+          sellingValue: own.sellingValue + ret.sellingValue,
+        },
       };
     });
 
     for (const d of dealerRows) {
       orgTotals.dealerCount += 1;
       orgTotals.retailerCount += d.retailerCount;
-      orgTotals.inventoryCount += d.inventoryCount;
-      orgTotals.costValue += d.costValue;
-      orgTotals.retailerSellingValue += d.retailerSellingValue;
-      orgTotals.mrpValue += d.mrpValue;
-      orgTotals.sellingValue += d.sellingValue;
+      orgTotals.inventoryCount += d._all.inventoryCount;
+      orgTotals.quantityTotal += d._all.quantityTotal;
+      orgTotals.costValue += d._all.costValue;
+      orgTotals.retailerSellingValue += d._all.retailerSellingValue;
+      orgTotals.mrpValue += d._all.mrpValue;
+      orgTotals.sellingValue += d._all.sellingValue;
     }
     grandTotals.dealerCount += orgTotals.dealerCount;
     grandTotals.retailerCount += orgTotals.retailerCount;
     grandTotals.inventoryCount += orgTotals.inventoryCount;
+    grandTotals.quantityTotal += orgTotals.quantityTotal;
     grandTotals.costValue += orgTotals.costValue;
     grandTotals.retailerSellingValue += orgTotals.retailerSellingValue;
     grandTotals.mrpValue += orgTotals.mrpValue;
@@ -527,7 +553,7 @@ router.get('/org-summary', authRequired, async (req, res) => {
     return {
       organisationId: org.orgId,
       organisationName: org.orgName,
-      dealers: dealerRows,
+      dealers: dealerRows.map(({ _all, ...row }) => row),
       totals: orgTotals,
     };
   });
@@ -607,12 +633,21 @@ function serializeBucket(bucket, order) {
 //     (customerType CASH) vs retailer (customerType RETAILER) sub-totals —
 //     a retailer's own sales aren't split, since a retailer only ever
 //     sells to a cash end customer.
-//   - soldProducts: no amount field of its own — settles at the linked
-//     SaleItem's rate (dealer's own cash sale), sellingPrice (retailer's
-//     own cash sale), or originDealerRate (the second, dealer-scoped
-//     obligation raised when a retailer resells dealer-sourced stock —
-//     see SoldProduct.owedBy in schema.prisma). Bucketed by
-//     SoldProduct.status.
+//   - soldProducts: no amount field of its own. A dealer's row is what the
+//     dealer themself sold, in two parts:
+//       * cash sales (SoldProduct, owedBy DEALER, dealerId null), valued at
+//         qty x the retailer selling price (SaleItem.price, which is
+//         Inventory.retailerSellingPrice snapshotted at sale time), and
+//         bucketed by SoldProduct.status;
+//       * products sold TO RETAILERS (Sale.customerType RETAILER - these
+//         have no SoldProduct row), valued at qty x SaleItem.sellingPrice
+//         (the dealer -> retailer price), and bucketed by Sale.status.
+//     A retailer's row is its own cash sales, valued at qty x the retailer
+//     selling price (SaleItem.price), bucketed by SoldProduct.status. The second,
+//     dealer-scoped obligation raised when a RETAILER resells dealer-sourced
+//     stock (originDealerRate, see SoldProduct.owedBy in schema.prisma) is
+//     deliberately left out - it already shows on the retailer's own row.
+//     (GET /sold-products below still reports it separately.)
 //   - goodsReturns: qty(approvedQuantity ?? quantity) × item.rate, which
 //     is already always "this owner's own unit cost" regardless of
 //     ownerType (see GoodsReturnItem.rate comment in schema.prisma).
@@ -625,6 +660,12 @@ function serializeBucket(bucket, order) {
 //     goods-return credit, TO_BE_CONFIRMED otherwise).
 //   - receipts / vouchers: Receipt.amount / Voucher.amount, bucketed by
 //     their own status directly.
+//   - balanceInventory: current stock only (quantity > 0) of the dealer's /
+//     retailer's OWN Inventory, valued at their own cost price - `rate` for
+//     a dealer, `sellingPrice` (what the retailer paid) for a retailer -
+//     same convention as the Profit & Loss balance inventory line in
+//     GET /downloads. Not status-bucketed: { count (inventory rows),
+//     quantity, amount }.
 router.get('/activity-summary', authRequired, async (req, res) => {
   const dealerInfo = new Map(); // dealerId -> { name, organisationId, organisationName }
   const retailerInfo = new Map(); // retailerId -> { name, dealerId }
@@ -704,11 +745,13 @@ router.get('/activity-summary', authRequired, async (req, res) => {
     sales: newBucket(),
     salesByCustomer: { cash: newBucket(), retailer: newBucket() },
     soldProducts: newBucket(),
+    soldProductsByType: { cash: newBucket(), retailer: newBucket() },
     goodsReturns: newBucket(),
     payments: newBucket(),
     receipts: newBucket(),
     payableVouchers: newBucket(),
     receivableVouchers: newBucket(),
+    balanceInventory: { count: 0, quantity: 0, amount: 0 },
   }]));
   const retailerActivity = new Map(retailerIds.map((id) => [id, {
     purchases: newBucket(),
@@ -717,16 +760,18 @@ router.get('/activity-summary', authRequired, async (req, res) => {
     goodsReturns: newBucket(),
     payments: newBucket(),
     vouchers: newBucket(),
+    balanceInventory: { count: 0, quantity: 0, amount: 0 },
   }]));
 
   const [
     dealerPurchases, retailerPurchases,
     dealerSales, retailerSales,
-    dealerOwnSoldProducts, dealerOriginSoldProducts, retailerSoldProducts,
+    dealerOwnSoldProducts, dealerRetailerSales, retailerSoldProducts,
     dealerGoodsReturns, retailerGoodsReturns,
     payments,
     receipts,
     payableVouchers, receivableVouchers,
+    dealerInventory, retailerInventory,
   ] = await Promise.all([
     prisma.purchase.findMany({
       where: { ownerType: 'DEALER', dealerId: { in: dealerIds } },
@@ -750,21 +795,24 @@ router.get('/activity-summary', authRequired, async (req, res) => {
       : [],
     // Dealer's own cash-sale settlement (owedBy DEALER, dealerId null —
     // see SoldProduct.owedBy in schema.prisma), settled at SaleItem.rate.
+    // Cash sales only: what a dealer sells on to a retailer isn't a "sold
+    // product", and what a RETAILER sells (including the dealer-scoped
+    // origin obligation it raises) belongs to that retailer's row.
     prisma.soldProduct.findMany({
-      where: { owedBy: 'DEALER', dealerId: null, sale: { ownerType: 'DEALER', dealerId: { in: dealerIds } } },
-      select: { status: true, sale: { select: { dealerId: true } }, saleItem: { select: { quantity: true, rate: true } } },
+      where: { owedBy: 'DEALER', dealerId: null, sale: { ownerType: 'DEALER', customerType: 'CASH', dealerId: { in: dealerIds } } },
+      select: { status: true, sale: { select: { dealerId: true } }, saleItem: { select: { quantity: true, price: true } } },
     }),
-    // The second, dealer-scoped obligation raised alongside a retailer's
-    // own row when they resell dealer-sourced stock (owedBy DEALER,
-    // dealerId set), settled at SaleItem.originDealerRate.
-    prisma.soldProduct.findMany({
-      where: { owedBy: 'DEALER', dealerId: { in: dealerIds } },
-      select: { status: true, dealerId: true, saleItem: { select: { quantity: true, originDealerRate: true } } },
+    // Products the dealer sold to their retailers (no SoldProduct row is
+    // raised for these), valued at SaleItem.sellingPrice - the dealer ->
+    // retailer price. Falls back to SaleItem.price if sellingPrice is unset.
+    prisma.sale.findMany({
+      where: { ownerType: 'DEALER', customerType: 'RETAILER', dealerId: { in: dealerIds } },
+      select: { dealerId: true, status: true, items: { select: { quantity: true, sellingPrice: true, price: true } } },
     }),
     retailerIds.length
       ? prisma.soldProduct.findMany({
           where: { owedBy: 'RETAILER', sale: { ownerType: 'RETAILER', retailerId: { in: retailerIds } } },
-          select: { status: true, sale: { select: { retailerId: true } }, saleItem: { select: { quantity: true, sellingPrice: true } } },
+          select: { status: true, sale: { select: { retailerId: true } }, saleItem: { select: { quantity: true, price: true } } },
         })
       : [],
     prisma.goodsReturn.findMany({
@@ -803,6 +851,17 @@ router.get('/activity-summary', authRequired, async (req, res) => {
       where: { type: 'RECEIVABLE', dealerId: { in: dealerIds } },
       select: { dealerId: true, retailerId: true, amount: true, status: true },
     }),
+    // Balance inventory - current stock only, each owner's own rows.
+    prisma.inventory.findMany({
+      where: { ownerType: 'DEALER', dealerId: { in: dealerIds }, quantity: { gt: 0 } },
+      select: { dealerId: true, quantity: true, rate: true },
+    }),
+    retailerIds.length
+      ? prisma.inventory.findMany({
+          where: { ownerType: 'RETAILER', retailerId: { in: retailerIds }, quantity: { gt: 0 } },
+          select: { retailerId: true, quantity: true, sellingPrice: true },
+        })
+      : [],
   ]);
 
   // ---- purchases ----
@@ -833,17 +892,25 @@ router.get('/activity-summary', authRequired, async (req, res) => {
   for (const sp of dealerOwnSoldProducts) {
     const bucket = dealerActivity.get(sp.sale.dealerId)?.soldProducts;
     if (!bucket) continue;
-    addToBucket(bucket, sp.status, Number(sp.saleItem.rate ?? 0) * sp.saleItem.quantity);
+    const amount = Number(sp.saleItem.price ?? 0) * sp.saleItem.quantity;
+    addToBucket(bucket, sp.status, amount);
+    addToBucket(dealerActivity.get(sp.sale.dealerId).soldProductsByType.cash, sp.status, amount);
   }
-  for (const sp of dealerOriginSoldProducts) {
-    const bucket = dealerActivity.get(sp.dealerId)?.soldProducts;
-    if (!bucket) continue;
-    addToBucket(bucket, sp.status, Number(sp.saleItem.originDealerRate ?? 0) * sp.saleItem.quantity);
+  for (const s of dealerRetailerSales) {
+    const activity = dealerActivity.get(s.dealerId);
+    if (!activity) continue;
+    // One entry per sale line item (the equivalent of a cash sold-product
+    // row), so the count is comparable to the cash count.
+    for (const i of s.items) {
+      const amount = Number(i.sellingPrice ?? i.price ?? 0) * i.quantity;
+      addToBucket(activity.soldProducts, s.status, amount);
+      addToBucket(activity.soldProductsByType.retailer, s.status, amount);
+    }
   }
   for (const sp of retailerSoldProducts) {
     const bucket = retailerActivity.get(sp.sale.retailerId)?.soldProducts;
     if (!bucket) continue;
-    addToBucket(bucket, sp.status, Number(sp.saleItem.sellingPrice ?? 0) * sp.saleItem.quantity);
+    addToBucket(bucket, sp.status, Number(sp.saleItem.price ?? 0) * sp.saleItem.quantity);
   }
 
   // ---- goods returns ----
@@ -890,15 +957,40 @@ router.get('/activity-summary', authRequired, async (req, res) => {
     }
   }
 
+  // ---- balance inventory ----
+  for (const r of dealerInventory) {
+    const b = dealerActivity.get(r.dealerId)?.balanceInventory;
+    if (!b) continue;
+    b.count += 1;
+    b.quantity += Number(r.quantity ?? 0);
+    b.amount += Number(r.rate ?? 0) * Number(r.quantity ?? 0);
+  }
+  for (const r of retailerInventory) {
+    const b = retailerActivity.get(r.retailerId)?.balanceInventory;
+    if (!b) continue;
+    b.count += 1;
+    b.quantity += Number(r.quantity ?? 0);
+    b.amount += Number(r.sellingPrice ?? 0) * Number(r.quantity ?? 0);
+  }
+
   const serializeDealer = (a) => ({
     purchases: serializeBucket(a.purchases, PURCHASE_STATUS_ORDER),
     sales: { ...serializeBucket(a.sales, SALE_STATUS_ORDER), cash: serializeBucket(a.salesByCustomer.cash, SALE_STATUS_ORDER), retailer: serializeBucket(a.salesByCustomer.retailer, SALE_STATUS_ORDER) },
-    soldProducts: serializeBucket(a.soldProducts, SOLD_PRODUCT_STATUS_ORDER),
+    // Cash-sale rows carry SoldProduct statuses, retailer-sale rows carry
+    // Sale statuses, so both orderings are listed.
+    soldProducts: {
+      ...serializeBucket(a.soldProducts, [...SOLD_PRODUCT_STATUS_ORDER, ...SALE_STATUS_ORDER]),
+      // Dealer's own cash sold-product rows (count = SoldProduct rows).
+      cash: serializeBucket(a.soldProductsByType.cash, SOLD_PRODUCT_STATUS_ORDER),
+      // Products sold to retailers (count = sale line items, like cash).
+      retailer: serializeBucket(a.soldProductsByType.retailer, SALE_STATUS_ORDER),
+    },
     goodsReturns: serializeBucket(a.goodsReturns, GOODS_RETURN_STATUS_ORDER),
     payments: serializeBucket(a.payments, DEALER_PAYMENT_STATUSES),
     receipts: serializeBucket(a.receipts, RECEIPT_STATUS_ORDER),
     payableVouchers: serializeBucket(a.payableVouchers, VOUCHER_STATUS_ORDER),
     receivableVouchers: serializeBucket(a.receivableVouchers, VOUCHER_STATUS_ORDER),
+    balanceInventory: a.balanceInventory,
   });
   const serializeRetailer = (a) => ({
     purchases: serializeBucket(a.purchases, PURCHASE_STATUS_ORDER),
@@ -907,6 +999,7 @@ router.get('/activity-summary', authRequired, async (req, res) => {
     goodsReturns: serializeBucket(a.goodsReturns, GOODS_RETURN_STATUS_ORDER),
     payments: serializeBucket(a.payments, RETAILER_PAYMENT_STATUSES),
     vouchers: serializeBucket(a.vouchers, VOUCHER_STATUS_ORDER),
+    balanceInventory: a.balanceInventory,
   });
 
   const dealers = dealerIds.map((id) => {
@@ -1253,7 +1346,7 @@ router.get('/sold-products', authRequired, async (req, res) => {
 // own sub-tab and prints straight from the flat `rows` array below, so the
 // shape here is deliberately the same regardless of type: one row per
 // transaction with a date, counterparty, status and amount.
-const DOWNLOAD_TYPES = ['PURCHASES', 'GOODS_RETURN', 'SALES', 'PAYMENTS', 'RECEIPTS', 'VOUCHERS'];
+const DOWNLOAD_TYPES = ['PURCHASES', 'GOODS_RETURN', 'SALES', 'PAYMENTS', 'RECEIPTS', 'VOUCHERS', 'PROFIT_LOSS'];
 
 // Inclusive [from, to] on the `date` column every transactional model here
 // carries (Purchase/Sale/GoodsReturn/Payment/Receipt/Voucher.date, same
@@ -1268,6 +1361,52 @@ function dateRangeWhere(from, to) {
 
 function lineItemsTotal(items, priceKey) {
   return items.reduce((sum, it) => sum + Number(it.quantity ?? 0) * Number(it[priceKey] ?? 0), 0);
+}
+
+// Who a login may view a Profit & Loss for (GET /downloads?type=PROFIT_LOSS).
+// Same dealer / retailer scoping as /activity-summary above:
+//   - RETAILER: only themselves.
+//   - DEALER: themselves, plus every retailer whose primary dealer they are.
+//   - ORGANISATION: every dealer in their own organisation, and those
+//     dealers' retailers.
+//   - ADMIN: every dealer and every dealer's retailers.
+// Dealers come first (then retailers, grouped by their dealer), so the
+// first entry is also the sensible default selection for every role. This
+// list is also the authorization check for an explicit selection - an
+// entity that isn't in it is never computed.
+async function profitLossEntities(user) {
+  const dealers = [];
+  const retailers = [];
+  const addDealer = (d, retailerList) => {
+    dealers.push({ type: 'DEALER', id: d.id, name: d.name });
+    for (const r of retailerList ?? []) retailers.push({ type: 'RETAILER', id: r.id, name: r.name, dealerName: d.name });
+  };
+  const withRetailers = { id: true, name: true, retailers: { select: { id: true, name: true } } };
+
+  if (user.role === 'RETAILER') {
+    const r = await prisma.retailer.findUnique({ where: { id: user.retailerId }, select: { id: true, name: true } });
+    if (r) retailers.push({ type: 'RETAILER', id: r.id, name: r.name, dealerName: null });
+  } else if (user.role === 'DEALER') {
+    const d = await prisma.dealer.findUnique({ where: { id: user.dealerId }, select: { id: true, name: true } });
+    if (d) {
+      const own = await prisma.retailer.findMany({ where: { primaryDealerId: d.id }, select: { id: true, name: true } });
+      addDealer(d, own);
+    }
+  } else if (user.role === 'ORGANISATION') {
+    const orgs = await prisma.organisation.findMany({
+      where: { orgId: user.organisationId },
+      select: { dealers: { select: withRetailers } },
+    });
+    for (const o of orgs) for (const d of o.dealers) addDealer(d, d.retailers);
+  } else if (user.role === 'ADMIN') {
+    const all = await prisma.dealer.findMany({ select: withRetailers });
+    for (const d of all) addDealer(d, d.retailers);
+  }
+
+  const byName = (a, b) => String(a.name).localeCompare(String(b.name));
+  dealers.sort(byName);
+  retailers.sort((a, b) => String(a.dealerName ?? '').localeCompare(String(b.dealerName ?? '')) || byName(a, b));
+  return [...dealers, ...retailers];
 }
 
 router.get('/downloads', authRequired, async (req, res) => {
@@ -1288,6 +1427,128 @@ router.get('/downloads', authRequired, async (req, res) => {
   // the same way if it's ever hit directly.
   if (type === 'RECEIPTS' && role === 'RETAILER') {
     return res.json({ context, type, rows: [] });
+  }
+
+  // Profit & Loss. Unlike every other type here this isn't a list of
+  // transactions, so it answers with a `profitLoss` summary (and an empty
+  // `rows`) for ONE dealer or retailer at a time, plus the `entities` the
+  // caller may choose between (see profitLossEntities above):
+  //
+  //   profit/loss = sales + balance inventory - (goods returns + purchases)
+  //
+  // Which one: ?entityType=DEALER|RETAILER&entityId=<id>, checked against
+  // the caller's scope (403 otherwise); omitted -> the first entity in
+  // scope (a dealer's / retailer's own account for those logins).
+  //
+  // Everything is valued at that entity's own cost price:
+  //   - RETAILER: the dealer -> retailer `sellingPrice` on purchases and on
+  //     retailer-owned Inventory (same convention as the PURCHASES type
+  //     below and /org-summary).
+  //   - DEALER: `rate` (what they paid their supplier) on purchases and on
+  //     dealer-owned Inventory.
+  //   - Goods returns use the return line's `rate`, which is already the
+  //     owner's own unit cost regardless of ownerType (see
+  //     GoodsReturnItem.rate in schema.prisma).
+  // A dealer's goods returns are ONLY their own returns to a supplier
+  // (ownerType DEALER) - returns coming in from their retailers aren't a
+  // line here - and their purchases are from suppliers. A dealer's sales
+  // are shown as two lines, CASH and RETAILER (Sale.customerType), a
+  // retailer's as one.
+  //
+  // Only rows that have actually moved stock are counted, so the figure
+  // doesn't double-count what Inventory already reflects:
+  //   - purchases: the statuses at which stock is booked into Inventory -
+  //     RECEIVED for a retailer, CONFIRMED or MODIFIED for a dealer (their
+  //     purchase flow ends there, see DEALER_PURCHASE_STATUS_ORDER on the
+  //     frontend). Pending / in-transit / CANCELLED ones haven't landed.
+  //   - goods returns: CONFIRMED only, at the approved quantity (stock is
+  //     only decremented on confirmation - an OPEN / IN_REVIEW return is
+  //     still sitting in the balance inventory).
+  //   - sales: COMPLETED / DISPATCHED (IN_PENDING isn't settled activity,
+  //     same rule as isExcludedFromTotal above).
+  // The date window applies to purchases / returns / sales. Balance
+  // inventory is always the CURRENT stock - there's no history to rebuild
+  // it as of an earlier date from.
+  if (type === 'PROFIT_LOSS') {
+    if (!['ADMIN', 'ORGANISATION', 'DEALER', 'RETAILER'].includes(role)) {
+      return res.status(403).json({ error: 'Profit & Loss is not available for this role' });
+    }
+    const entities = await profitLossEntities(req.user);
+    const { entityType, entityId } = req.query;
+    const selected = entityType
+      ? entities.find((e) => e.type === entityType && String(e.id) === String(entityId))
+      : entities[0];
+    if (entityType && !selected) {
+      return res.status(403).json({ error: 'That account is outside your scope' });
+    }
+    if (!selected) {
+      return res.json({ context, type, rows: [], profitLoss: null, entities });
+    }
+
+    const isDealer = selected.type === 'DEALER';
+    const ownerWhere = isDealer
+      ? { ownerType: 'DEALER', dealerId: selected.id }
+      : { ownerType: 'RETAILER', retailerId: selected.id };
+    const costKey = isDealer ? 'rate' : 'sellingPrice';
+
+    const [purchases, returns, sales, inventory] = await Promise.all([
+      prisma.purchase.findMany({
+        where: { ...dateWhere, ...ownerWhere, status: isDealer ? { in: ['CONFIRMED', 'MODIFIED'] } : 'RECEIVED' },
+        include: { items: true },
+      }),
+      prisma.goodsReturn.findMany({
+        where: { ...dateWhere, ...ownerWhere, status: 'CONFIRMED' },
+        include: { items: true },
+      }),
+      prisma.sale.findMany({
+        where: { ...dateWhere, ...ownerWhere, status: { in: ['COMPLETED', 'DISPATCHED'] } },
+        select: { totalAmount: true, customerType: true },
+      }),
+      prisma.inventory.findMany({
+        where: { ...ownerWhere, quantity: { gt: 0 } },
+        select: { quantity: true, rate: true, sellingPrice: true },
+      }),
+    ]);
+
+    const purchasesAmount = purchases.reduce((sum, p) => sum + lineItemsTotal(p.items, costKey), 0);
+    const returnsAmount = returns.reduce(
+      (sum, g) => sum + lineItemsTotal(g.items.map((it) => ({ ...it, quantity: it.approvedQuantity ?? it.quantity })), 'rate'),
+      0
+    );
+    const saleLine = (key, list) => ({
+      key, kind: 'ADD', count: list.length,
+      amount: list.reduce((sum, x) => sum + Number(x.totalAmount ?? 0), 0),
+    });
+    const saleLines = isDealer
+      ? [
+          saleLine('SALES_CASH', sales.filter((x) => x.customerType !== 'RETAILER')),
+          saleLine('SALES_RETAILER', sales.filter((x) => x.customerType === 'RETAILER')),
+        ]
+      : [saleLine('SALES', sales)];
+    const inventoryAmount = lineItemsTotal(inventory, costKey);
+    const inventoryQuantity = inventory.reduce((sum, i) => sum + Number(i.quantity ?? 0), 0);
+
+    const lines = [
+      ...saleLines,
+      { key: 'BALANCE_INVENTORY', kind: 'ADD', count: inventory.length, quantity: inventoryQuantity, amount: inventoryAmount },
+      { key: 'GOODS_RETURN', kind: 'LESS', count: returns.length, amount: returnsAmount },
+      { key: 'PURCHASES', kind: 'LESS', count: purchases.length, amount: purchasesAmount },
+    ];
+    const salesAmount = saleLines.reduce((sum, l) => sum + l.amount, 0);
+
+    return res.json({
+      context,
+      type,
+      rows: [],
+      entities,
+      profitLoss: {
+        entityType: selected.type,
+        entityId: selected.id,
+        entityName: selected.name,
+        lines,
+        total: salesAmount + inventoryAmount - (returnsAmount + purchasesAmount),
+      },
+    });
   }
 
   let rows = [];
@@ -1314,18 +1575,26 @@ router.get('/downloads', authRequired, async (req, res) => {
   if (type === 'GOODS_RETURN') {
     const where = {
       ...dateWhere,
-      ...(role === 'DEALER' ? { ownerType: 'DEALER', dealerId } : {}),
+      // A dealer sees both their own returns to the supplier and
+      // returns coming in from their retailers.
+      ...(role === 'DEALER' ? { OR: [{ ownerType: 'DEALER', dealerId }, { ownerType: 'RETAILER', sourceDealerId: dealerId }] } : {}),
       ...(role === 'RETAILER' ? { ownerType: 'RETAILER', retailerId } : {}),
     };
     const returns = await prisma.goodsReturn.findMany({
       where, orderBy: { date: 'desc' },
-      include: { items: true, dealer: true, retailer: true },
+      include: { items: true, supplier: true, sourceDealer: true, retailer: true },
     });
     rows = returns.map((g) => ({
       id: g.id,
       date: g.date,
-      counterpartyName: g.ownerType === 'DEALER' ? (g.dealer?.name ?? null) : (g.retailer?.name ?? null),
+      // The OTHER party: supplier for a dealer's own return; for a
+      // retailer's return, the retailer (dealer/admin view) or the dealer
+      // it was returned to (the retailer's own view).
+      counterpartyName: g.ownerType === 'DEALER'
+        ? (g.supplier?.name ?? null)
+        : (role === 'RETAILER' ? (g.sourceDealer?.name ?? null) : (g.retailer?.name ?? null)),
       status: g.status,
+      returnType: g.ownerType === 'RETAILER' ? 'FROM_RETAILER' : 'TO_SUPPLIER',
       amount: lineItemsTotal(g.items.map((it) => ({ ...it, quantity: it.approvedQuantity ?? it.quantity })), 'rate'),
     }));
   }
@@ -1346,6 +1615,7 @@ router.get('/downloads', authRequired, async (req, res) => {
       counterpartyName: s.retailer?.name ?? (s.customerType ? s.customerType.replace(/_/g, ' ') : null),
       status: s.status,
       amount: Number(s.totalAmount ?? 0),
+      saleType: s.customerType === 'RETAILER' ? 'RETAILER' : 'CASH',
     }));
   }
 
@@ -1408,6 +1678,7 @@ router.get('/downloads', authRequired, async (req, res) => {
       counterpartyName: v.supplier?.name ?? v.retailer?.name ?? v.dealer?.name ?? null,
       status: v.status,
       amount: Number(v.amount ?? 0),
+      voucherType: v.type,
     }));
   }
 
