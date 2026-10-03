@@ -401,7 +401,8 @@ router.get('/org-summary', authRequired, async (req, res) => {
           // Dealer's own inventory relation — every row here is
           // inherently ownerType DEALER, priced at `rate` (see Inventory
           // in schema.prisma).
-          inventory: { select: { quantity: true, rate: true, retailerSellingPrice: true } },
+          // Current stock only (quantity > 0).
+          inventory: { where: { quantity: { gt: 0 } }, select: { quantity: true, rate: true, mrp: true, sellingPrice: true, retailerSellingPrice: true } },
         },
       },
     },
@@ -419,9 +420,10 @@ router.get('/org-summary', authRequired, async (req, res) => {
   // separately" breakdown.
   const retailerInventory = allDealerIds.length
     ? await prisma.inventory.findMany({
-        where: { ownerType: 'RETAILER', retailer: { primaryDealerId: { in: allDealerIds } } },
+        where: { ownerType: 'RETAILER', quantity: { gt: 0 }, retailer: { primaryDealerId: { in: allDealerIds } } },
         select: {
           quantity: true,
+          mrp: true,
           sellingPrice: true,
           retailerSellingPrice: true,
           retailerId: true,
@@ -436,7 +438,7 @@ router.get('/org-summary', authRequired, async (req, res) => {
     retailerInventoryByDealer.get(dealerId).push(row);
   }
 
-  const emptyTotals = () => ({ dealerCount: 0, retailerCount: 0, inventoryCount: 0, costValue: 0, retailerSellingValue: 0 });
+  const emptyTotals = () => ({ dealerCount: 0, retailerCount: 0, inventoryCount: 0, costValue: 0, retailerSellingValue: 0, mrpValue: 0, sellingValue: 0 });
   const grandTotals = { organisationCount: organisations.length, ...emptyTotals() };
 
   const orgRows = organisations.map((org) => {
@@ -460,6 +462,8 @@ router.get('/org-summary', authRequired, async (req, res) => {
           inventoryCount: 0,
           costValue: 0,
           retailerSellingValue: 0,
+          mrpValue: 0,
+          sellingValue: 0,
         }])
       );
       for (const row of retInventory) {
@@ -468,6 +472,8 @@ router.get('/org-summary', authRequired, async (req, res) => {
         entry.inventoryCount += 1;
         entry.costValue += Number(row.sellingPrice) * row.quantity;
         entry.retailerSellingValue += Number(row.retailerSellingPrice) * row.quantity;
+        entry.mrpValue += Number(row.mrp ?? 0) * row.quantity;
+        entry.sellingValue += Number(row.sellingPrice ?? 0) * row.quantity;
       }
 
       // Own (rate-priced) stock plus every one of this dealer's retailers'
@@ -481,6 +487,13 @@ router.get('/org-summary', authRequired, async (req, res) => {
       const retailerSellingValue = ownInventory.reduce((sum, r) => sum + Number(r.retailerSellingPrice) * r.quantity, 0)
         + retInventory.reduce((sum, r) => sum + Number(r.retailerSellingPrice) * r.quantity, 0);
 
+      // Total MRP and total selling price (dealer -> retailer price) across
+      // the same current-stock rows, own + retailers' (unit price x quantity).
+      const mrpValue = ownInventory.reduce((sum, r) => sum + Number(r.mrp ?? 0) * r.quantity, 0)
+        + retInventory.reduce((sum, r) => sum + Number(r.mrp ?? 0) * r.quantity, 0);
+      const sellingValue = ownInventory.reduce((sum, r) => sum + Number(r.sellingPrice ?? 0) * r.quantity, 0)
+        + retInventory.reduce((sum, r) => sum + Number(r.sellingPrice ?? 0) * r.quantity, 0);
+
       return {
         dealerId: d.id,
         dealerName: d.name,
@@ -488,6 +501,8 @@ router.get('/org-summary', authRequired, async (req, res) => {
         inventoryCount: ownInventory.length + retInventory.length,
         costValue,
         retailerSellingValue,
+        mrpValue,
+        sellingValue,
         retailers: [...byRetailer.values()].sort((a, b) => a.retailerName.localeCompare(b.retailerName)),
       };
     });
@@ -498,12 +513,16 @@ router.get('/org-summary', authRequired, async (req, res) => {
       orgTotals.inventoryCount += d.inventoryCount;
       orgTotals.costValue += d.costValue;
       orgTotals.retailerSellingValue += d.retailerSellingValue;
+      orgTotals.mrpValue += d.mrpValue;
+      orgTotals.sellingValue += d.sellingValue;
     }
     grandTotals.dealerCount += orgTotals.dealerCount;
     grandTotals.retailerCount += orgTotals.retailerCount;
     grandTotals.inventoryCount += orgTotals.inventoryCount;
     grandTotals.costValue += orgTotals.costValue;
     grandTotals.retailerSellingValue += orgTotals.retailerSellingValue;
+    grandTotals.mrpValue += orgTotals.mrpValue;
+    grandTotals.sellingValue += orgTotals.sellingValue;
 
     return {
       organisationId: org.orgId,

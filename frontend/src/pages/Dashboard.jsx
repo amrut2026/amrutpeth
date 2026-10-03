@@ -30,6 +30,9 @@ function SummaryCards({ totals }) {
 }
 
 function DealerTable({ dealers }) {
+  // Grand total across the dealers listed (current stock only - the
+  // backend already excludes quantity 0 rows from every figure here).
+  const sum = (key) => dealers.reduce((acc, d) => acc + Number(d[key] || 0), 0);
   return (
     <div className="bg-white rounded shadow overflow-x-auto">
       <table className="w-full text-sm">
@@ -43,6 +46,8 @@ function DealerTable({ dealers }) {
                 reports.js GET /org-summary for the exact split. */}
             <th className="text-right p-2">Cost value <span className="text-gray-400 font-normal">/ खरेदी मूल्य</span></th>
             <th className="text-right p-2">Retailer selling value <span className="text-gray-400 font-normal">/ किरकोळ विक्री मूल्य</span></th>
+            <th className="text-right p-2">Total MRP <span className="text-gray-400 font-normal">/ एकूण एमआरपी</span></th>
+            <th className="text-right p-2">Total selling price (to retailer) <span className="text-gray-400 font-normal">/ एकूण विक्री किंमत (किरकोळ विक्रेत्याला)</span></th>
           </tr>
         </thead>
         <tbody>
@@ -53,12 +58,27 @@ function DealerTable({ dealers }) {
               <td className="p-2 text-right">{d.inventoryCount}</td>
               <td className="p-2 text-right">₹{Number(d.costValue).toFixed(2)}</td>
               <td className="p-2 text-right">₹{Number(d.retailerSellingValue).toFixed(2)}</td>
+              <td className="p-2 text-right">₹{Number(d.mrpValue ?? 0).toFixed(2)}</td>
+              <td className="p-2 text-right">₹{Number(d.sellingValue ?? 0).toFixed(2)}</td>
             </tr>
           ))}
           {dealers.length === 0 && (
-            <tr><td colSpan={5} className="p-4 text-center text-gray-400 italic">No dealers yet / अजून कोणतेही डीलर नाहीत</td></tr>
+            <tr><td colSpan={7} className="p-4 text-center text-gray-400 italic">No dealers yet / अजून कोणतेही डीलर नाहीत</td></tr>
           )}
         </tbody>
+        {dealers.length > 0 && (
+          <tfoot>
+            <tr className="border-t font-semibold bg-gray-50">
+              <td className="p-2">Grand total <span className="font-normal text-gray-500">/ एकूण</span></td>
+              <td className="p-2 text-right">{sum('retailerCount')}</td>
+              <td className="p-2 text-right">{sum('inventoryCount')}</td>
+              <td className="p-2 text-right">{formatMoney(sum('costValue'))}</td>
+              <td className="p-2 text-right">{formatMoney(sum('retailerSellingValue'))}</td>
+              <td className="p-2 text-right">{formatMoney(sum('mrpValue'))}</td>
+              <td className="p-2 text-right">{formatMoney(sum('sellingValue'))}</td>
+            </tr>
+          </tfoot>
+        )}
       </table>
     </div>
   );
