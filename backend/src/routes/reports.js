@@ -1434,12 +1434,11 @@ router.get('/downloads', authRequired, async (req, res) => {
   // `rows`) for ONE dealer or retailer at a time, plus the `entities` the
   // caller may choose between (see profitLossEntities above):
   //
-  //   RETAILER: profit/loss = sales + balance inventory - (goods returns + purchases)
-  //   DEALER:   profit/loss = sales + balance inventory - (purchases - goods returns)
-  //   (a dealer's confirmed returns to a supplier have already left their
-  //   Inventory, but the purchases they were bought on are still counted in
-  //   full, so the return value is netted off purchases - shown as an ADD
-  //   line - rather than subtracted again)
+  //   profit/loss = sales + balance inventory - (purchases - goods returns)
+  //   (confirmed returns have already left the Inventory, but the purchases
+  //   they were bought on are still counted in full, so the return value is
+  //   netted off purchases - shown as an ADD line - rather than subtracted
+  //   again. Same for dealers and retailers.)
   //
   // Which one: ?entityType=DEALER|RETAILER&entityId=<id>, checked against
   // the caller's scope (403 otherwise); omitted -> the first entity in
@@ -1541,9 +1540,8 @@ router.get('/downloads', authRequired, async (req, res) => {
     const lines = [
       ...saleLines,
       { key: 'BALANCE_INVENTORY', kind: 'ADD', count: inventory.length, quantity: inventoryQuantity, amount: inventoryAmount },
-      // A dealer's return reduces what they net paid for purchases (ADD);
-      // a retailer's is subtracted as before (LESS).
-      { key: 'GOODS_RETURN', kind: isDealer ? 'ADD' : 'LESS', count: returns.length, amount: returnsAmount },
+      // A return reduces what was net paid for purchases (ADD).
+      { key: 'GOODS_RETURN', kind: 'ADD', count: returns.length, amount: returnsAmount },
       { key: 'PURCHASES', kind: 'LESS', count: purchases.length, amount: purchasesAmount },
     ];
     const salesAmount = saleLines.reduce((sum, l) => sum + l.amount, 0);
@@ -1558,9 +1556,7 @@ router.get('/downloads', authRequired, async (req, res) => {
         entityId: selected.id,
         entityName: selected.name,
         lines,
-        total: isDealer
-          ? salesAmount + inventoryAmount - (purchasesAmount - returnsAmount)
-          : salesAmount + inventoryAmount - (returnsAmount + purchasesAmount),
+        total: salesAmount + inventoryAmount - (purchasesAmount - returnsAmount),
       },
     });
   }
