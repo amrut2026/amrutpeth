@@ -1434,7 +1434,11 @@ router.get('/downloads', authRequired, async (req, res) => {
   // `rows`) for ONE dealer or retailer at a time, plus the `entities` the
   // caller may choose between (see profitLossEntities above):
   //
-  //   profit/loss = sales + balance inventory - (goods returns + purchases)
+  //   RETAILER: profit/loss = sales + balance inventory - (goods returns + purchases)
+  //   DEALER:   profit/loss = sales + balance inventory - purchases
+  //   (a dealer's goods returns to a supplier are NOT part of the P&L: that
+  //   stock has already left their Inventory, so balance inventory reflects
+  //   it and counting the return again would double-count it)
   //
   // Which one: ?entityType=DEALER|RETAILER&entityId=<id>, checked against
   // the caller's scope (403 otherwise); omitted -> the first entity in
@@ -1449,9 +1453,9 @@ router.get('/downloads', authRequired, async (req, res) => {
   //   - Goods returns use the return line's `rate`, which is already the
   //     owner's own unit cost regardless of ownerType (see
   //     GoodsReturnItem.rate in schema.prisma).
-  // A dealer's goods returns are ONLY their own returns to a supplier
-  // (ownerType DEALER) - returns coming in from their retailers aren't a
-  // line here - and their purchases are from suppliers. A dealer's sales
+  // A dealer's goods returns (their own returns to a supplier) are left out
+  // of the P&L entirely - no line, no effect on the total - and their
+  // purchases are from suppliers. A dealer's sales
   // are shown as two lines, CASH and RETAILER (Sale.customerType), a
   // retailer's as one.
   //
@@ -1496,10 +1500,13 @@ router.get('/downloads', authRequired, async (req, res) => {
         where: { ...dateWhere, ...ownerWhere, status: isDealer ? { in: ['CONFIRMED', 'MODIFIED'] } : 'RECEIVED' },
         include: { items: true },
       }),
-      prisma.goodsReturn.findMany({
-        where: { ...dateWhere, ...ownerWhere, status: 'CONFIRMED' },
-        include: { items: true },
-      }),
+      // Not used for a dealer (see above) - skip the query.
+      isDealer
+        ? []
+        : prisma.goodsReturn.findMany({
+            where: { ...dateWhere, ...ownerWhere, status: 'CONFIRMED' },
+            include: { items: true },
+          }),
       prisma.sale.findMany({
         where: { ...dateWhere, ...ownerWhere, status: { in: ['COMPLETED', 'DISPATCHED'] } },
         select: { totalAmount: true, customerType: true },
@@ -1531,7 +1538,7 @@ router.get('/downloads', authRequired, async (req, res) => {
     const lines = [
       ...saleLines,
       { key: 'BALANCE_INVENTORY', kind: 'ADD', count: inventory.length, quantity: inventoryQuantity, amount: inventoryAmount },
-      { key: 'GOODS_RETURN', kind: 'LESS', count: returns.length, amount: returnsAmount },
+      ...(isDealer ? [] : [{ key: 'GOODS_RETURN', kind: 'LESS', count: returns.length, amount: returnsAmount }]),
       { key: 'PURCHASES', kind: 'LESS', count: purchases.length, amount: purchasesAmount },
     ];
     const salesAmount = saleLines.reduce((sum, l) => sum + l.amount, 0);
@@ -1546,7 +1553,7 @@ router.get('/downloads', authRequired, async (req, res) => {
         entityId: selected.id,
         entityName: selected.name,
         lines,
-        total: salesAmount + inventoryAmount - (returnsAmount + purchasesAmount),
+        total: salesAmount + inventoryAmount - ((isDealer ? 0 : returnsAmount) + purchasesAmount),
       },
     });
   }

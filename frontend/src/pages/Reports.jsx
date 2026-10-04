@@ -1945,10 +1945,12 @@ function buildDownloadPrintHtml({ type, context, title, subtitle, rows, counterp
 //   lines: [{ key, kind: 'ADD' | 'LESS', count, amount, quantity? }], total }
 // and `entities` (the dealers / retailers the caller may pick between).
 // Labels follow the SELECTED account's type, not the viewer's role.
-// where total = sales + balance inventory - (goods returns + purchases),
-// all valued at the caller's own purchase price (see reports.js). A
+// where total = sales + balance inventory - (goods returns + purchases)
+// for a retailer, and sales + balance inventory - purchases for a dealer
+// (a dealer's goods returns to a supplier are not part of it - that stock
+// has already left their inventory), all valued at the caller's own purchase price (see reports.js). A
 // retailer gets one SALES line; a dealer gets SALES_CASH and
-// SALES_RETAILER, and their purchases / goods returns are with suppliers.
+// SALES_RETAILER, and their purchases are with suppliers.
 // Text of one entry in the P&L account picker. A retailer shows its dealer
 // in brackets unless the viewer IS that dealer (they'd all say the same);
 // a dealer viewing their own account is marked as such.
@@ -1995,8 +1997,10 @@ function profitLossDetail(line, context) {
 
 function profitLossNote(context, hasDateRange) {
   const purchaseWord = context === 'DEALER' ? 'confirmed/modified' : 'received';
-  return `Counts completed/dispatched sales, ${purchaseWord} purchases and confirmed goods returns. Balance inventory is current stock.`
-    + (hasDateRange ? ' The date range applies to sales, purchases and goods returns only - balance inventory is not limited to it.' : '');
+  const returnsText = context === 'DEALER' ? '' : ' and confirmed goods returns';
+  const rangeText = context === 'DEALER' ? 'sales and purchases' : 'sales, purchases and goods returns';
+  return `Counts completed/dispatched sales, ${purchaseWord} purchases${returnsText}. Balance inventory is current stock.`
+    + (hasDateRange ? ` The date range applies to ${rangeText} only - balance inventory is not limited to it.` : '');
 }
 
 function ProfitLossTable({ pnl, loading, hasDateRange }) {
@@ -2039,7 +2043,7 @@ function ProfitLossTable({ pnl, loading, hasDateRange }) {
           <tr className="border-t-2 font-semibold bg-gray-50">
             <td className="p-2" colSpan={3}>
               {isLoss ? 'Loss' : 'Profit'} <span className="text-gray-400 font-normal">/ {isLoss ? 'तोटा' : 'नफा'}</span>
-              <span className="text-gray-400 font-normal text-xs ml-2">Sales + Balance Inventory − (Goods Returns + Purchases)</span>
+              <span className="text-gray-400 font-normal text-xs ml-2">{kind === 'DEALER' ? 'Sales + Balance Inventory − Purchases' : 'Sales + Balance Inventory − (Goods Returns + Purchases)'}</span>
             </td>
             <td className={`p-2 text-right ${isLoss ? 'text-red-600' : 'text-emerald-700'}`}>{formatSignedMoney(pnl.total)}</td>
           </tr>
@@ -2090,7 +2094,7 @@ function buildProfitLossPrintHtml({ title, subtitle, pnl, hasDateRange }) {
   <table>
     <thead><tr><th></th><th>Particulars</th><th>Details</th><th class="num">Amount</th></tr></thead>
     <tbody>${bodyRows}</tbody>
-    <tfoot><tr><td colspan="3">${isLoss ? 'Loss' : 'Profit'} (Sales + Balance Inventory &minus; (Goods Returns + Purchases))</td><td class="num">${escapeHtml(formatSignedMoney(pnl.total))}</td></tr></tfoot>
+    <tfoot><tr><td colspan="3">${isLoss ? 'Loss' : 'Profit'} (${kind === 'DEALER' ? 'Sales + Balance Inventory &minus; Purchases' : 'Sales + Balance Inventory &minus; (Goods Returns + Purchases)'})</td><td class="num">${escapeHtml(formatSignedMoney(pnl.total))}</td></tr></tfoot>
   </table>
   <div class="muted">${escapeHtml(note)}</div>
 </body>
