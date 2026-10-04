@@ -1509,7 +1509,7 @@ router.get('/downloads', authRequired, async (req, res) => {
           }),
       prisma.sale.findMany({
         where: { ...dateWhere, ...ownerWhere, status: { in: ['COMPLETED', 'DISPATCHED'] } },
-        select: { totalAmount: true, customerType: true },
+        select: { totalAmount: true, customerType: true, items: { select: { quantity: true, rate: true, sellingPrice: true } } },
       }),
       prisma.inventory.findMany({
         where: { ...ownerWhere, quantity: { gt: 0 } },
@@ -1525,6 +1525,11 @@ router.get('/downloads', authRequired, async (req, res) => {
     const saleLine = (key, list) => ({
       key, kind: 'ADD', count: list.length,
       amount: list.reduce((sum, x) => sum + Number(x.totalAmount ?? 0), 0),
+      // What the goods sold on these sales cost the seller (qty x costKey on
+      // each sale item: SaleItem.rate for a dealer, SaleItem.sellingPrice
+      // for a retailer) - informational, so the margin on each sales line
+      // is visible. It does not enter the total.
+      costAmount: list.reduce((sum, x) => sum + lineItemsTotal(x.items, costKey), 0),
     });
     const saleLines = isDealer
       ? [

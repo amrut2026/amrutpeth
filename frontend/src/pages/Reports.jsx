@@ -1949,7 +1949,8 @@ function buildDownloadPrintHtml({ type, context, title, subtitle, rows, counterp
 // for a retailer, and sales + balance inventory - purchases for a dealer
 // (a dealer's goods returns to a supplier are not part of it - that stock
 // has already left their inventory), all valued at the caller's own purchase price (see reports.js). A
-// retailer gets one SALES line; a dealer gets SALES_CASH and
+// retailer gets one SALES line; each sales line also carries `costAmount`
+// (the cost of the goods sold, shown next to the sales amount); a dealer gets SALES_CASH and
 // SALES_RETAILER, and their purchases are with suppliers.
 // Text of one entry in the P&L account picker. A retailer shows its dealer
 // in brackets unless the viewer IS that dealer (they'd all say the same);
@@ -1992,7 +1993,13 @@ function profitLossDetail(line, context) {
     SALES: 'sale', SALES_CASH: 'sale', SALES_RETAILER: 'sale',
     GOODS_RETURN: 'confirmed return', PURCHASES: purchaseWord,
   }[line.key] || 'record';
-  return `${line.count} ${noun}${line.count === 1 ? '' : 's'}`;
+  const countText = `${line.count} ${noun}${line.count === 1 ? '' : 's'}`;
+  // Sales lines also show what the goods cost and the margin, so the profit
+  // is traceable (informational - the total uses the sales amount itself).
+  if (line.costAmount != null) {
+    return `${countText} · Cost price ${formatMoney(line.costAmount)} · Margin ${formatSignedMoney(Number(line.amount) - Number(line.costAmount))}`;
+  }
+  return countText;
 }
 
 function profitLossNote(context, hasDateRange) {
