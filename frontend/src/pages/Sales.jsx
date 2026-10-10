@@ -50,6 +50,11 @@ export default function Sales() {
   // from customerRetailerId above (the sale-being-built's own retailer
   // field). Empty string = all retailers, the default.
   const [saleRetailerFilter, setSaleRetailerFilter] = useState('');
+  // Aggregator orders (retailer only): which order a Collected / Cancel
+  // request is in flight for, and the last error from one (e.g. a batch that
+  // ran out of stock between the order being placed and being collected).
+  const [orderActionId, setOrderActionId] = useState(null);
+  const [orderActionError, setOrderActionError] = useState('');
   const scanRef = useRef(null);
 
   async function load() {
@@ -253,6 +258,41 @@ export default function Sales() {
     scanRef.current?.focus();
   }
 
+  // Retailer confirms the customer collected the goods and paid cash for an
+  // aggregator order — only now does stock come off the shelf (server-side).
+  // Merges the returned sale into the list, refreshes the stock picker, and
+  // keeps the order open in the side panel with its new status if it was
+  // the one being viewed.
+  async function collectOrder(sale) {
+    setOrderActionId(sale.id);
+    setOrderActionError('');
+    try {
+      const { data } = await api.patch(`/sales/${sale.id}/collect`, {});
+      setSales((prev) => prev.map((x) => (x.id === data.id ? data : x)));
+      if (activeSale?.id === data.id) setActiveSale(data);
+      refreshAvailableItems();
+    } catch (err) {
+      setOrderActionError(err.response?.data?.error || 'Failed to mark order collected / ऑर्डर घेतल्याची नोंद करण्यात अयशस्वी');
+    } finally {
+      setOrderActionId(null);
+    }
+  }
+
+  async function cancelOrder(sale) {
+    if (!window.confirm(`Cancel order #${sale.id}? / ऑर्डर #${sale.id} रद्द करायची?`)) return;
+    setOrderActionId(sale.id);
+    setOrderActionError('');
+    try {
+      const { data } = await api.patch(`/sales/${sale.id}/cancel`, {});
+      setSales((prev) => prev.map((x) => (x.id === data.id ? data : x)));
+      if (activeSale?.id === data.id) setActiveSale(data);
+    } catch (err) {
+      setOrderActionError(err.response?.data?.error || 'Failed to cancel order / ऑर्डर रद्द करण्यात अयशस्वी');
+    } finally {
+      setOrderActionId(null);
+    }
+  }
+
   // Deep link from Reports > Downloads (?id=79) — switch to the matching
   // Recent Sales tab (Cash vs Retailer) and load that sale into the cart,
   // once the sale list has actually loaded.
@@ -262,7 +302,7 @@ export default function Sales() {
     if (!id || sales.length === 0) return;
     const sale = sales.find((s) => String(s.id) === id);
     if (sale) {
-      setRecentSalesTab(sale.customerType === 'CASH' ? 'CASH' : 'RETAILER');
+      setRecentSalesTab(sale.channel === 'AGGREGATOR' ? 'AGGREGATOR' : (sale.customerType === 'CASH' ? 'CASH' : 'RETAILER'));
       setSaleRetailerFilter('');
       loadSaleIntoCart(sale);
     }
@@ -320,14 +360,19 @@ export default function Sales() {
   // Split for the two Recent Sales sections below — CASH is a walk-in
   // customer sale; anything else (RETAILER) is a dealer selling on to one
   // of their own retailers.
-  const cashSales = sales.filter((s) => s.customerType === 'CASH');
+  // Aggregator orders get their own tab (they're not finished cash sales
+  // until the customer collects and pays), so they're kept out of Cash Sales.
+  const aggregatorSales = sales.filter((s) => s.channel === 'AGGREGATOR');
+  const aggregatorPendingCount = aggregatorSales.filter((s) => s.status === 'PENDING_COLLECTION').length;
+  const cashSales = sales.filter((s) => s.customerType === 'CASH' && s.channel !== 'AGGREGATOR');
   const nonCashSales = sales.filter((s) =>
     s.customerType !== 'CASH' && (!saleRetailerFilter || String(s.customerRetailerId) === saleRetailerFilter)
   );
   // The list the Recent Sales section is showing right now (follows the
   // Cash / Retailer tab and the retailer filter) - its length is the count
   // shown in the section heading.
-  const visibleSales = recentSalesTab === 'CASH' ? cashSales : nonCashSales;
+  const tabSales = recentSalesTab === 'AGGREGATOR' ? aggregatorSales : (recentSalesTab === 'CASH' ? cashSales : nonCashSales);
+  const visibleSales = tabSales;
 
   // Shared table body for both Recent Sales sections below — identical
   // row rendering, just given a different (pre-filtered) slice of `sales`
@@ -383,9 +428,33 @@ export default function Sales() {
                     {status === 'COMPLETED' && (
                       <span className="text-xs text-gray-500">Completed<span className="block">पूर्ण</span></span>
                     )}
+                    {status === 'PENDING_COLLECTION' && (
+                      <span className="text-xs bg-amber-50 text-amber-800 font-medium px-2 py-1 rounded border border-amber-200">
+                        Pending Collection<span className="block">संकलन प्रलंबित</span>
+                      </span>
+                    )}
+                    {status === 'CANCELLED' && (
+                      <span className="text-xs bg-gray-100 text-gray-500 font-medium px-2 py-1 rounded border border-gray-200">
+                        Cancelled<span className="block">रद्द</span>
+                      </span>
+                    )}
                   </td>
                   <td className="p-2">
-                    {status !== 'IN_PENDING' && (
+                    {status === 'PENDING_COLLECTION' && user.role === 'RETAILER' && (
+                      <div className="flex flex-col gap-1 items-start">
+                        <button type="button" disabled={orderActionId === s.id}
+                          className="text-emerald-700 text-xs font-medium hover:underline disabled:opacity-50"
+                          onClick={(e) => { e.stopPropagation(); collectOrder(s); }}>
+                          Collected &amp; Paid / घेतले व पैसे दिले
+                        </button>
+                        <button type="button" disabled={orderActionId === s.id}
+                          className="text-red-600 text-xs hover:underline disabled:opacity-50"
+                          onClick={(e) => { e.stopPropagation(); cancelOrder(s); }}>
+                          Cancel / रद्द करा
+                        </button>
+                      </div>
+                    )}
+                    {status !== 'IN_PENDING' && status !== 'PENDING_COLLECTION' && status !== 'CANCELLED' && (
                       <button className="text-emerald-700 text-xs" onClick={(e) => { e.stopPropagation(); printBill(s.id); }}>Print / छापा</button>
                     )}
                   </td>
@@ -869,11 +938,37 @@ export default function Sales() {
               <p className="text-xs text-gray-500 mb-4">
                 Payment mode: <span className="font-medium">{activeSale.paymentMode || '—'}</span>
               </p>
-              <button
-                onClick={() => printBill(activeSale.id)}
-                className="w-full bg-emerald-700 text-white py-3 rounded font-semibold hover:bg-emerald-800">
-                Print Bill / बिल छापा
-              </button>
+              {activeSale.status === 'PENDING_COLLECTION' ? (
+                user.role === 'RETAILER' ? (
+                  <>
+                    <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded px-3 py-2 mb-3">
+                      Waiting for the customer to collect and pay cash. Stock is not deducted yet.
+                      <span className="block text-xs">ग्राहकाने माल घेऊन रोख पैसे द्यायची प्रतीक्षा. साठा अजून कमी झालेला नाही.</span>
+                    </p>
+                    <button
+                      disabled={orderActionId === activeSale.id}
+                      onClick={() => collectOrder(activeSale)}
+                      className="w-full bg-emerald-700 text-white py-3 rounded font-semibold hover:bg-emerald-800 disabled:opacity-40 mb-2">
+                      {orderActionId === activeSale.id ? 'Saving... / जतन करत आहे...' : <>Collected &amp; Paid <span className="block text-xs font-normal opacity-90">घेतले व पैसे दिले</span></>}
+                    </button>
+                    <button
+                      disabled={orderActionId === activeSale.id}
+                      onClick={() => cancelOrder(activeSale)}
+                      className="w-full text-red-600 text-sm py-2 rounded border border-red-200 hover:bg-red-50 disabled:opacity-40">
+                      Cancel Order / ऑर्डर रद्द करा
+                    </button>
+                    {orderActionError && <p className="text-red-600 text-sm mt-2">{orderActionError}</p>}
+                  </>
+                ) : null
+              ) : activeSale.status === 'CANCELLED' ? (
+                <p className="text-sm text-gray-500">This order was cancelled. / ही ऑर्डर रद्द केली.</p>
+              ) : (
+                <button
+                  onClick={() => printBill(activeSale.id)}
+                  className="w-full bg-emerald-700 text-white py-3 rounded font-semibold hover:bg-emerald-800">
+                  Print Bill / बिल छापा
+                </button>
+              )}
             </>
           ) : activeSaleEditable ? (
             <>
@@ -938,15 +1033,15 @@ export default function Sales() {
         <div className="mt-4">
           <h2 className="text-lg font-semibold mb-2">Recent Sales <span className="text-gray-400 font-normal">/ अलीकडील विक्री</span> <span className="text-gray-500 font-normal text-base">({visibleSales.length})</span></h2>
 
-          {user.role === 'DEALER' && (
-            <div className="flex gap-1 mb-2 border-b">
-              <button type="button"
-                className={`px-3 py-1.5 text-sm font-medium border-b-2 -mb-px ${
-                  recentSalesTab === 'CASH' ? 'border-emerald-700 text-emerald-700' : 'border-transparent text-gray-500 hover:text-gray-700'
-                }`}
-                onClick={() => setRecentSalesTab('CASH')}>
-                Cash Sales <span className="text-gray-400 font-normal">/ रोख विक्री</span>
-              </button>
+          <div className="flex gap-1 mb-2 border-b">
+            <button type="button"
+              className={`px-3 py-1.5 text-sm font-medium border-b-2 -mb-px ${
+                recentSalesTab === 'CASH' ? 'border-emerald-700 text-emerald-700' : 'border-transparent text-gray-500 hover:text-gray-700'
+              }`}
+              onClick={() => setRecentSalesTab('CASH')}>
+              Cash Sales <span className="text-gray-400 font-normal">/ रोख विक्री</span>
+            </button>
+            {user.role === 'DEALER' && (
               <button type="button"
                 className={`px-3 py-1.5 text-sm font-medium border-b-2 -mb-px ${
                   recentSalesTab === 'RETAILER' ? 'border-emerald-700 text-emerald-700' : 'border-transparent text-gray-500 hover:text-gray-700'
@@ -954,7 +1049,29 @@ export default function Sales() {
                 onClick={() => setRecentSalesTab('RETAILER')}>
                 Retailer Sales <span className="text-gray-400 font-normal">/ किरकोळ विक्रेता विक्री</span>
               </button>
-            </div>
+            )}
+            {user.role === 'RETAILER' && (
+              <button type="button"
+                className={`px-3 py-1.5 text-sm font-medium border-b-2 -mb-px ${
+                  recentSalesTab === 'AGGREGATOR' ? 'border-emerald-700 text-emerald-700' : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
+                onClick={() => setRecentSalesTab('AGGREGATOR')}>
+                Aggregator Sales <span className="text-gray-400 font-normal">/ एग्रीगेटर विक्री</span>
+                {aggregatorPendingCount > 0 && (
+                  <span className="ml-1.5 text-xs bg-amber-500 text-white font-semibold px-1.5 py-0.5 rounded-full">{aggregatorPendingCount}</span>
+                )}
+              </button>
+            )}
+          </div>
+
+          {recentSalesTab === 'AGGREGATOR' && user.role === 'RETAILER' && (
+            <p className="text-xs text-gray-500 mb-2">
+              Orders placed through an aggregator stay <b>Pending Collection</b> until the customer picks them up and pays cash — stock is only deducted when you tap <b>Collected &amp; Paid</b>.
+              <span className="block">एग्रीगेटरमार्फत आलेल्या ऑर्डर ग्राहकाने माल घेऊन रोख पैसे देईपर्यंत प्रलंबित राहतात — "घेतले व पैसे दिले" दाबल्यावरच साठा कमी होतो.</span>
+            </p>
+          )}
+          {orderActionError && (
+            <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2 mb-2">{orderActionError}</div>
           )}
 
           {recentSalesTab === 'RETAILER' && user.role === 'DEALER' && (
@@ -972,13 +1089,13 @@ export default function Sales() {
           <div className="mb-2">
             <label className="text-xs text-gray-500">Select Sale <span className="text-gray-400">/ विक्री निवडा</span></label>
             <select className="border rounded px-2 py-1 w-full mt-1 text-sm"
-              value={activeSale && (recentSalesTab === 'CASH' ? cashSales : nonCashSales).some((s) => s.id === activeSale.id) ? String(activeSale.id) : ''}
+              value={activeSale && tabSales.some((s) => s.id === activeSale.id) ? String(activeSale.id) : ''}
               onChange={(e) => {
-                const sale = (recentSalesTab === 'CASH' ? cashSales : nonCashSales).find((s) => String(s.id) === e.target.value);
+                const sale = tabSales.find((s) => String(s.id) === e.target.value);
                 if (sale) loadSaleIntoCart(sale);
               }}>
               <option value="">Select a sale... / विक्री निवडा...</option>
-              {(recentSalesTab === 'CASH' ? cashSales : nonCashSales).map((s) => (
+              {tabSales.map((s) => (
                 <option key={s.id} value={s.id}>
                   #{s.id} — {new Date(s.date).toLocaleDateString()} — {s.totalAmount != null ? `₹${Number(s.totalAmount).toFixed(2)}` : '—'} — {s.status || 'COMPLETED'}
                 </option>
@@ -986,7 +1103,9 @@ export default function Sales() {
             </select>
           </div>
 
-          {recentSalesTab === 'CASH'
+          {recentSalesTab === 'AGGREGATOR'
+            ? renderSalesTable(aggregatorSales, 'No aggregator orders yet. / अद्याप एग्रीगेटर ऑर्डर नाहीत.')
+            : recentSalesTab === 'CASH'
             ? renderSalesTable(cashSales, 'No cash sales yet. / अद्याप रोख विक्री नाही.')
             : renderSalesTable(nonCashSales, 'No retailer sales yet. / अद्याप किरकोळ विक्रेता विक्री नाही.')}
         </div>

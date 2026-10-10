@@ -42,7 +42,10 @@ export default function Inventory() {
                   <td className="p-2">{r.batchName || '-'}</td>
                   <td className="p-2">{r.expiryDate ? new Date(r.expiryDate).toLocaleDateString() : '-'}</td>
                   <td className="p-2">{r.mrp != null ? `₹${Number(r.mrp).toFixed(2)}` : '-'}</td>
-                  <td className="p-2">{r.quantity}</td>
+                  <td className="p-2">
+                    {r.quantity}
+                    {r.heldQuantity > 0 && <div className="text-xs text-amber-600">{r.heldQuantity} held for pending orders / प्रलंबित ऑर्डरसाठी राखीव</div>}
+                  </td>
                   <td className="p-2">{r.reorderLevel}</td>
                   <td className="p-2">
                     {r.lowStock

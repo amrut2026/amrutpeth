@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { prisma } from '../prisma.js';
 import { authRequired } from '../middleware/auth.js';
+import { withHeldStock } from '../lib/heldStock.js';
 
 const router = Router();
 
@@ -310,7 +311,8 @@ router.get('/inventory', authRequired, async (req, res) => {
   if (req.user.role === 'DEALER') where = { ownerType: 'DEALER', dealerId: req.user.dealerId };
   if (req.user.role === 'RETAILER') where = { ownerType: 'RETAILER', retailerId: req.user.retailerId };
   const rows = await prisma.inventory.findMany({ where, include: { product: true } });
-  res.json(rows.map(r => ({ ...r, lowStock: r.quantity <= r.reorderLevel })));
+  // Adds heldQuantity/availableQuantity and judges lowStock on available stock.
+  res.json(await withHeldStock(rows));
 });
 
 // Inventory split by owner type (dealer-owned vs retailer-owned) - used
@@ -334,8 +336,11 @@ router.get('/inventory-by-owner', authRequired, async (req, res) => {
     }),
   ]);
 
+  const heldRetailerRows = await withHeldStock(retailerRows);
+  const heldDealerRows = await withHeldStock(dealerRows);
+
   const dealerMap = new Map();
-  const retailerInventory = retailerRows.map((r) => {
+  const retailerInventory = heldRetailerRows.map((r) => {
     const dealer = r.retailer?.dealer ?? null;
     if (dealer) dealerMap.set(dealer.id, dealer.name);
     return {
@@ -343,7 +348,6 @@ router.get('/inventory-by-owner', authRequired, async (req, res) => {
       retailerName: r.retailer?.name ?? null,
       dealerId: dealer?.id ?? null,
       dealerName: dealer?.name ?? null,
-      lowStock: r.quantity <= r.reorderLevel,
     };
   });
 
@@ -352,10 +356,9 @@ router.get('/inventory-by-owner', authRequired, async (req, res) => {
     dealers: [...dealerMap.entries()]
       .map(([id, name]) => ({ id, name }))
       .sort((a, b) => a.name.localeCompare(b.name)),
-    dealerInventory: dealerRows.map((r) => ({
+    dealerInventory: heldDealerRows.map((r) => ({
       ...r,
       dealerName: r.dealer?.name ?? null,
-      lowStock: r.quantity <= r.reorderLevel,
     })),
     retailerInventory,
   });
@@ -366,9 +369,23 @@ router.get('/sales-summary', authRequired, async (req, res) => {
   let where = {};
   if (req.user.role === 'DEALER') where = { ownerType: 'DEALER', dealerId: req.user.dealerId };
   if (req.user.role === 'RETAILER') where = { ownerType: 'RETAILER', retailerId: req.user.retailerId };
-  const sales = await prisma.sale.findMany({ where });
-  const totalRevenue = sales.reduce((s, x) => s + Number(x.totalAmount), 0);
-  res.json({ count: sales.length, totalRevenue });
+  // Only settled sales count towards the headline - same COMPLETED/DISPATCHED
+  // rule the Profit & Loss download uses. An aggregator order that is
+  // PENDING_COLLECTION hasn't been paid for yet and a CANCELLED one never
+  // will be, so neither is revenue. Pending orders are reported separately.
+  const sales = await prisma.sale.findMany({
+    where: { ...where, status: { in: ['COMPLETED', 'DISPATCHED', 'PENDING_COLLECTION'] } },
+    select: { status: true, totalAmount: true },
+  });
+  const settled = sales.filter((x) => x.status !== 'PENDING_COLLECTION');
+  const pending = sales.filter((x) => x.status === 'PENDING_COLLECTION');
+  const sum = (list) => list.reduce((s, x) => s + Number(x.totalAmount ?? 0), 0);
+  res.json({
+    count: settled.length,
+    totalRevenue: sum(settled),
+    pendingCollectionCount: pending.length,
+    pendingCollectionAmount: sum(pending),
+  });
 });
 
 // Org-level rollup for ADMIN/ORGANISATION dashboards — dealers, retailers,
@@ -569,7 +586,10 @@ router.get('/org-summary', authRequired, async (req, res) => {
 // DEALER_PAYMENT_STATUSES are the same two orderings already used by
 // GET /payments above.
 const PURCHASE_STATUS_ORDER = ['PENDING', 'IN_REVIEW', 'CONFIRMED', 'ORDERED', 'IN_TRANSIT', 'RECEIVED', 'MODIFIED', 'CANCELLED'];
-const SALE_STATUS_ORDER = ['COMPLETED', 'IN_PENDING', 'DISPATCHED'];
+// PENDING_COLLECTION / CANCELLED (aggregator orders) must be listed here or
+// serializeBucket silently drops them from the per-status breakdown. Both are
+// already kept out of the headline totals by isExcludedFromTotal.
+const SALE_STATUS_ORDER = ['COMPLETED', 'IN_PENDING', 'DISPATCHED', 'PENDING_COLLECTION', 'CANCELLED'];
 const SOLD_PRODUCT_STATUS_ORDER = ['OPEN', 'TO_BE_CONFIRMED', 'PAID'];
 const GOODS_RETURN_STATUS_ORDER = ['OPEN', 'IN_REVIEW', 'CONFIRMED', 'CANCELLED'];
 const RECEIPT_STATUS_ORDER = ['TO_BE_CONFIRMED', 'PARTIALLY_PAID', 'PAID'];

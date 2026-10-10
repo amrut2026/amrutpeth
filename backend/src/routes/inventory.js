@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { prisma } from '../prisma.js';
 import { authRequired, ownerScope, requireRole } from '../middleware/auth.js';
+import { withHeldStock } from '../lib/heldStock.js';
 
 const router = Router();
 
@@ -10,8 +11,9 @@ router.get('/', authRequired, async (req, res) => {
   if (scope.ownerType === 'DEALER') where = { ownerType: 'DEALER', dealerId: scope.dealerId };
   if (scope.ownerType === 'RETAILER') where = { ownerType: 'RETAILER', retailerId: scope.retailerId };
   const rows = await prisma.inventory.findMany({ where, include: { product: true } });
-  const result = rows.map(r => ({ ...r, lowStock: r.quantity <= r.reorderLevel }));
-  res.json(result);
+  // quantity is the physical count; heldQuantity is what's promised to
+  // PENDING_COLLECTION aggregator orders, availableQuantity the difference.
+  res.json(await withHeldStock(rows));
 });
 
 // GET /api/inventory/retailer/:retailerId — AGGREGATOR only. Lets an
@@ -37,7 +39,8 @@ router.get('/retailer/:retailerId', authRequired, requireRole('AGGREGATOR'), asy
     // access: everything it needs is meant to come from here.
     include: { product: { include: { category: true } } }
   });
-  res.json(rows.map(r => {
+  const heldRows = await withHeldStock(rows);
+  res.json(heldRows.map(r => {
     const mrp = Number(r.mrp || 0);
     const retailerSellingPrice = Number(r.retailerSellingPrice || 0);
     // rate (retailer's own cost) and sellingPrice (dealer's wholesale price
@@ -48,10 +51,11 @@ router.get('/retailer/:retailerId', authRequired, requireRole('AGGREGATOR'), asy
     // excluded here too. Destructured out (rather than trusted to just not
     // be rendered) so this can't leak even if a future aggregator frontend
     // gets sloppy about which fields it displays.
-    const { rate, sellingPrice, originDealerRate, ...safeRow } = r;
+    // heldQuantity is dropped too (other customers' pending orders aren't the
+    // aggregator's business); availableQuantity is what it can actually order.
+    const { rate, sellingPrice, originDealerRate, heldQuantity, ...safeRow } = r;
     return {
       ...safeRow,
-      lowStock: r.quantity <= r.reorderLevel,
       // r.discount is already this exact percentage (retailerSellingPrice =
       // mrp - discount% of mrp - see schema.prisma Inventory.discount), but
       // aliased here under a name an external integration can render

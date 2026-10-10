@@ -161,6 +161,14 @@ enum SaleStatus {
   COMPLETED
   IN_PENDING
   DISPATCHED
+  // Aggregator-placed order waiting for the customer to physically collect
+  // it from the retailer and pay cash. NO inventory has been decremented
+  // yet — that happens at collection (sales.js PATCH /:id/collect), which
+  // moves the sale to COMPLETED, exactly like an ordinary CASH sale.
+  PENDING_COLLECTION
+  // A PENDING_COLLECTION order the retailer cancelled (customer never
+  // came). Nothing to undo — stock was never taken.
+  CANCELLED
 }
 
 // POS = the logged-in dealer/retailer made this sale themselves, the
@@ -802,6 +810,10 @@ model Sale {
   // block deleting that User — the channel flag alone is enough to keep
   // the sale recognizable as aggregator-placed even if so.
   channel            SaleChannel  @default(POS)
+  // Set when an AGGREGATOR-channel order moves PENDING_COLLECTION ->
+  // COMPLETED (customer collected and paid cash) or -> CANCELLED.
+  collectedAt        DateTime?
+  cancelledAt        DateTime?
   placedByUserId     Int?
   placedByUser       User?        @relation("SalePlacedBy", fields: [placedByUserId], references: [id], onDelete: SetNull)
 
@@ -834,6 +846,12 @@ model SaleItem {
   discount         Decimal  @default(0) @db.Decimal(10, 2)
   mrp              Decimal? @db.Decimal(10, 2)
   batchName        String?
+  // The exact Inventory batch row this line was sold from / is earmarked
+  // for. For an aggregator order still PENDING_COLLECTION this is how the
+  // collect step knows which batch to decrement (nothing has been taken
+  // from it yet). Plain Int, not an FK — Inventory rows can be removed
+  // without this history needing to follow.
+  inventoryId      Int?
 
   // Snapshot of the fulfilling Inventory batch's rate (cost price paid to
   // the supplier) and sellingPrice (dealer's wholesale price to a

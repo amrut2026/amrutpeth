@@ -422,6 +422,9 @@ function OperationalDashboard() {
         <div className="bg-white p-5 rounded shadow">
           <div className="text-gray-500 text-sm">Total sales / एकूण विक्री</div>
           <div className="text-3xl font-bold">{summary?.count ?? '-'}</div>
+          {summary?.pendingCollectionCount > 0 && (
+            <div className="text-xs text-amber-600 mt-1">+ {summary.pendingCollectionCount} awaiting collection / संकलन प्रलंबित</div>
+          )}
         </div>
         <div className="bg-white p-5 rounded shadow">
           <div className="text-gray-500 text-sm">Revenue / महसूल</div>

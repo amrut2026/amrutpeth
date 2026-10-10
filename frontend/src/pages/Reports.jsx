@@ -16,6 +16,7 @@ const STATUS_LABELS = {
   IN_TRANSIT: 'In Transit / वाहतुकीत',
   RECEIVED: 'Received / प्राप्त झाले',
   CANCELLED: 'Cancelled / रद्द केले',
+  PENDING_COLLECTION: 'Pending Collection / संकलन प्रलंबित',
   TO_BE_CONFIRMED: 'To Be Confirmed / पुष्टीकरण प्रलंबित',
   PARTIALLY_PAID: 'Partially Paid / अंशतः दिले',
   PAID: 'Paid / दिले',
@@ -159,7 +160,10 @@ function InventoryTable({ rows, extraColumns = [] }) {
               <td className="p-2">{r.batchName || '-'}</td>
               <td className="p-2">{r.expiryDate ? new Date(r.expiryDate).toLocaleDateString() : '-'}</td>
               <td className="p-2">{r.mrp != null ? `₹${Number(r.mrp).toFixed(2)}` : '-'}</td>
-              <td className="p-2">{r.quantity}</td>
+              <td className="p-2">
+                {r.quantity}
+                {r.heldQuantity > 0 && <div className="text-xs text-amber-600">{r.heldQuantity} held for pending orders / प्रलंबित ऑर्डरसाठी राखीव</div>}
+              </td>
               <td className="p-2">{r.reorderLevel}</td>
               <td className="p-2">
                 {r.lowStock
@@ -1890,6 +1894,11 @@ function canLinkToEntity(context) {
 // Cancelled purchase orders and cancelled goods returns stay listed but
 // don't count toward the total.
 function countsTowardTotal(type, r) {
+  // An aggregator sale that is cancelled, or still awaiting collection and
+  // cash payment, isn't revenue - listed, but kept out of the total.
+  if (type === 'SALES' || type === 'SALES_CASH' || type === 'SALES_RETAILER') {
+    return r.status !== 'CANCELLED' && r.status !== 'PENDING_COLLECTION';
+  }
   return !((type === 'PURCHASES' || type === 'GOODS_RETURN') && r.status === 'CANCELLED');
 }
 
